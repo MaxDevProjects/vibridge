@@ -1,0 +1,4 @@
+{
+  "devbridge.connectionMode": "unix",
+  "devbridge.agentSocketPath": "/tmp/devbridge/ipc.sock"
+}

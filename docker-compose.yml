@@ -1,0 +1,105 @@
+# DevBridge — Docker Compose
+# Run `bash scripts/check-ports.sh` first to auto-populate .env
+# Then: docker compose up --build
+
+name: devbridge
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  #  Relay — future public product path
+  #  Agent and mobile both connect outbound to this backend.
+  # ─────────────────────────────────────────────────────────────
+  relay:
+    profiles: [relay]
+    build:
+      context: ./relay
+      dockerfile: Dockerfile
+    image: devbridge-relay:local
+    container_name: devbridge-relay
+    restart: unless-stopped
+    ports:
+      - "${RELAY_PORT:-4444}:4444"
+    environment:
+      RELAY_PORT: 4444
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-http://localhost:4444}
+      RELAY_JWT_SECRET: ${RELAY_JWT_SECRET:-${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}}
+      RELAY_SESSION_TTL_MS: ${RELAY_SESSION_TTL_MS:-43200000}
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4444/health',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────
+  #  Agent — Node.js orchestrator on the host network
+  #  • needs host network for mDNS advertise + VS Code IPC socket
+  #  • needs /dev/ptmx for node-pty (CLI adapters)
+  # ─────────────────────────────────────────────────────────────
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    image: devbridge-agent:local
+    container_name: devbridge-agent
+    restart: unless-stopped
+    ports:
+      - "${AGENT_PORT:-3333}:${AGENT_PORT:-3333}"
+    environment:
+      NODE_ENV: production
+      AGENT_PORT: ${AGENT_PORT:-3333}
+      AGENT_HOST: ${AGENT_HOST:-}
+      RELAY_INTERNAL_URL: ${RELAY_INTERNAL_URL:-}
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
+      JWT_SECRET: ${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_EMAIL: ${VAPID_EMAIL:-mailto:devbridge@localhost}
+    volumes:
+      # Project files exposed read-only to /workspace inside container
+      - ${PROJECT_ROOT:-/tmp}:/workspace:ro
+      # Reuse host Codex auth/config without mounting the full mutable state dir
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+      - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
+      # Shared Unix socket dir for VS Code Extension ↔ Agent IPC
+      # bind-mount so the host VS Code process can reach the socket
+      - /tmp/devbridge:/tmp/devbridge
+    devices:
+      # node-pty requires access to the host pseudo-terminal multiplexer
+      - /dev/ptmx:/dev/ptmx
+    group_add:
+      - tty
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${AGENT_PORT:-3333}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─────────────────────────────────────────────────────────────
+  #  UI — Nuxt 3 app (replaces old React PWA)
+  #  Phone browsers connect to http://<PC_IP>:${PWA_PORT}
+  # ─────────────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ./nuxt-ui
+      dockerfile: Dockerfile
+    image: devbridge-ui:local
+    container_name: devbridge-ui
+    restart: unless-stopped
+    ports:
+      - "${PWA_PORT:-5173}:4000"
+    environment:
+      NUXT_PUBLIC_RELAY_URL: ${RELAY_PUBLIC_URL:-}
+      NUXT_PUBLIC_AGENT_HOST: ${AGENT_HOST:-localhost}
+      NUXT_PUBLIC_AGENT_PORT: ${AGENT_PORT:-3333}
+    depends_on:
+      agent:
+        condition: service_healthy
+      relay:
+        condition: service_started
+        required: false
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

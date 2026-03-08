@@ -1,0 +1,90 @@
+{
+  "name": "devbridge",
+  "displayName": "DevBridge",
+  "description": "Bidirectional bridge between VS Code AI assistants and your phone.",
+  "version": "0.1.0",
+  "publisher": "devbridge",
+  "engines": { "vscode": "^1.87.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "devbridge.assistant",
+        "name": "devbridge",
+        "description": "DevBridge relay — mirrors this chat to your phone",
+        "isSticky": false
+      }
+    ],
+    "commands": [
+      {
+        "command": "devbridge.showPairingCode",
+        "title": "DevBridge: Show Pairing Code / QR"
+      },
+      {
+        "command": "devbridge.toggleBridge",
+        "title": "DevBridge: Toggle Bridge"
+      },
+      {
+        "command": "devbridge.openDevBridgeChat",
+        "title": "DevBridge: Open DevBridge Chat"
+      },
+      {
+        "command": "devbridge.openMirror",
+        "title": "DevBridge: Open Mirror"
+      },
+      {
+        "command": "devbridge.startCodexTerminal",
+        "title": "DevBridge: Start Codex Terminal"
+      }
+    ],
+    "configuration": {
+      "title": "DevBridge",
+      "properties": {
+        "devbridge.connectionMode": {
+          "type": "string",
+          "enum": ["unix", "tcp"],
+          "default": "unix",
+          "description": "How the extension connects to the DevBridge Agent. Use 'unix' for local/Docker, 'tcp' for remote or WSL."
+        },
+        "devbridge.agentSocketPath": {
+          "type": "string",
+          "default": "/tmp/devbridge/ipc.sock",
+          "description": "[unix mode] Path to the DevBridge Agent Unix socket."
+        },
+        "devbridge.agentHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "[tcp mode] Hostname or IP address of the DevBridge Agent."
+        },
+        "devbridge.agentPort": {
+          "type": "number",
+          "default": 3334,
+          "description": "[tcp mode] TCP port the DevBridge Agent listens on for IPC."
+        },
+        "devbridge.questionConfidenceThreshold": {
+          "type": "number",
+          "default": 1,
+          "description": "Number of question patterns that must match before sending a push notification."
+        },
+        "devbridge.terminalSendMode": {
+          "type": "string",
+          "enum": ["paste", "split"],
+          "default": "split",
+          "markdownDescription": "How DevBridge sends text to VS Code terminals. `paste` uses a single `sendText(text, true)`. `split` sends the text first, then a separate Enter keypress. `split` is more reliable for TUIs like Codex."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.87.0",
+    "typescript": "^5.4.5"
+  }
+}

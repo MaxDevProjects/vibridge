@@ -1,0 +1,20 @@
+{
+  "name": "vibebridge-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "generate": "nuxt generate"
+  },
+  "dependencies": {
+    "@nuxtjs/color-mode": "^3.5.2",
+    "nuxt": "^3.15.4",
+    "uqr": "^0.1.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.12",
+    "tailwindcss": "^4.0.12"
+  }
+}

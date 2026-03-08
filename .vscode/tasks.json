@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-extension",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/extension" },
+      "group": "build",
+      "presentation": { "reveal": "silent", "panel": "shared" },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "watch-extension",
+      "type": "shell",
+      "command": "npm run watch",
+      "options": { "cwd": "${workspaceFolder}/extension" },
+      "isBackground": true,
+      "group": "build",
+      "presentation": { "reveal": "never", "panel": "shared" },
+      "problemMatcher": "$tsc-watch"
+    }
+  ]
+}
