@@ -94,8 +94,17 @@ function buildLocalBaseUrl(): string {
 
 function inferRelayUrl(): string {
   if (import.meta.server) return ''
+  // Priority: explicitly paired relay URL → network config (settings field) → runtime config (env)
   const stored = localStorage.getItem('vb:relayUrl')
   if (stored) return normalizeRelayBaseUrl(stored)
+  // Read relay URL from useNetworkConfig (stored under vb:network, editable in Settings)
+  try {
+    const raw = localStorage.getItem('vb:network')
+    if (raw) {
+      const net = JSON.parse(raw) as { relayUrl?: string }
+      if (net.relayUrl) return normalizeRelayBaseUrl(net.relayUrl)
+    }
+  } catch { /* ignore */ }
   const config = useRuntimeConfig()
   return normalizeRelayBaseUrl(String(config.public.relayUrl ?? ''))
 }
