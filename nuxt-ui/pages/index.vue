@@ -789,6 +789,8 @@ function normalizeBaseUrl(value: string) {
 
 function currentAgentBaseUrl() {
   if (!import.meta.client) return ''
+  // On HTTPS (production), the agent is behind Nginx — no direct port access
+  if (window.location.protocol === 'https:') return window.location.origin
   const routeAgentUrl = normalizeBaseUrl(queryValue(route.query.agentUrl as string | string[] | undefined))
   if (routeAgentUrl) return routeAgentUrl
   const explicitAgentUrl = normalizeBaseUrl(pairAgentUrl.value)

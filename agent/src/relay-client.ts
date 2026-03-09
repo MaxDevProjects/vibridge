@@ -55,8 +55,8 @@ export class RelayClient {
   constructor(private options: RelayClientOptions) {}
 
   async start(): Promise<void> {
-    await this.ensureSession();
     this.outputOff = this.options.queue.onOutput((payload) => this.forwardOutput(payload));
+    await this.ensureSession();
     this.connect();
   }
 
@@ -119,32 +119,52 @@ export class RelayClient {
 
   private async ensureSession(): Promise<void> {
     if (!this.isEnabled()) return;
-    const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: this.options.sessionLabel,
-        workspaceFolders: this.options.workspaceFolders,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Relay session creation failed: ${res.status}`);
+    try {
+      const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: this.options.sessionLabel,
+          workspaceFolders: this.options.workspaceFolders,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(`[Relay] Session creation failed (${res.status}) — will retry. ${body}`);
+        this.scheduleSessionRetry();
+        return;
+      }
+      const data = await res.json() as CreateSessionResponse;
+      this.session = {
+        enabled: true,
+        relayUrl: data.relayUrl,
+        sessionId: data.sessionId,
+        pairingCode: data.pairingCode,
+        qrUrl: data.qrUrl,
+        agentToken: data.agentToken,
+        expiresAt: data.expiresAt,
+        status: 'waiting',
+        agentConnected: false,
+        mobileConnected: false,
+        connected: false,
+        lastError: null,
+      };
+      this.options.ipc.setRelayQrUrl?.(this.session.qrUrl ?? null);
+      console.log(`[Relay] Session created: ${this.session.sessionId}`);
+    } catch (err) {
+      console.warn(`[Relay] ensureSession error — will retry in 15s:`, err);
+      this.scheduleSessionRetry();
     }
-    const data = await res.json() as CreateSessionResponse;
-    this.session = {
-      enabled: true,
-      relayUrl: data.relayUrl,
-      sessionId: data.sessionId,
-      pairingCode: data.pairingCode,
-      qrUrl: data.qrUrl,
-      agentToken: data.agentToken,
-      expiresAt: data.expiresAt,
-      status: 'waiting',
-      agentConnected: false,
-      mobileConnected: false,
-      connected: false,
-      lastError: null,
-    };
+  }
+
+  private scheduleSessionRetry(delayMs = 15_000): void {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.ensureSession().then(() => {
+        if (this.session) this.connect();
+      });
+    }, delayMs);
   }
 
   private connect(): void {

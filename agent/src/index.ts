@@ -68,9 +68,18 @@ async function main() {
   cliRegistry.detectAll().catch(() => {/* silent */});
   if (relay) {
     ipc.forward = (type, payload) => relay.send(type, payload);
-    await relay.start();
-    ipc.setRelayQrUrl(relay.getState()?.qrUrl ?? null);
-    console.log(`[DevBridge Agent] Relay enabled via ${RELAY_PUBLIC_URL}`);
+    // Non-fatal: if the relay server is unreachable at startup, the agent
+    // keeps running locally and the relay client will retry in background.
+    relay.start().then(() => {
+      ipc.setRelayQrUrl(relay.getState()?.qrUrl ?? null);
+      if (relay.getState()?.sessionId) {
+        console.log(`[DevBridge Agent] Relay enabled via ${RELAY_PUBLIC_URL}`);
+      } else {
+        console.warn(`[DevBridge Agent] Relay not yet connected — retrying in background`);
+      }
+    }).catch((err: unknown) => {
+      console.warn(`[DevBridge Agent] Relay startup error (non-fatal):`, err);
+    });
   }
 
   const shutdown = (sig: string) => {
