@@ -21,4 +21,6 @@ jobs:
             set -e
             cd ${{ secrets.SERVER_PATH }}
             git pull origin main
-            docker compose up -d --build
+            # Only relay + nuxt-ui run on the server.
+            # The agent runs locally alongside VS Code and cannot be deployed remotely.
+            docker compose --profile relay up -d --build relay ui
