@@ -8,6 +8,7 @@ import type { RelayRole, SessionClaims } from './types'
 interface RelayServerOptions {
   port: number
   publicBaseUrl: string
+  uiBaseUrl: string
   auth: RelayAuth
   store: RelayStore
   sessionTtlMs: number
@@ -19,7 +20,7 @@ interface AuthenticatedSocket extends WebSocket {
 
 export function createRelayServer(options: RelayServerOptions) {
   const app = express()
-  const { auth, store, publicBaseUrl, sessionTtlMs } = options
+  const { auth, store, publicBaseUrl, uiBaseUrl, sessionTtlMs } = options
   const peers = new Map<string, Map<RelayRole, AuthenticatedSocket>>()
 
   app.use((_req, res, next) => {
@@ -69,7 +70,7 @@ export function createRelayServer(options: RelayServerOptions) {
       agentToken: finalAgentToken,
       expiresAt: session.expiresAt,
       relayUrl: publicBaseUrl,
-      qrUrl: `${publicBaseUrl.replace(/\/$/, '')}/?relay=1&sessionId=${encodeURIComponent(session.id)}&code=${encodeURIComponent(session.pairingCode)}`,
+      qrUrl: `${uiBaseUrl.replace(/\/$/, '')}/?relay=1&sessionId=${encodeURIComponent(session.id)}&code=${encodeURIComponent(session.pairingCode)}`,
     })
   })
 

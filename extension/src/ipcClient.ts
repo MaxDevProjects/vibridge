@@ -105,7 +105,7 @@ export class IpcClient extends EventEmitter {
     this.socket?.write(JSON.stringify(data) + '\n');
   }
 
-  async requestPairingCode(): Promise<string | null> {
+  async requestPairingCode(): Promise<{ code: string; qrUrl?: string } | null> {
     return new Promise((resolve) => {
       if (!this._connected) {
         resolve(null);
@@ -114,7 +114,10 @@ export class IpcClient extends EventEmitter {
       const timeout = setTimeout(() => resolve(null), 3_000);
       this.once('pairing_code', (msg: AgentMessage) => {
         clearTimeout(timeout);
-        resolve(msg.code as string);
+        resolve({
+          code: msg.code as string,
+          qrUrl: msg.qrUrl as string | undefined,
+        });
       });
       this._send({ type: 'get_pairing_code' });
     });

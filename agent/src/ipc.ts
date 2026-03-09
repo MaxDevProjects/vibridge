@@ -20,6 +20,7 @@ export class IpcServer {
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
   private previewUrl: string | null = null;
+  private relayQrUrl: string | null = null;
   private projects: Array<{ name: string; path: string; isActive: boolean }> = [];
   private projectsParentDir = '';
   broadcast?: (data: unknown) => void;
@@ -147,7 +148,11 @@ export class IpcServer {
       }
       case 'get_pairing_code': {
         if (!socket.destroyed) {
-          socket.write(JSON.stringify({ type: 'pairing_code', code: this.auth.getPairCode() }) + '\n');
+          socket.write(JSON.stringify({
+            type: 'pairing_code',
+            code: this.auth.getPairCode(),
+            qrUrl: this.relayQrUrl ?? undefined,
+          }) + '\n');
         }
         break;
       }
@@ -267,6 +272,10 @@ export class IpcServer {
     this.clients.forEach((c) => {
       if (!c.destroyed) c.write(line);
     });
+  }
+
+  setRelayQrUrl(url: string | null): void {
+    this.relayQrUrl = url;
   }
 
   getIdeState(): Record<string, unknown> | null {

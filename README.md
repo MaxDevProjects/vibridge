@@ -1,103 +1,148 @@
 # DevBridge
 
-Pont bidirectionnel entre un IDE local et un mobile.
+Pont bidirectionnel entre un IDE local et un mobile/tablette.
 
-Aujourd'hui, le chemin le plus fiable est:
-- extension VS Code locale
-- agent Docker local
-- UI Nuxt locale
-- mobile sur le meme reseau local
+Le flux principal repose sur quatre composants qui tournent tous en local :
 
-Le relay MVP existe toujours dans le repo, mais le flux de travail le plus abouti actuellement est le mode local.
+- **extension VS Code** — remontée d'état IDE, réception des messages mobiles
+- **agent Docker** — orchestrateur HTTP/WebSocket, gestion des adapters CLI
+- **UI Nuxt 3** — interface PWA pour desktop et mobile
+- **relay** *(optionnel)* — backend public pour accès hors réseau local
 
-## Ce qui fonctionne maintenant
+---
 
-- pairing local via QR / code
-- dashboard desktop + mobile
-- remontee IDE:
-  - workspace actif
-  - fichier actif
-  - terminaux VS Code
-- routage mobile -> terminal VS Code
-- `DevBridge Chat` dans VS Code
-- `DevBridge Mirror` dans VS Code
-- lancement d'un vrai terminal Codex VS Code
-- cible mobile verrouillable pour ne pas changer de terminal automatiquement
+## Fonctionnalités
 
-## Architecture actuelle
+- Pairing local via QR code ou code court
+- Dashboard desktop + mobile (Nuxt 3 / Tailwind)
+- Remontée IDE en temps réel :
+  - workspace et fichier actifs
+  - liste des terminaux VS Code ouverts
+- Routage de messages mobile → terminal VS Code ciblé
+- Cible de terminal verrouillable (le mobile ne change pas de cible automatiquement)
+- `DevBridge Chat` — participant de chat VS Code qui mirore la conversation vers le mobile
+- `DevBridge Mirror` — webview VS Code affichant l'interface mobile en live
+- Lancement de terminaux CLI directement depuis le mobile (`Claude CLI`, `Codex`, custom)
+- Découverte automatique de l'agent via mDNS
+- Notifications push vers le mobile (détection de questions de l'agent)
+- IPC extension ↔ agent via socket Unix (défaut) ou TCP (WSL / remote)
+- Relay optionnel pour un accès public depuis n'importe quel réseau
 
-- `agent/`
-  - agent local dans Docker
-  - expose HTTP + WebSocket
-  - route les messages vers les adapters et l'extension VS Code
-- `extension/`
-  - extension VS Code locale
-  - remontee d'etat IDE/terminal
-  - reception des messages mobile
-  - commandes DevBridge dans VS Code
-- `nuxt-ui/`
-  - interface desktop + mobile
-  - pairing, chat, preview, cibles de routage
-- `relay/`
-  - backend MVP pour l'architecture publique cible
-  - encore secondaire pour l'usage courant
+---
 
-## Demarrage rapide local
+## Architecture
 
-### 1. Generer `.env`
+```
+mobile / tablette
+       │  HTTP + WebSocket
+       ▼
+  ┌─────────┐       Unix socket / TCP       ┌───────────────┐
+  │  agent  │ ◄────────────────────────────► │  extension    │
+  │ Docker  │                               │   VS Code     │
+  └─────────┘                               └───────────────┘
+       │  HTTP + WebSocket
+       ▼
+  ┌─────────┐
+  │ nuxt-ui │  ← PWA servie sur le réseau local
+  └─────────┘
+       │  (optionnel)
+       ▼
+  ┌─────────┐
+  │  relay  │  ← backend public (profil Docker séparé)
+  └─────────┘
+```
+
+| Dossier | Rôle | Stack |
+|---|---|---|
+| `agent/` | Orchestrateur : HTTP, WebSocket, IPC, adapters CLI, mDNS, push | Node.js / TypeScript |
+| `extension/` | Extension VS Code : état IDE, chat, mirror, IPC vers agent | TypeScript / VS Code API |
+| `nuxt-ui/` | Interface PWA desktop + mobile | Nuxt 3 / Tailwind 4 |
+| `relay/` | Backend public MVP (optionnel, profil `relay`) | Node.js / TypeScript |
+
+---
+
+## Démarrage rapide (mode local)
+
+### 1. Générer `.env`
 
 ```bash
 bash scripts/check-ports.sh
 ```
 
-Pour un test local pur, vide les variables relay dans `.env`:
+Pour un usage 100 % local, laisser les variables relay vides :
 
 ```env
 RELAY_PUBLIC_URL=
 RELAY_INTERNAL_URL=
 ```
 
-### 2. Lancer les services locaux
+### 2. Lancer les services Docker
 
 ```bash
-docker compose up -d --build --force-recreate agent ui
+docker compose up -d --build agent ui
 ```
 
-Services:
-- UI: `http://localhost:5173`
-- Agent: `http://localhost:3333`
+| Service | URL locale | Réseau local |
+|---|---|---|
+| UI | `http://localhost:5173` | `http://<IP_PC>:5173` |
+| Agent | `http://localhost:3333` | `http://<IP_PC>:3333/health` |
 
-Depuis un telephone sur le meme reseau:
-- UI: `http://<IP_PC>:5173`
-- Health agent: `http://<IP_PC>:3333/health`
+### 3. Activer l'extension VS Code
 
-Exemple:
-- `http://192.168.8.105:5173`
-- `http://192.168.8.105:3333/health`
+Dans VS Code, recharger la fenêtre (`Ctrl+Shift+P` → `Developer: Reload Window`) et vérifier que l'extension **DevBridge** est active dans la barre de statut.
 
-### 3. Charger l'extension VS Code
+---
 
-Dans VS Code:
-1. recharge la fenetre
-2. verifie que l'extension `DevBridge` est active
+## Commandes VS Code
 
-## Commandes VS Code utiles
+| Commande | Description |
+|---|---|
+| `DevBridge: Show QR` | Affiche le QR de pairing |
+| `DevBridge: Toggle Bridge` | Active / désactive le pont |
+| `DevBridge: Open DevBridge Chat` | Ouvre le chat DevBridge |
+| `DevBridge: Open Mirror` | Ouvre la webview mirror |
+| `DevBridge: Start CLI Terminal` | Lance un terminal CLI enregistré |
+| `DevBridge: Start Codex Terminal (legacy)` | Lance un terminal Codex (ancien flux) |
 
-Commandes exposees par l'extension:
-- `DevBridge: Show Pairing Code / QR`
-- `DevBridge: Toggle Bridge`
-- `DevBridge: Open DevBridge Chat`
-- `DevBridge: Open Mirror`
-- `DevBridge: Start Codex Terminal`
+---
 
-## Flux recommande pour Codex
+## Configuration de l'extension
 
-Le meilleur chemin pour utiliser Codex n'est plus `codex-cli` dans Docker comme interface principale.
-Le chemin recommande est:
+| Paramètre | Défaut | Description |
+|---|---|---|
+| `devbridge.connectionMode` | `unix` | `unix` (socket local/Docker) ou `tcp` (WSL/remote) |
+| `devbridge.agentSocketPath` | `/tmp/devbridge/ipc.sock` | Chemin du socket Unix |
+| `devbridge.agentHost` | `127.0.0.1` | Hôte de l'agent (mode TCP) |
+| `devbridge.agentPort` | `3334` | Port TCP de l'agent IPC |
+| `devbridge.terminalSendMode` | `split` | `paste` ou `split` (plus fiable pour les TUI) |
+| `devbridge.questionConfidenceThreshold` | `1` | Nombre de patterns requis avant push notification |
 
-1. dans VS Code, lancer `DevBridge: Start Codex Terminal`
-2. cela ouvre un vrai terminal VS Code nomme `DevBridge Codex`
-3. le mobile cible ensuite `terminal:DevBridge Codex`
+---
+
+## Flux recommandé pour les CLI (Claude / Codex)
+
+1. Dans VS Code, lancer `DevBridge: Start CLI Terminal` et choisir le CLI voulu.
+2. Un terminal VS Code nommé `DevBridge — <nom>` s'ouvre.
+3. Sur le mobile, cibler ce terminal — tous les messages envoyés y sont injectés.
+
+> Le flux `codex-cli` directement dans Docker n'est plus le chemin recommandé.
+
+---
+
+## Mode relay (optionnel)
+
+Permet d'accéder au bridge depuis un réseau différent (4G, VPN, etc.).
+
+```bash
+# Renseigner dans .env :
+RELAY_PUBLIC_URL=https://relay.example.com
+RELAY_INTERNAL_URL=http://relay:4444
+
+# Lancer avec le profil relay :
+docker compose --profile relay up -d --build
+```
+
+Le relay est un backend léger JWT + WebSocket. L'agent s'y connecte automatiquement si `RELAY_INTERNAL_URL` est défini.
 
 Avantages:
 - tu vois le vrai terminal VS Code

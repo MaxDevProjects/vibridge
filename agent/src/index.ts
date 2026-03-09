@@ -69,6 +69,7 @@ async function main() {
   if (relay) {
     ipc.forward = (type, payload) => relay.send(type, payload);
     await relay.start();
+    ipc.setRelayQrUrl(relay.getState()?.qrUrl ?? null);
     console.log(`[DevBridge Agent] Relay enabled via ${RELAY_PUBLIC_URL}`);
   }
 

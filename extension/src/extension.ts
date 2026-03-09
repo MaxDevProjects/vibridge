@@ -171,16 +171,23 @@ export function activate(context: vscode.ExtensionContext): void {
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('devbridge.showPairingCode', async () => {
-      const code = await ipc!.requestPairingCode();
-      if (!code) {
+      const result = await ipc!.requestPairingCode();
+      if (!result) {
         void vscode.window.showWarningMessage('DevBridge: agent not connected or no pairing code available.');
         return;
       }
-      // Build the full URL the mobile app needs: http://IP:PORT?token=CODE
-      const config = vscode.workspace.getConfiguration('devbridge');
-      const host: string = config.get('agentHost') ?? 'devbridge.local';
-      const port: number = config.get('agentPort') ?? 3333;
-      const pwaUrl = `http://${host}:${port}?token=${encodeURIComponent(code)}`;
+      const { code, qrUrl: relayQrUrl } = result;
+
+      // Use relay QR URL if available, otherwise build local URL
+      let pwaUrl: string;
+      if (relayQrUrl) {
+        pwaUrl = relayQrUrl;
+      } else {
+        const config = vscode.workspace.getConfiguration('devbridge');
+        const host: string = config.get('agentHost') ?? 'devbridge.local';
+        const port: number = config.get('agentPort') ?? 3333;
+        pwaUrl = `http://${host}:${port}?token=${encodeURIComponent(code)}`;
+      }
 
       // Show in a WebView panel with a QR code (via qrserver.com CDN)
       const panel = vscode.window.createWebviewPanel(
