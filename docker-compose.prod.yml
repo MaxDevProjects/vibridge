@@ -1,18 +1,11 @@
 # DevBridge — Production Compose (VPS only)
-# Runs: relay + nuxt-ui + nginx reverse proxy
+# Runs: relay + nuxt-ui
 # The agent runs locally on the dev PC, NOT on the server.
 #
 # Required .env on the server:
 #   RELAY_JWT_SECRET=...
 #   RELAY_PUBLIC_URL=https://YOUR_DOMAIN/relay
 #   NUXT_PUBLIC_RELAY_URL=https://YOUR_DOMAIN/relay
-#
-# First deploy:
-#   1. Point DNS to this VPS
-#   2. Run certbot to get SSL certs (see nginx/devbridge.conf)
-#   3. docker compose -f docker-compose.prod.yml up -d --build
-
-name: devbridge-prod
 
 services:
   relay:
