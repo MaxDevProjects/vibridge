@@ -31,6 +31,14 @@
         >
           {{ colorMode.value === 'dark' ? 'Light' : 'Dark' }}
         </button>
+
+        <!-- Settings link -->
+        <NuxtLink
+          to="/settings"
+          class="text-[10px] tracking-[0.1em] uppercase px-3 py-1.5 transition-colors"
+          style="border:1px solid var(--border);background:none;color:var(--muted)"
+          title="Paramètres réseau"
+        >⚙</NuxtLink>
       </div>
     </header>
 

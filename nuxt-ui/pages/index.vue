@@ -31,14 +31,39 @@
       <!-- 2×2 panels -->
       <div class="flex-1 overflow-y-auto grid grid-cols-2" style="align-content:start">
 
-        <!-- Tools -->
+        <!-- Tools / CLIs -->
         <div style="border-right:1px solid var(--border);border-bottom:1px solid var(--border)">
-          <PanelHead title="Outils disponibles" action="Config" />
-          <ToolRow
-            v-for="t in tools" :key="t.id"
-            :name="t.label" :type="t.type" :available="t.available" :reason="t.reason" :model-value="t.active"
-            @update:model-value="toggleTool(t.id, $event)"
-          />
+          <PanelHead title="Outils CLI" />
+          <div class="overflow-y-auto" style="max-height:280px">
+            <div
+              v-for="(cli, i) in cliList" :key="cli.id"
+              class="flex items-center gap-3 px-5 py-2.5 text-[11px]"
+              :style="i < cliList.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
+            >
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :style="`background:var(--dot-${cli.detected ? 'green' : 'red'})`" />
+              <span class="flex-1 truncate">{{ cli.name }}</span>
+              <span class="text-[9px] uppercase tracking-[0.1em] shrink-0" style="color:var(--muted)">Terminal</span>
+              <button
+                v-if="cli.detected"
+                :disabled="!!cliLaunching[cli.id]"
+                class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 transition-colors disabled:opacity-40"
+                style="border:1px solid var(--border);color:var(--text);background:none"
+                @click="launchCli(cli.id)"
+              >
+                {{ cliLaunching[cli.id] ? '…' : 'Lancer' }}
+              </button>
+              <span v-else class="text-[9px] shrink-0" style="color:var(--dot-red)">non détecté</span>
+            </div>
+            <p v-if="!cliList.length" class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
+          </div>
+          <!-- Adapter toggles below CLIs -->
+          <div v-if="tools.length" style="border-top:1px solid var(--border)">
+            <ToolRow
+              v-for="t in tools" :key="t.id"
+              :name="t.label" :type="t.type" :available="t.available" :reason="t.reason" :model-value="t.active"
+              @update:model-value="toggleTool(t.id, $event)"
+            />
+          </div>
         </div>
 
         <!-- Activity -->
@@ -58,122 +83,79 @@
           </div>
         </div>
 
-        <!-- File tree -->
+        <!-- Projets disponibles -->
         <div style="border-right:1px solid var(--border)">
-          <PanelHead title="Projet ouvert" action="Ouvrir" />
+          <PanelHead title="Projets disponibles" />
           <div class="overflow-y-auto" style="max-height:280px">
-            <FileTree v-if="fileTree.length" :nodes="fileTree" @select="selectedFile = $event" />
-            <p v-else class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
+            <div
+              v-for="(proj, i) in projectsList" :key="proj.path"
+              class="flex items-center justify-between px-5 py-2.5 text-[11px]"
+              :style="i < projectsList.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
+            >
+              <span class="flex items-center gap-2 truncate">
+                <span v-if="proj.isActive" class="shrink-0" style="color:var(--dot-amber)">★</span>
+                <span class="truncate">{{ proj.name }}</span>
+              </span>
+              <span v-if="proj.isActive" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
+              <button
+                v-else
+                :disabled="projectOpening[proj.path] === 'opening'"
+                class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
+                :style="projectOpening[proj.path] === 'done'
+                  ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
+                  : 'border:1px solid var(--border);color:var(--text);background:none'"
+                @click="openProject(proj.path, proj.name)"
+              >
+                {{ projectOpening[proj.path] === 'opening' ? 'Ouverture…' : projectOpening[proj.path] === 'done' ? 'Ouvert ✓' : 'Ouvrir →' }}
+              </button>
+            </div>
+            <p v-if="!projectsList.length" class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
           </div>
         </div>
 
         <!-- Network / pairing -->
         <div>
-          <PanelHead title="Réseau & Pairing" action="Nouveau QR" @action="refreshPairing" />
+          <PanelHead title="Réseau & Pairing" />
+          <!-- Key info rows -->
           <div class="px-7">
-            <NetRow label="Mode" :value="tunnelModeLabel" />
-            <NetRow label="Adresse" :value="agentHost" mono />
+            <NetRow label="Adresse" :value="currentAgentBaseUrl() || String(agentHost)" mono />
             <NetRow label="Port" :value="String(agentPort)" mono />
-            <NetRow v-if="uiTunnelUrl" label="URL UI" :value="uiTunnelUrl" mono />
-            <NetRow v-if="pairAgentUrl" label="URL agent" :value="pairAgentUrl" mono />
-            <NetRow v-if="currentPairingCode" label="Code" :value="currentPairingCode" mono />
+            <NetRow label="Mode" :value="tunnelModeLabel" />
             <NetRow label="Statut">
               <template #value>
-                <span :style="`color:var(--dot-${statusColor})`" class="uppercase text-[11px]">{{ bridge.status.value }}</span>
+                <StatusDot :state="bridge.status.value" :mode="bridge.mode.value" :latency="bridge.latencyMs.value" />
               </template>
             </NetRow>
-            <NetRow label="Tunnel" :value="transportLabel === 'Tunnel' ? 'Activé' : 'Désactivé'" />
           </div>
-          <div v-if="uiTunnelUrl || pairAgentUrl" class="px-7 mt-3">
-            <div class="grid grid-cols-2 gap-2">
+          <!-- 3 action buttons -->
+          <div class="px-7 mt-4 grid grid-cols-3 gap-2">
+            <button
+              class="text-[10px] uppercase tracking-widest py-2 transition-colors"
+              style="border:1px solid var(--border);color:var(--text);background:none"
+              @click="openTunnel(currentAgentBaseUrl())"
+            >
+              Ouvrir
+            </button>
+            <button
+              class="text-[10px] uppercase tracking-widest py-2 transition-colors"
+              style="border:1px solid var(--border);color:var(--text);background:none"
+              @click="copyText(currentAgentBaseUrl(), 'URL Agent copiée')"
+            >
+              Copier
+            </button>
+            <ClientOnly>
               <button
-                v-if="uiTunnelUrl"
-                class="text-[10px] uppercase tracking-widest py-2 transition-colors"
+                :disabled="!pairingQrSvg"
+                class="text-[10px] uppercase tracking-widest py-2 transition-colors disabled:opacity-30"
                 style="border:1px solid var(--border);color:var(--text);background:none"
-                @click="openTunnel(uiTunnelUrl)"
-              >
-                Ouvrir UI
-              </button>
-              <button
-                v-if="uiTunnelUrl"
-                class="text-[10px] uppercase tracking-widest py-2 transition-colors"
-                style="border:1px solid var(--border);color:var(--text);background:none"
-                @click="copyText(uiTunnelUrl, 'URL UI tunnel copiée')"
-              >
-                Copier UI
-              </button>
-              <button
-                v-if="pairAgentUrl"
-                class="text-[10px] uppercase tracking-widest py-2 transition-colors"
-                style="border:1px solid var(--border);color:var(--text);background:none"
-                @click="openTunnel(pairAgentUrl)"
-              >
-                Ouvrir Agent
-              </button>
-              <button
-                v-if="pairAgentUrl"
-                class="text-[10px] uppercase tracking-widest py-2 transition-colors"
-                style="border:1px solid var(--border);color:var(--text);background:none"
-                @click="copyText(pairAgentUrl, 'URL agent tunnel copiée')"
-              >
-                Copier Agent
-              </button>
-            </div>
-          </div>
-          <ClientOnly>
-            <div v-if="pairingQrSvg" class="px-7 mt-4">
-            <div class="p-4 flex flex-col items-center gap-3" style="border:1px solid var(--border);background:var(--surface)">
-              <button
-                class="p-3 bg-white transition-transform hover:scale-[1.02]"
-                style="border:1px solid var(--border-bright)"
-                type="button"
-                aria-label="Agrandir le QR code"
                 @click="showQrModal = true"
               >
-                <img :src="pairingQrDataUrl" alt="QR code de pairing" class="block w-40 h-40" />
+                QR ▣
               </button>
-              <p class="text-[10px] text-center uppercase tracking-[0.14em]" style="color:var(--muted)">
-                Scannez pour ouvrir l'UI mobile et lancer l'appairage
-              </p>
-              <div class="w-full flex gap-2">
-                <button
-                  class="flex-1 text-[10px] uppercase tracking-widest py-2 transition-colors"
-                  style="border:1px solid var(--border);color:var(--text);background:none"
-                  @click="showQrModal = true"
-                >
-                  Agrandir
-                </button>
-                <button
-                  class="flex-1 text-[10px] uppercase tracking-widest py-2 transition-colors"
-                  style="border:1px solid var(--border);color:var(--text);background:none"
-                  @click="copyPairingLink"
-                >
-                  Copier le lien
-                </button>
-              </div>
-            </div>
-            <!-- mDNS fallback: show IP-based QR when local IP differs from agentHost -->
-            <div v-if="fallbackQrDataUrl" class="px-7 mt-3">
-              <div class="p-3 flex flex-col items-center gap-2" style="border:1px dashed var(--border);background:var(--surface)">
-                <p class="text-[9px] uppercase tracking-[0.14em] text-center" style="color:var(--muted)">Fallback IP — si devbridge.local échoue</p>
-                <img :src="fallbackQrDataUrl" alt="QR fallback IP" class="block w-28 h-28 bg-white p-1" />
-                <p class="text-[9px] font-mono" style="color:var(--muted)">{{ localIpInfo?.ip }}:{{ agentPort }}</p>
-              </div>
-            </div>
-            </div>
-          </ClientOnly>
-          <!-- Pair form -->
-          <div v-if="bridge.status.value === 'disconnected' && !bridge.token.value" class="px-7 pb-6 mt-3 space-y-2">
-            <input
-              v-model="pairAgentUrl"
-              placeholder="https://xyz.trycloudflare.com"
-              class="w-full text-[11px] px-3 py-2 text-text outline-none"
-              style="background:var(--surface);border:1px solid var(--border)"
-            />
-            <div class="flex gap-2">
-              <input v-model="pairHost" placeholder="192.168.x.x" class="flex-1 text-[11px] px-3 py-2 text-text outline-none" style="background:var(--surface);border:1px solid var(--border)" />
-              <input v-model="pairPort" placeholder="3333"         class="w-20 text-[11px] px-3 py-2 text-text outline-none" style="background:var(--surface);border:1px solid var(--border)" />
-            </div>
+            </ClientOnly>
+          </div>
+          <!-- Pair form — only code field inline -->
+          <div v-if="bridge.status.value === 'disconnected' && !bridge.token.value" class="px-7 pb-6 mt-4 space-y-2">
             <input v-model="pairCode" placeholder="CODE D'APPAIRAGE" class="w-full text-[11px] px-3 py-2 text-text outline-none uppercase tracking-widest" style="background:var(--surface);border:1px solid var(--border)" />
             <button :disabled="pairing" class="w-full text-[10px] uppercase tracking-widest py-2 transition-colors disabled:opacity-40" style="border:1px solid var(--text);color:var(--text);background:none" @click="doPair">
               {{ pairing ? 'Connexion…' : 'Appairer' }}
@@ -198,6 +180,7 @@
         <div class="flex items-center gap-1.5 text-[11px]" style="color:var(--muted)">
           <span class="w-1.5 h-1.5 rounded-full inline-block" :style="`background:var(--dot-${statusColor})`"></span>
           <span>WiFi</span><span>●●●</span>
+          <NuxtLink to="/settings" class="ml-1 leading-none" style="color:var(--muted)" title="Paramètres">⚙</NuxtLink>
         </div>
       </div>
 
@@ -269,68 +252,76 @@
             </div>
           </div>
 
-          <!-- Active tools -->
+          <!-- Active tools / CLIs -->
           <div class="px-4 mt-4 mb-6">
             <p class="text-[8px] tracking-[0.25em] uppercase mb-2.5" style="color:var(--muted)">Outils actifs</p>
             <div style="border:1px solid var(--border)">
+              <!-- Detected CLIs -->
+              <div
+                v-for="(cli, i) in cliList.filter(c => c.detected)" :key="cli.id"
+                class="flex items-center justify-between px-3.5 py-2.5 text-[11px]"
+                :style="(i < cliList.filter(c => c.detected).length - 1 || tools.length) ? 'border-bottom:1px solid var(--border)' : ''"
+              >
+                <span class="flex items-center gap-2">
+                  <span class="w-1.5 h-1.5 rounded-full inline-block" style="background:var(--dot-green)" />
+                  {{ cli.name }}
+                </span>
+                <div class="flex items-center gap-2">
+                  <span class="text-[9px] uppercase tracking-[0.1em]" style="color:var(--muted)">Terminal</span>
+                  <button
+                    :disabled="!!cliLaunching[cli.id]"
+                    class="text-[9px] uppercase tracking-widest px-2 py-1 transition-colors disabled:opacity-40"
+                    style="border:1px solid var(--border);color:var(--text);background:none"
+                    @click="launchCli(cli.id)"
+                  >
+                    {{ cliLaunching[cli.id] ? '…' : 'Lancer' }}
+                  </button>
+                </div>
+              </div>
+              <!-- Adapters (IDE/extension) -->
               <div
                 v-for="(t, i) in tools" :key="t.id"
                 class="flex items-center justify-between px-3.5 py-2.5 text-[11px]"
                 :style="i < tools.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
               >
                 <span class="flex items-center gap-2">
-                  <span class="w-1.5 h-1.5 rounded-full inline-block" :style="`background:var(--dot-${t.available ? (t.active ? 'green' : 'amber') : 'red'})`"></span>
+                  <span class="w-1.5 h-1.5 rounded-full inline-block" :style="`background:var(--dot-${t.available ? (t.active ? 'green' : 'amber') : 'red'})`" />
                   {{ t.label }}
                 </span>
                 <span class="text-[9px] uppercase tracking-[0.1em]" style="color:var(--muted)">{{ t.available ? t.type : 'missing' }}</span>
               </div>
+              <p v-if="!cliList.filter(c => c.detected).length && !tools.length" class="px-3.5 py-2.5 text-[10px]" style="color:var(--muted)">— Aucun outil —</p>
             </div>
           </div>
 
-          <div v-if="uiTunnelUrl || pairAgentUrl" class="px-4 mb-6">
-            <p class="text-[8px] tracking-[0.25em] uppercase mb-2.5" style="color:var(--muted)">Partager</p>
-            <div class="space-y-2" style="border:1px solid var(--border)">
-              <div v-if="uiTunnelUrl" class="px-3.5 py-3" style="border-bottom:1px solid var(--border)">
-                <p class="text-[9px] uppercase tracking-[0.12em] mb-1" style="color:var(--muted)">UI tunnel</p>
-                <p class="text-[10px] break-all" style="color:var(--text)">{{ uiTunnelUrl }}</p>
-              </div>
-              <div v-if="pairAgentUrl" class="px-3.5 py-3" :style="uiTunnelUrl ? 'border-bottom:1px solid var(--border)' : ''">
-                <p class="text-[9px] uppercase tracking-[0.12em] mb-1" style="color:var(--muted)">Agent tunnel</p>
-                <p class="text-[10px] break-all" style="color:var(--text)">{{ pairAgentUrl }}</p>
-              </div>
-              <div class="grid grid-cols-2 gap-px" style="background:var(--border)">
+          <!-- Agent access -->
+          <div class="px-4 mb-6">
+            <p class="text-[8px] tracking-[0.25em] uppercase mb-2.5" style="color:var(--muted)">Agent</p>
+            <div class="grid grid-cols-3 gap-px" style="border:1px solid var(--border);background:var(--border)">
+              <button
+                class="text-[10px] uppercase tracking-[0.1em] py-2.5"
+                style="background:var(--bg);color:var(--text)"
+                @click="openTunnel(currentAgentBaseUrl())"
+              >
+                Ouvrir
+              </button>
+              <button
+                class="text-[10px] uppercase tracking-[0.1em] py-2.5"
+                style="background:var(--bg);color:var(--text)"
+                @click="copyText(currentAgentBaseUrl(), 'URL Agent copiée')"
+              >
+                Copier
+              </button>
+              <ClientOnly>
                 <button
-                  v-if="uiTunnelUrl"
-                  class="text-[10px] uppercase tracking-[0.1em] py-2.5"
+                  :disabled="!pairingQrSvg"
+                  class="text-[10px] uppercase tracking-[0.1em] py-2.5 disabled:opacity-30"
                   style="background:var(--bg);color:var(--text)"
-                  @click="copyText(uiTunnelUrl, 'URL UI tunnel copiée')"
+                  @click="showQrModal = true"
                 >
-                  Copier UI
+                  QR ▣
                 </button>
-                <button
-                  v-if="uiTunnelUrl"
-                  class="text-[10px] uppercase tracking-[0.1em] py-2.5"
-                  style="background:var(--bg);color:var(--text)"
-                  @click="openTunnel(uiTunnelUrl)"
-                >
-                  Ouvrir UI
-                </button>
-                <button
-                  v-if="pairAgentUrl"
-                  class="text-[10px] uppercase tracking-[0.1em] py-2.5"
-                  style="background:var(--bg);color:var(--text)"
-                  @click="copyText(pairAgentUrl, 'URL agent tunnel copiée')"
-                >
-                  Copier Agent
-                </button>
-                <button
-                  class="text-[10px] uppercase tracking-[0.1em] py-2.5"
-                  style="background:var(--bg);color:var(--text)"
-                  @click="refreshTunnelHint"
-                >
-                  Rafraîchir tunnel
-                </button>
-              </div>
+              </ClientOnly>
             </div>
           </div>
         </div>
@@ -372,6 +363,38 @@
 
         <!-- CODE tab -->
         <div v-show="activeTab === 'code'" class="absolute inset-0 flex flex-col">
+          <!-- Projects list -->
+          <div class="shrink-0" style="border-bottom:1px solid var(--border)">
+            <div class="px-4 py-2 flex items-center justify-between" style="border-bottom:1px solid var(--border)">
+              <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Projets disponibles</p>
+            </div>
+            <div class="overflow-y-auto" style="max-height:160px">
+              <div
+                v-for="(proj, i) in projectsList" :key="proj.path"
+                class="flex items-center justify-between px-4 py-2 text-[11px]"
+                :style="i < projectsList.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
+              >
+                <span class="flex items-center gap-1.5 truncate">
+                  <span v-if="proj.isActive" style="color:var(--dot-amber)">★</span>
+                  <span class="truncate">{{ proj.name }}</span>
+                </span>
+                <span v-if="proj.isActive" class="text-[9px] shrink-0 ml-2" style="color:var(--muted)">actif</span>
+                <button
+                  v-else
+                  :disabled="projectOpening[proj.path] === 'opening'"
+                  class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
+                  :style="projectOpening[proj.path] === 'done'
+                    ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
+                    : 'border:1px solid var(--border);color:var(--text);background:none'"
+                  @click="openProject(proj.path, proj.name)"
+                >
+                  {{ projectOpening[proj.path] === 'opening' ? '…' : projectOpening[proj.path] === 'done' ? '✓' : '→' }}
+                </button>
+              </div>
+              <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">— Non connecté —</p>
+            </div>
+          </div>
+          <!-- File tree -->
           <div class="flex shrink-0 mx-4 my-4" style="border:1px solid var(--border)">
             <input type="text" placeholder="Rechercher un fichier…" class="flex-1 text-[11px] px-3.5 py-2.5 outline-none text-text" style="background:none;border:none;font-family:inherit" />
             <button class="w-10 flex items-center justify-center text-sm" style="border-left:1px solid var(--border);color:var(--muted)">⌕</button>
@@ -423,11 +446,12 @@
       style="background:rgba(10,10,10,0.8);backdrop-filter:blur(8px)"
       @click.self="showQrModal = false"
     >
-      <div class="w-full max-w-[32rem] p-6" style="border:1px solid var(--border-bright);background:var(--bg)">
-        <div class="flex items-start justify-between gap-4 mb-5">
+      <div class="w-full max-w-[32rem]" style="border:1px solid var(--border-bright);background:var(--bg)">
+        <!-- Modal header -->
+        <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid var(--border)">
           <div>
-            <p class="text-[10px] uppercase tracking-[0.2em]" style="color:var(--muted)">Pairing QR</p>
-            <p class="text-sm mt-1">Scannez depuis le mobile pour ouvrir l'UI et lancer l'appairage.</p>
+            <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Pairing QR</p>
+            <p class="text-sm mt-0.5">Scannez depuis le mobile pour lancer l'appairage.</p>
           </div>
           <button
             class="shrink-0 w-9 h-9 text-sm"
@@ -435,20 +459,49 @@
             type="button"
             aria-label="Fermer la modale QR"
             @click="showQrModal = false"
-          >
-            ✕
-          </button>
+          >✕</button>
         </div>
 
-        <div class="flex justify-center">
+        <!-- Main QR -->
+        <div class="flex justify-center px-6 pt-5">
           <div class="p-5 bg-white" style="border:1px solid var(--border-bright)">
-            <img :src="pairingQrDataUrlLarge" alt="QR code de pairing agrandi" class="block w-[22rem] max-w-full h-auto" />
+            <img :src="pairingQrDataUrlLarge" alt="QR code de pairing" class="block w-64 h-64" />
           </div>
         </div>
 
-        <div class="mt-5 pt-4 text-[11px] space-y-2" style="border-top:1px solid var(--border)">
-          <p style="color:var(--muted)">Adresse: <span style="color:var(--text)">{{ pairHost }}:{{ pairPort }}</span></p>
-          <p style="color:var(--muted)">Code: <span style="color:var(--text)">{{ currentPairingCode }}</span></p>
+        <!-- Fallback QR -->
+        <div v-if="fallbackQrDataUrl" class="flex justify-center gap-8 px-6 pt-4">
+          <div class="flex flex-col items-center gap-1">
+            <div class="p-2 bg-white" style="border:1px dashed var(--border)">
+              <img :src="fallbackQrDataUrl" alt="QR fallback IP" class="block w-24 h-24" />
+            </div>
+            <p class="text-[9px] uppercase tracking-[0.12em] text-center" style="color:var(--muted)">Fallback IP<br/>{{ localIpInfo?.ip }}</p>
+          </div>
+        </div>
+
+        <!-- Actions + details -->
+        <div class="px-6 pb-5 mt-4 space-y-3" style="border-top:1px solid var(--border);padding-top:1rem">
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              class="text-[10px] uppercase tracking-widest py-2 transition-colors"
+              style="border:1px solid var(--text);color:var(--text);background:none"
+              @click="copyPairingLink"
+            >
+              Copier le lien
+            </button>
+            <button
+              class="text-[10px] uppercase tracking-widest py-2 transition-colors"
+              style="border:1px solid var(--border);color:var(--text);background:none"
+              @click="refreshPairing"
+            >
+              Nouveau QR
+            </button>
+          </div>
+          <div class="text-[10px] space-y-1" style="color:var(--muted)">
+            <p>Adresse : <span class="font-mono" style="color:var(--text)">{{ currentAgentBaseUrl() || agentHost }}</span></p>
+            <p v-if="currentPairingCode">Code : <span class="font-mono" style="color:var(--text)">{{ currentPairingCode }}</span></p>
+            <p>Mode : <span style="color:var(--text)">{{ tunnelModeLabel }}</span></p>
+          </div>
         </div>
       </div>
     </div>
@@ -478,11 +531,6 @@ const agentPort = config.public.agentPort
 const uiTunnelUrl = computed(() => normalizeBaseUrl(String(config.public.uiUrl ?? '')))
 const configuredRelayUrl = computed(() => normalizeBaseUrl(String(config.public.relayUrl ?? '')))
 const relayState = computed(() => bridge.agentStatus.value?.relay ?? null)
-const isQuickTunnel = computed(() => {
-  const url = uiTunnelUrl.value || pairAgentUrl.value
-  return /trycloudflare\.com/i.test(url)
-})
-
 const statusColor = computed(() => ({ connected: 'green', connecting: 'amber', disconnected: 'red' }[bridge.status.value]))
 
 // Clock
@@ -552,9 +600,8 @@ const transportLabel = computed(() => {
   return currentAgentBaseUrl().startsWith('https://') ? 'Tunnel' : 'WiFi'
 })
 const tunnelModeLabel = computed(() => {
-  if (transportLabel.value === 'Relay') return 'Relay cloud'
-  if (transportLabel.value !== 'Tunnel') return 'WiFi local'
-  return isQuickTunnel.value ? 'Quick Tunnel' : 'Tunnel Cloudflare stable'
+  if (bridge.mode.value === 'relay') return 'Relay cloud'
+  return currentAgentBaseUrl().startsWith('https://') ? 'HTTPS tunnel' : 'WiFi local'
 })
 const latencyLabel = computed(() => bridge.agentStatus.value ? `${Math.max(1, Math.round((Date.now() - bridge.agentStatus.value.timestamp) / 1000))}s` : '—')
 
@@ -564,6 +611,23 @@ function toggleTool(id: string, val: boolean) {
     bridge.send({ type: 'adapter_toggle', id, active: true })
     void bridge.fetchAgentStatus()
   }
+}
+
+// ── CLI Registry ───────────────────────────────────────
+interface CliItem { id: string; name: string; command: string; args: string[]; detected: boolean; isDefault: boolean; isCustom: boolean }
+const cliList = ref<CliItem[]>([])
+const cliLaunching = ref<Record<string, boolean>>({})
+
+function launchCli(cliId: string) {
+  if (cliLaunching.value[cliId]) return
+  cliLaunching.value[cliId] = true
+  bridge.send({ type: 'start_cli', cliId })
+  // Optimistic: clear busy flag after 5s (cli_started message will update UI too)
+  setTimeout(() => { cliLaunching.value[cliId] = false }, 5_000)
+}
+
+function killCli(terminalName: string) {
+  bridge.send({ type: 'kill_cli', terminalName })
 }
 
 // Activity feed
@@ -578,6 +642,46 @@ function pushActivity(tag: ActivityEntry['tag'], text: string) {
 const fileTree = ref<FileNode[]>([])
 const selectedFile = ref<string | null>(null)
 const previewUrl = ref('')
+
+// Projects list
+interface ProjectItem { name: string; path: string; isActive: boolean }
+const projectsList = ref<ProjectItem[]>([])
+const projectOpening = ref<Record<string, string>>({})
+
+async function loadProjects() {
+  try {
+    const token = bridge.token.value ?? ''
+    const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
+    const res = await fetch(`${base}/projects`, { headers: { Authorization: `Bearer ${token}` } })
+    if (res.ok) {
+      const data = await res.json() as { projects?: ProjectItem[] }
+      projectsList.value = data.projects ?? []
+    }
+  } catch { /* silent if not connected */ }
+}
+
+async function openProject(projPath: string, projName: string) {
+  projectOpening.value[projPath] = 'opening'
+  try {
+    const token = bridge.token.value ?? ''
+    const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
+    const res = await fetch(`${base}/projects/open`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath: projPath }),
+    })
+    if (res.ok) {
+      projectOpening.value[projPath] = 'done'
+      pushActivity('sys', `${projName} ouvert dans VS Code`)
+      setTimeout(() => { delete projectOpening.value[projPath] }, 4_000)
+    } else {
+      projectOpening.value[projPath] = ''
+    }
+  } catch {
+    projectOpening.value[projPath] = ''
+  }
+}
+
 const previewFrame = ref<HTMLIFrameElement | null>(null)
 const previewUrlLabel = computed(() => previewUrl.value ? shortText(previewUrl.value, 42) : 'No preview URL')
 const actionBusy = ref<Record<string, boolean>>({})
@@ -864,22 +968,7 @@ function openTunnel(value: string) {
   window.open(value, '_blank', 'noopener,noreferrer')
 }
 
-async function refreshTunnelHint() {
-  const command = isQuickTunnel.value
-    ? 'docker compose --profile cloud-quick up -d --force-recreate cloudflared-agent cloudflared-ui && bash scripts/sync-tunnels.sh && docker compose up -d --build ui'
-    : 'docker compose --profile cloud up -d cloudflared && docker compose up -d --build ui'
-  if (navigator.clipboard) {
-    await navigator.clipboard.writeText(command)
-  }
-  activity.value.unshift({
-    id: Date.now().toString(),
-    ts: Date.now(),
-    tag: 'sys',
-    text: isQuickTunnel.value
-      ? 'Commande quick tunnel copiée — recréer les tunnels, resynchroniser, puis rebuild ui'
-      : 'Commande tunnel stable copiée — relancer cloudflared puis rebuild ui',
-  })
-}
+
 
 function reloadPreview() {
   if (previewFrame.value && previewUrl.value) {
@@ -977,6 +1066,7 @@ const quickActions = computed(() => [
   { icon: '▣', label: 'Preview app', action: previewUrl.value ? () => { activeTab.value = 'preview' } : undefined },
   { icon: '⤴', label: actionBusy.value.git ? 'Git push…' : 'Git push', action: () => { void runAgentAction('git', ['push']) } },
   { icon: '◎', label: actionBusy.value.npm ? 'Tests…' : 'Run tests', action: () => { void runAgentAction('npm', ['test']) } },
+  { icon: '⚙', label: 'Paramètres',           action: () => { void router.push('/settings') } },
 ])
 
 // Chat
@@ -1168,6 +1258,18 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'file_changed') {
     pushActivity('sys', `Fichier changé — ${String(msg.path ?? '')}`)
     void loadFileTree()
+  } else if (msg.type === 'clis_update' && Array.isArray(msg.clis)) {
+    cliList.value = msg.clis as CliItem[]
+  } else if (msg.type === 'projects_update' && Array.isArray(msg.projects)) {
+    projectsList.value = msg.projects as ProjectItem[]
+  } else if (msg.type === 'cli_started') {
+    const cliId = String(msg.cliId ?? '')
+    cliLaunching.value[cliId] = false
+    pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
+    if (import.meta.client) localStorage.setItem('vb:replyTarget', `terminal:${String(msg.terminalName ?? '')}`)
+    if (activeTab.value !== 'chat') activeTab.value = 'chat'
+  } else if (msg.type === 'terminal_closed') {
+    pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)
   }
 })
 
@@ -1178,6 +1280,16 @@ watch(() => bridge.status.value, (next) => {
     void loadPreviewUrl()
     bridge.send({ type: 'get_preview_url' })
     if (bridge.mode.value === 'local') bridge.send({ type: 'get_pairing_code' })
+    // Fetch CLI list and project list on connect
+    const token = bridge.token.value ?? ''
+    const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
+    if (base) {
+      fetch(`${base}/clis`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
+        .then(d => { if (d.clis) cliList.value = d.clis })
+        .catch(() => {})
+      void loadProjects()
+    }
   }
 }, { immediate: true })
 

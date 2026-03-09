@@ -10,6 +10,7 @@ import { FileService } from './files';
 import { MessageQueue } from './queue';
 import { AuthService } from './auth';
 import { RelayClient } from './relay-client';
+import { CliRegistry } from './cliRegistry';
 
 const PORT = parseInt(process.env.AGENT_PORT ?? '3333', 10);
 const IPC_SOCK = process.env.IPC_SOCK_PATH ?? '/tmp/devbridge/ipc.sock';
@@ -17,6 +18,7 @@ const IPC_TCP  = process.env.IPC_TCP_PORT ? parseInt(process.env.IPC_TCP_PORT, 1
 const RELAY_INTERNAL_URL = (process.env.RELAY_INTERNAL_URL ?? '').trim();
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? '').trim();
 const PROJECT_ROOT = process.env.PROJECT_ROOT ?? '/workspace';
+const DATA_DIR = process.env.DATA_DIR ?? require('path').dirname(IPC_SOCK);
 
 async function main() {
   console.log(`[DevBridge Agent] Starting on port ${PORT}…`);
@@ -26,7 +28,9 @@ async function main() {
   const push = new PushService();
   const files = new FileService(PROJECT_ROOT);
   const adapters = new AdapterManager(queue);
-  const ipc = new IpcServer(IPC_SOCK, adapters, queue, push, auth);
+  const cliRegistry = new CliRegistry(DATA_DIR);
+  cliRegistry.load();
+  const ipc = new IpcServer(IPC_SOCK, adapters, queue, push, auth, cliRegistry);
   const relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
     ? new RelayClient({
         internalUrl: RELAY_INTERNAL_URL,
@@ -40,7 +44,7 @@ async function main() {
       })
     : null;
 
-  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay });
+  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[DevBridge Agent] HTTP + WS listening on :${PORT}`);
@@ -53,6 +57,15 @@ async function main() {
   // Start IPC Unix socket (+ optional TCP)
   await ipc.listen(IPC_TCP);
   if (IPC_TCP) console.log(`[DevBridge Agent] IPC TCP port: ${IPC_TCP}`);
+
+  // Broadcast CLI list when registry changes
+  cliRegistry.onChange = () => {
+    const clis = cliRegistry.getAll();
+    (ipc as unknown as { broadcast?: (d: unknown) => void }).broadcast?.({ type: 'clis_update', clis });
+  };
+
+  // Best-effort local detection (only meaningful when not in Docker)
+  cliRegistry.detectAll().catch(() => {/* silent */});
   if (relay) {
     ipc.forward = (type, payload) => relay.send(type, payload);
     await relay.start();

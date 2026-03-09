@@ -107,10 +107,12 @@ function reload() {
   iframeEl.value.src = activeUrl.value
 }
 
-// Listen for dev-server URL from agent
+// Listen for dev-server URL from agent — auto-navigate
 const offMessage = bridge.onMessage((msg: WsMessage) => {
   if (msg.type === 'dev_server_url' && msg.url) {
     urlInput.value = msg.url as string
+    activeUrl.value = msg.url as string
+    frameLoading.value = true
   }
 })
 
@@ -119,6 +121,7 @@ onMounted(() => {
   if (snapshotUrl) {
     urlInput.value = snapshotUrl
     activeUrl.value = snapshotUrl
+    frameLoading.value = true
   } else if (bridge.status.value === 'connected') {
     bridge.send({ type: 'get_preview_url' })
   }

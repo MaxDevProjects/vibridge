@@ -9,12 +9,19 @@ import type { AdapterManager } from './adapters/manager';
 import type { MessageQueue, OutputPayload } from './queue';
 import type { PushService } from './push';
 import type { AuthService } from './auth';
+import type { CliRegistry } from './cliRegistry';
+
+// Matches http://localhost:PORT or http://127.0.0.1:PORT with optional path, ignoring ANSI.
+const DEV_SERVER_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?(?:\/[^\s\x1b]*)*/;
 
 export class IpcServer {
   private server: net.Server;
   private tcpServer: net.Server | null = null;
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
+  private previewUrl: string | null = null;
+  private projects: Array<{ name: string; path: string; isActive: boolean }> = [];
+  private projectsParentDir = '';
   broadcast?: (data: unknown) => void;
   forward?: (type: string, payload?: Record<string, unknown>) => void;
 
@@ -23,7 +30,8 @@ export class IpcServer {
     private adapters: AdapterManager,
     private queue: MessageQueue,
     private push: PushService,
-    private auth: AuthService
+    private auth: AuthService,
+    private cliRegistry?: CliRegistry,
   ) {
     this.server = net.createServer((socket) => this.handleClient(socket));
   }
@@ -53,6 +61,20 @@ export class IpcServer {
         this.tcpServer!.once('error', reject);
       });
     }
+
+    // Scan all adapter/terminal output for dev-server URLs and broadcast proactively.
+    this.queue.onOutput((payload) => {
+      if (payload.type !== 'output' || !payload.text) return;
+      const match = payload.text.match(DEV_SERVER_URL_RE);
+      if (!match) return;
+      const url = match[0].replace(/[\x1b][\[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><~]/g, '');
+      if (url && url !== this.previewUrl) {
+        this.previewUrl = url;
+        console.log(`[IPC] Dev-server URL detected: ${url}`);
+        this.broadcast?.({ type: 'dev_server_url', url });
+        this.forward?.('dev_server_url', { url });
+      }
+    });
   }
 
   close(): void {
@@ -193,10 +215,42 @@ export class IpcServer {
         this.queue.emit(payload);
         break;
       }
+      case 'cli_report': {
+        // Extension reports which CLIs are installed on the host
+        const detectedIds = Array.isArray(msg.detected)
+          ? (msg.detected as unknown[]).map(String)
+          : [];
+        this.cliRegistry?.applyExtensionReport(detectedIds);
+        const clis = this.cliRegistry?.getAll() ?? [];
+        this.broadcast?.({ type: 'clis_update', clis });
+        break;
+      }
+      case 'cli_started': {
+        // Extension confirms terminal was opened
+        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName };
+        this.broadcast?.(payload);
+        this.forward?.('cli_started', payload);
+        break;
+      }
+      case 'terminal_closed': {
+        // Extension reports a terminal was closed (manually or via kill_cli)
+        const payload = { type: 'terminal_closed', terminalName: msg.terminalName };
+        this.broadcast?.(payload);
+        this.forward?.('terminal_closed', payload);
+        break;
+      }
       case 'file_changed': {
         const payload = { type: 'file_changed', path: msg.path, event: msg.event };
         this.broadcast?.(payload);
         this.forward?.('file_changed', payload);
+        break;
+      }
+      case 'projects_report': {
+        this.projectsParentDir = String(msg.parentDir ?? '');
+        this.projects = Array.isArray(msg.projects)
+          ? (msg.projects as Array<{ name: string; path: string; isActive: boolean }>)
+          : [];
+        this.broadcast?.({ type: 'projects_update', projects: this.projects, parentDir: this.projectsParentDir });
         break;
       }
       case 'inject_message': {
@@ -217,6 +271,18 @@ export class IpcServer {
 
   getIdeState(): Record<string, unknown> | null {
     return this.ideState;
+  }
+
+  getPreviewUrl(): string | null {
+    return this.previewUrl;
+  }
+
+  getProjects(): Array<{ name: string; path: string; isActive: boolean }> {
+    return this.projects;
+  }
+
+  getProjectsParentDir(): string {
+    return this.projectsParentDir;
   }
 
   private detectQuestion(text: string): boolean {

@@ -13,6 +13,7 @@ import type { FileService } from './files';
 import type { AdapterManager } from './adapters/manager';
 import type { IpcServer } from './ipc';
 import type { RelayClient } from './relay-client';
+import type { CliRegistry } from './cliRegistry';
 
 interface ServerDeps {
   PORT: number;
@@ -23,10 +24,12 @@ interface ServerDeps {
   ipc: IpcServer;
   auth: AuthService;
   relay?: RelayClient | null;
+  cliRegistry?: CliRegistry;
 }
 
 export function createServer(deps: ServerDeps) {
   const { queue, push, files, adapters, auth, relay } = deps;
+  const cliRegistry = deps.cliRegistry;
 
   const app = express();
   app.use(cors({ origin: '*' }));
@@ -112,7 +115,7 @@ export function createServer(deps: ServerDeps) {
       adapters: adapters.list(),
       activeAdapter: adapters.active(),
       ideState: deps.ipc.getIdeState(),
-      previewUrl: adapters.getPreviewUrl(),
+      previewUrl: adapters.getPreviewUrl() ?? deps.ipc.getPreviewUrl(),
       relay: relay?.getState() ?? null,
       timestamp: Date.now(),
     });
@@ -149,8 +152,60 @@ export function createServer(deps: ServerDeps) {
   });
 
   app.get('/preview-url', requireAuth, (_req, res) => {
-    const url = adapters.getPreviewUrl();
+    const url = adapters.getPreviewUrl() ?? deps.ipc.getPreviewUrl();
     res.json({ url });
+  });
+
+  // ── CLI Registry endpoints ─────────────────────────────────
+  app.get('/clis', requireAuth, (_req, res) => {
+    res.json({ clis: cliRegistry?.getAll() ?? [] });
+  });
+
+  app.post('/clis/detect', requireAuth, async (_req, res) => {
+    if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
+    await cliRegistry.detectAll();
+    res.json({ clis: cliRegistry.getAll() });
+  });
+
+  app.post('/clis/default', requireAuth, (req, res) => {
+    const { id } = req.body as { id: string };
+    if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
+    const ok = cliRegistry.setDefault(id);
+    res.json({ ok, clis: cliRegistry.getAll() });
+  });
+
+  app.post('/clis/custom', requireAuth, (req, res) => {
+    const { name, command, args } = req.body as { name: string; command: string; args?: string[] };
+    if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
+    if (!name || !command) { res.status(400).json({ error: 'name and command required' }); return; }
+    const cli = cliRegistry.addCustom({ name, command, args });
+    res.json({ ok: true, cli, clis: cliRegistry.getAll() });
+  });
+
+  app.delete('/clis/:id', requireAuth, (req, res) => {
+    const { id } = req.params as { id: string };
+    if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
+    const ok = cliRegistry.removeCustom(id);
+    res.json({ ok });
+  });
+
+  // ── Projects endpoints ─────────────────────────────────
+  app.get('/projects', requireAuth, (_req, res) => {
+    res.json({ projects: deps.ipc.getProjects(), parentDir: deps.ipc.getProjectsParentDir() });
+  });
+
+  app.post('/projects/open', requireAuth, (req, res) => {
+    const { projectPath } = req.body as { projectPath?: string };
+    if (!projectPath) { res.status(400).json({ error: 'projectPath required' }); return; }
+    const parentDir = deps.ipc.getProjectsParentDir();
+    // Security: path must be within parentDir and must be a known project
+    if (parentDir && !projectPath.startsWith(parentDir + '/') && projectPath !== parentDir) {
+      res.status(403).json({ error: 'Chemin non autorisé' }); return;
+    }
+    const known = deps.ipc.getProjects().some(p => p.path === projectPath);
+    if (!known) { res.status(403).json({ error: 'Projet inconnu' }); return; }
+    deps.ipc.sendToExtension({ type: 'open_project', projectPath });
+    res.json({ ok: true });
   });
 
   /** Subscribe to Web Push — store endpoint/keys */
@@ -237,6 +292,33 @@ export function createServer(deps: ServerDeps) {
 
       if (msg.type === 'get_preview_url') {
         ws.send(JSON.stringify({ type: 'dev_server_url', url: adapters.getPreviewUrl() }));
+      }
+
+      // PWA requests to launch a CLI terminal in VS Code
+      if (msg.type === 'start_cli') {
+        const cliId = String(msg.cliId ?? '');
+        const cli = cliRegistry?.getById(cliId);
+        if (!cli) {
+          ws.send(JSON.stringify({ type: 'cli_error', cliId, reason: 'unknown_cli' }));
+          return;
+        }
+        deps.ipc.sendToExtension({
+          type: 'start_cli',
+          cliId: cli.id,
+          command: cli.command,
+          args: cli.args,
+          terminalName: `DevBridge ${cli.name}`,
+        });
+        return;
+      }
+
+      // PWA requests to kill a CLI terminal
+      if (msg.type === 'kill_cli') {
+        deps.ipc.sendToExtension({
+          type: 'kill_cli',
+          terminalName: String(msg.terminalName ?? ''),
+        });
+        return;
       }
     });
 

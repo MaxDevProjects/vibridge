@@ -2,11 +2,58 @@
  * DevBridge VS Code Extension — Main activation
  */
 import * as vscode from 'vscode';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
 import { IpcClient } from './ipcClient';
 import { ChatParticipant } from './chatParticipant';
 import { FileWatcher } from './fileWatcher';
 import { IdeReporter } from './ideReporter';
 import { MirrorView } from './mirrorView';
+
+const execAsync = promisify(exec);
+
+const CLI_CHECK: Array<{ id: string; checkCmd: string }> = [
+  { id: 'codex',       checkCmd: 'codex --version' },
+  { id: 'claude-code', checkCmd: 'claude --version' },
+  { id: 'aider',       checkCmd: 'aider --version' },
+  { id: 'copilot',     checkCmd: 'gh copilot --version' },
+];
+
+async function detectInstalledClis(): Promise<string[]> {
+  const results = await Promise.allSettled(
+    CLI_CHECK.map(c => execAsync(c.checkCmd, { timeout: 5_000 }).then(() => c.id))
+  );
+  return results
+    .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+    .map(r => r.value);
+}
+
+interface ProjectInfo {
+  projects: Array<{ name: string; path: string; isActive: boolean }>;
+  parentDir: string;
+}
+
+function getProjectsList(): ProjectInfo | null {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) return null;
+  const activeFolder = folders[0].uri.fsPath;
+  const parentDir = path.dirname(activeFolder);
+  try {
+    const entries = fs.readdirSync(parentDir, { withFileTypes: true });
+    const projects = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => ({
+        name: e.name,
+        path: path.join(parentDir, e.name),
+        isActive: path.join(parentDir, e.name) === activeFolder,
+      }));
+    return { projects, parentDir };
+  } catch {
+    return null;
+  }
+}
 
 let ipc: IpcClient | undefined;
 
@@ -39,6 +86,71 @@ export function activate(context: vscode.ExtensionContext): void {
 
   ipc = new IpcClient(target);
   ipc.connect();
+
+  // Detect installed CLIs and report projects on each connection
+  ipc.on('connected', () => {
+    detectInstalledClis().then((detected) => {
+      ipc!.send({ type: 'cli_report', detected });
+    }).catch(() => {});
+    const info = getProjectsList();
+    if (info) ipc!.send({ type: 'projects_report', ...info });
+  });
+
+  // Re-send projects when workspace changes
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const info = getProjectsList();
+      if (info && ipc?.isConnected()) ipc!.send({ type: 'projects_report', ...info });
+    })
+  );
+
+  // Handle open_project from agent: open folder in new VS Code window
+  ipc.on('open_project', (msg: Record<string, unknown>) => {
+    const projectPath = String(msg.projectPath ?? '');
+    if (!projectPath) return;
+    void vscode.commands.executeCommand(
+      'vscode.openFolder',
+      vscode.Uri.file(projectPath),
+      true,
+    );
+  });
+
+  // Handle start_cli from agent: open (or focus) the terminal and run the command
+  ipc.on('start_cli', (msg: Record<string, unknown>) => {
+    const terminalName = String(msg.terminalName ?? 'DevBridge CLI');
+    const command = String(msg.command ?? '');
+    const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
+    const cliId = String(msg.cliId ?? '');
+    if (!command) return;
+
+    const cwd = resolveWorkspaceCwd();
+    const fullCmd = args.length ? `${command} ${args.join(' ')}` : command;
+
+    const existing = vscode.window.terminals.find(t => t.name === terminalName);
+    if (existing) {
+      existing.show(true);
+      ipc!.send({ type: 'cli_started', cliId, terminalName });
+    } else {
+      const terminal = vscode.window.createTerminal({ name: terminalName, cwd });
+      terminal.show(true);
+      terminal.sendText(fullCmd, true);
+      ipc!.send({ type: 'cli_started', cliId, terminalName });
+    }
+  });
+
+  // Handle kill_cli from agent: close the named terminal
+  ipc.on('kill_cli', (msg: Record<string, unknown>) => {
+    const terminalName = String(msg.terminalName ?? '');
+    const terminal = vscode.window.terminals.find(t => t.name === terminalName);
+    if (terminal) terminal.dispose();
+  });
+
+  // Notify agent whenever a terminal is closed (manual or programmatic)
+  context.subscriptions.push(
+    vscode.window.onDidCloseTerminal((terminal) => {
+      ipc?.send({ type: 'terminal_closed', terminalName: terminal.name });
+    })
+  );
 
   // Chat participant — @devbridge
   const participant = new ChatParticipant(ipc);
@@ -98,16 +210,25 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('devbridge.startCliTerminal', () => {
+      void vscode.window.showQuickPick(
+        CLI_CHECK.map(c => c.id),
+        { placeHolder: 'Choisir un CLI à lancer' }
+      ).then((picked) => {
+        if (picked) ipc?.send({ type: 'get_cli_and_start', cliId: picked });
+      });
+    })
+  );
+
+  // Keep legacy command for backwards compatibility
+  context.subscriptions.push(
     vscode.commands.registerCommand('devbridge.startCodexTerminal', () => {
       const cwd = resolveWorkspaceCwd();
-      const terminalName = 'DevBridge Codex';
-      const existing = vscode.window.terminals.find((terminal) => terminal.name === terminalName);
-      const terminal = existing ?? vscode.window.createTerminal({
-        name: terminalName,
-        cwd,
-      });
+      const terminalName = 'DevBridge Codex CLI';
+      const existing = vscode.window.terminals.find((t) => t.name === terminalName);
+      const terminal = existing ?? vscode.window.createTerminal({ name: terminalName, cwd });
       terminal.show(true);
-      terminal.sendText('codex --no-alt-screen', true);
+      if (!existing) terminal.sendText('codex', true);
     })
   );
 

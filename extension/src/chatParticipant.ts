@@ -33,13 +33,9 @@ export class ChatParticipant {
             ts: Date.now(),
           });
         } else {
-          // Terminal is closed — recreate it
+          // Terminal is closed — recreate it (no auto-launch; CLI must be started explicitly)
           const newTerminal = vscode.window.createTerminal({ name: terminalName });
           newTerminal.show(true);
-          // If it's the Codex terminal, launch codex automatically
-          if (terminalName === 'DevBridge Codex') {
-            newTerminal.sendText('codex --no-alt-screen', true);
-          }
           // Wait for the shell / process to be ready before injecting
           setTimeout(() => {
             newTerminal.show(true);

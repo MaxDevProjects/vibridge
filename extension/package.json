@@ -35,8 +35,12 @@
         "title": "DevBridge: Open Mirror"
       },
       {
+        "command": "devbridge.startCliTerminal",
+        "title": "DevBridge: Start CLI Terminal"
+      },
+      {
         "command": "devbridge.startCodexTerminal",
-        "title": "DevBridge: Start Codex Terminal"
+        "title": "DevBridge: Start Codex Terminal (legacy)"
       }
     ],
     "configuration": {

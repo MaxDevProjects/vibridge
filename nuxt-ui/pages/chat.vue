@@ -34,11 +34,25 @@
           class="shrink-0 text-[9px] uppercase tracking-[0.1em] px-2 py-1 transition-colors"
           :style="replyTarget === t.id
             ? 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
-            : 'border:1px solid var(--border);color:var(--muted);background:none'"
+            : t.launched
+              ? 'border:1px solid var(--border);color:var(--muted);background:none'
+              : 'border:1px solid var(--border);color:var(--dot-red);background:none;opacity:0.6'"
           @click="setTarget(t.id)"
         >
           {{ t.label }}
         </button>
+        <!-- Undetected / unlaunched CLIs with a [Lancer] button -->
+        <template v-for="cli in cliList.filter(c => c.detected)" :key="'launch-' + cli.id">
+          <button
+            v-if="!activeTargets.some(t => t.id === `terminal:DevBridge ${cli.name}`)"
+            :disabled="!!cliLaunching[cli.id]"
+            class="shrink-0 text-[9px] uppercase tracking-[0.1em] px-2 py-1 transition-colors disabled:opacity-40"
+            style="border:1px dashed var(--border);color:var(--muted);background:none"
+            @click="launchCli(cli.id)"
+          >
+            {{ cliLaunching[cli.id] ? '…' : `+ ${cli.name}` }}
+          </button>
+        </template>
       </div>
     </div>
 
@@ -111,27 +125,49 @@ interface ChatMessage {
 
 const bridge = useDevBridge()
 
+// CLI state — synced from WS broadcast
+interface CliItem { id: string; name: string; command: string; detected: boolean; isDefault: boolean }
+const cliList = ref<CliItem[]>([])
+const cliLaunching = ref<Record<string, boolean>>({})
+
 // Target (synced with index.vue via localStorage)
 const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'terminal:DevBridge Codex') : 'terminal:DevBridge Codex'
+  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? '') : ''
 )
 
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
 const terminals = computed(() =>
   Array.isArray(ideState.value?.terminals) ? ideState.value!.terminals! : []
 )
+
 const activeTargets = computed(() => {
-  const list: Array<{ id: string; label: string }> = [
-    { id: 'terminal:DevBridge Codex', label: '⟨⟩ Codex' },
-  ]
+  const list: Array<{ id: string; label: string; launched: boolean }> = []
+  // Detected CLIs — launched ones come first
+  for (const cli of cliList.value) {
+    if (!cli.detected) continue
+    const termName = `DevBridge ${cli.name}`
+    const isLaunched = terminals.value.some(t => String((t as { name?: string }).name ?? '') === termName)
+    list.push({ id: `terminal:${termName}`, label: `⟨⟩ ${cli.name}`, launched: isLaunched })
+  }
+  // Sort: launched first
+  list.sort((a, b) => (b.launched ? 1 : 0) - (a.launched ? 1 : 0))
+  // Other open terminals (not from CLIs)
   for (const t of terminals.value) {
     const name = String((t as { name?: string }).name ?? '').trim()
-    if (!name || name === 'DevBridge Codex') continue
-    list.push({ id: `terminal:${name}`, label: `■ ${name}` })
+    if (!name) continue
+    if (list.some(l => l.id === `terminal:${name}`)) continue
+    list.push({ id: `terminal:${name}`, label: `■ ${name}`, launched: true })
   }
-  list.push({ id: 'chat:devbridge', label: '◈ Chat' })
+  list.push({ id: 'chat:devbridge', label: '◈ Chat', launched: true })
   return list
 })
+
+function launchCli(cliId: string) {
+  if (cliLaunching.value[cliId]) return
+  cliLaunching.value[cliId] = true
+  bridge.send({ type: 'start_cli', cliId })
+  setTimeout(() => { cliLaunching.value[cliId] = false }, 5_000)
+}
 
 function setTarget(id: string) {
   replyTarget.value = id
@@ -215,8 +251,31 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'ai_typing') {
     aiTyping.value = true
     currentTool.value = (msg.tool as string) ?? null
+  } else if (msg.type === 'clis_update' && Array.isArray(msg.clis)) {
+    cliList.value = msg.clis as CliItem[]
+  } else if (msg.type === 'cli_started') {
+    const termName = String(msg.terminalName ?? '')
+    cliLaunching.value[String(msg.cliId ?? '')] = false
+    // Auto-select the new terminal
+    if (termName) setTarget(`terminal:${termName}`)
+    // Refresh IDE state so the terminal appears in the list
+    void bridge.fetchAgentStatus()
   }
 })
+
+// Fetch CLI list on connect
+watch(() => bridge.status.value, (status) => {
+  if (status === 'connected') {
+    const token = bridge.token.value ?? ''
+    const base = bridge.activeUrl.value ?? ''
+    if (base) {
+      fetch(`${base}/clis`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
+        .then(d => { if (d.clis) cliList.value = d.clis })
+        .catch(() => {})
+    }
+  }
+}, { immediate: true })
 
 onUnmounted(offMessage)
 

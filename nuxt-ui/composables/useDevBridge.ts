@@ -69,6 +69,8 @@ const token = ref<string | null>(null)
 const authError = ref<BridgeAuthError>(null)
 const relaySessionId = ref('')
 const relayUrl = ref('')
+const activeUrl = ref<string>('')
+const latencyMs = ref<number | null>(null)
 const listeners = new Set<(msg: WsMessage) => void>()
 
 let ws: WebSocket | null = null
@@ -136,6 +138,9 @@ function clearStoredSession() {
   relayUrl.value = ''
   mode.value = 'local'
   agentStatus.value = null
+  _baseUrl = ''
+  activeUrl.value = ''
+  latencyMs.value = null
   disconnect()
 }
 
@@ -246,7 +251,7 @@ function handleWsMessage(ev: MessageEvent) {
   emit(msg)
 }
 
-function connect() {
+async function connect() {
   if (import.meta.server) return
   const t = token.value
   if (!t) {
@@ -254,21 +259,35 @@ function connect() {
     return
   }
 
-  _baseUrl = mode.value === 'relay' ? inferRelayUrl() : buildLocalBaseUrl()
+  status.value = 'connecting'
+
+  // Resolve which base URL to use:
+  // • If already set (by pairAt / connectWithToken), use it directly.
+  // • Relay mode: use stored relay URL.
+  // • Otherwise: auto-detect the first reachable candidate.
   if (!_baseUrl) {
-    status.value = 'disconnected'
-    return
+    if (mode.value === 'relay' && inferRelayUrl()) {
+      _baseUrl = inferRelayUrl()
+    } else {
+      const { detectBestUrl } = useNetworkConfig()
+      const result = await detectBestUrl()
+      if (!result) {
+        status.value = 'disconnected'
+        retryDelay = Math.min(retryDelay * 2, 30_000)
+        retryTimer = setTimeout(() => void connect(), retryDelay)
+        return
+      }
+      _baseUrl = result.url
+      latencyMs.value = result.ms
+    }
   }
 
+  activeUrl.value = _baseUrl
   const wsUrl = _baseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws') + '/ws'
-  status.value = 'connecting'
   ws = new WebSocket(wsUrl)
 
   ws.onopen = () => {
-    const authPayload = mode.value === 'relay'
-      ? { type: 'auth', token: t }
-      : { type: 'auth', token: t }
-    ws?.send(JSON.stringify(authPayload))
+    ws?.send(JSON.stringify({ type: 'auth', token: t }))
   }
 
   ws.onmessage = handleWsMessage
@@ -280,7 +299,7 @@ function connect() {
     // Don't retry if auth was explicitly rejected
     if (authError.value) return
     retryDelay = Math.min(retryDelay * 2, 30_000)
-    retryTimer = setTimeout(connect, retryDelay)
+    retryTimer = setTimeout(() => void connect(), retryDelay)
   }
   ws.onerror = () => ws?.close()
 }
@@ -371,7 +390,7 @@ async function pairAt(baseUrl: string, code: string): Promise<boolean> {
     token.value = t
     relaySessionId.value = ''
     _baseUrl = normalizedBaseUrl
-    connect()
+    void connect()
     return true
   } catch {
     return false
@@ -398,7 +417,7 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     storageSet('relay', normalizedBaseUrl, mobileToken, sessionId)
     token.value = mobileToken
     _baseUrl = normalizedBaseUrl
-    connect()
+    void connect()
     return true
   } catch {
     return false
@@ -416,7 +435,7 @@ function connectWithToken(agentBaseUrl: string, preIssuedToken: string): void {
   token.value = preIssuedToken
   relaySessionId.value = ''
   _baseUrl = normalizedBaseUrl
-  connect()
+  void connect()
 }
 
 export function useDevBridge() {
@@ -437,7 +456,7 @@ export function useDevBridge() {
     } else {
       mode.value = 'local'
     }
-    connect()
+    void connect()
   })
 
   return {
@@ -447,6 +466,8 @@ export function useDevBridge() {
     token: readonly(token),
     relaySessionId: readonly(relaySessionId),
     relayUrl: readonly(relayUrl),
+    activeUrl: readonly(activeUrl),
+    latencyMs: readonly(latencyMs),
 
     authError: readonly(authError),
 
