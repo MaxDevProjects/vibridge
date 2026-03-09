@@ -50,6 +50,7 @@ services:
       AGENT_HOST: ${AGENT_HOST:-}
       RELAY_INTERNAL_URL: ${RELAY_INTERNAL_URL:-}
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
+      UI_PUBLIC_URL: ${UI_PUBLIC_URL:-}
       JWT_SECRET: ${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
@@ -89,7 +90,7 @@ services:
     ports:
       - "${PWA_PORT:-5173}:4000"
     environment:
-      NUXT_PUBLIC_RELAY_URL: ${RELAY_PUBLIC_URL:-}
+      NUXT_PUBLIC_RELAY_URL: ${NUXT_PUBLIC_RELAY_URL:-${RELAY_PUBLIC_URL:-}}
       NUXT_PUBLIC_AGENT_HOST: ${AGENT_HOST:-localhost}
       NUXT_PUBLIC_AGENT_PORT: ${AGENT_PORT:-3333}
     depends_on:

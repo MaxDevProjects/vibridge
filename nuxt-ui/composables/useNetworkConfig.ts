@@ -63,8 +63,23 @@ function relayBase(): string {
   return config.value.relayUrl ? config.value.relayUrl.replace(/\/+$/, '') : ''
 }
 
+// ── Secure-context detection ──────────────────────────────────
+// When the page is served over HTTPS, local HTTP candidates are
+// blocked by Mixed Content policy. Only the relay (wss://) works.
+export function isHttpsContext(): boolean {
+  if (import.meta.server) return false
+  return window.location.protocol === 'https:'
+}
+
 function getCandidates(): string[] {
   ensureLoaded()
+
+  // HTTPS: Mixed Content blocks HTTP/WS — only relay is usable
+  if (isHttpsContext()) {
+    const relay = relayBase()
+    return relay ? [relay] : []
+  }
+
   const { mode } = config.value
   const relay = relayBase()
   const manual = manualBase()
@@ -110,5 +125,5 @@ async function detectBestUrl(): Promise<DetectResult | null> {
 
 export function useNetworkConfig() {
   ensureLoaded()
-  return { config, getCandidates, testUrl, detectBestUrl }
+  return { config, getCandidates, testUrl, detectBestUrl, isHttpsContext }
 }

@@ -21,7 +21,21 @@
     <div class="flex-1 px-6 py-6 max-w-xl space-y-6">
 
       <!-- ── Mode ─────────────────────────────────────── -->
-      <section style="border:1px solid var(--border)">
+
+      <!-- Cloud banner when HTTPS -->
+      <section v-if="httpsContext" style="border:1px solid var(--dot-amber)">
+        <div class="px-5 py-3" style="border-bottom:1px solid var(--dot-amber)">
+          <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--dot-amber)">Mode Cloud Actif</p>
+        </div>
+        <div class="px-5 py-4 space-y-2 text-[11px]" style="color:var(--muted);line-height:1.7">
+          <p>La PWA est chargée depuis <strong style="color:var(--text)">HTTPS</strong>. La connexion passe obligatoirement par le relay sécurisé.</p>
+          <p v-if="netConfig.relayUrl" class="font-mono text-[10px]" style="color:var(--text)">{{ netConfig.relayUrl }}</p>
+          <p v-else class="text-[10px]" style="color:var(--dot-red)">Aucun relay configuré — définissez NUXT_PUBLIC_RELAY_URL.</p>
+          <p class="text-[10px]">→ Les options IP locale et mDNS ne sont pas disponibles depuis HTTPS.</p>
+        </div>
+      </section>
+
+      <section v-if="!httpsContext" style="border:1px solid var(--border)">
         <div class="px-5 py-3" style="border-bottom:1px solid var(--border)">
           <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Mode de connexion</p>
         </div>
@@ -46,7 +60,7 @@
       </section>
 
       <!-- ── IP manuelle ───────────────────────────────── -->
-      <section style="border:1px solid var(--border)">
+      <section v-if="!httpsContext" style="border:1px solid var(--border)">
         <div class="px-5 py-3" style="border-bottom:1px solid var(--border)">
           <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">IP manuelle (optionnel)</p>
         </div>
@@ -290,7 +304,9 @@
 
 <script setup lang="ts">
 const bridge = useDevBridge()
-const { config: netConfig, getCandidates, testUrl } = useNetworkConfig()
+const { config: netConfig, getCandidates, testUrl, isHttpsContext } = useNetworkConfig()
+
+const httpsContext = import.meta.client ? isHttpsContext() : false
 
 const modeOptions = [
   { value: 'auto'  as const, label: 'Auto',          desc: 'Tente mDNS → IP manuelle → Relay dans l\'ordre' },

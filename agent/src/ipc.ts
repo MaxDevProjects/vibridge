@@ -148,10 +148,19 @@ export class IpcServer {
       }
       case 'get_pairing_code': {
         if (!socket.destroyed) {
+          const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
+          const agentPort = process.env.AGENT_PORT ?? '3333';
+          const uiPort = process.env.NUXT_UI_PORT ?? process.env.UI_PORT ?? '8080';
+          const publicUiUrl = (process.env.UI_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
+          const shortToken = this.auth.issueShortLivedToken(600);
+          const agentUrl = `http://${agentHost}:${agentPort}`;
+          const localQrBase = publicUiUrl || `http://${agentHost}:${uiPort}`;
+          const localQrUrl = `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${shortToken}`;
           socket.write(JSON.stringify({
             type: 'pairing_code',
             code: this.auth.getPairCode(),
             qrUrl: this.relayQrUrl ?? undefined,
+            localQrUrl,
           }) + '\n');
         }
         break;

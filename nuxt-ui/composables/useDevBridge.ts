@@ -261,13 +261,27 @@ async function connect() {
 
   status.value = 'connecting'
 
+  // ── Secure-context guard ──────────────────────────────────────
+  // When the PWA is served over HTTPS, ws:// to a local agent is
+  // blocked by Mixed Content policy. Force relay-only in that case.
+  const isSecureContext = import.meta.client && window.location.protocol === 'https:'
+
   // Resolve which base URL to use:
   // • If already set (by pairAt / connectWithToken), use it directly.
-  // • Relay mode: use stored relay URL.
+  // • Relay mode OR secure context: use relay URL.
   // • Otherwise: auto-detect the first reachable candidate.
   if (!_baseUrl) {
-    if (mode.value === 'relay' && inferRelayUrl()) {
-      _baseUrl = inferRelayUrl()
+    if (mode.value === 'relay' || isSecureContext) {
+      const relayBaseUrl = inferRelayUrl()
+      if (relayBaseUrl) {
+        _baseUrl = relayBaseUrl
+        mode.value = 'relay'
+      } else {
+        // Relay not configured yet — cannot connect from HTTPS context
+        status.value = 'disconnected'
+        console.warn('[DevBridge] HTTPS context but no relay URL set — cannot connect via ws://')
+        return
+      }
     } else {
       const { detectBestUrl } = useNetworkConfig()
       const result = await detectBestUrl()
@@ -449,10 +463,13 @@ export function useDevBridge() {
     if (!storedToken) return
 
     token.value = storedToken
-    if (storedMode === 'relay' && storedRelayUrl && storedSessionId) {
+
+    // On HTTPS, always force relay mode regardless of what was stored
+    const isSecureContext = window.location.protocol === 'https:'
+    if (isSecureContext || (storedMode === 'relay' && storedRelayUrl && storedSessionId)) {
       mode.value = 'relay'
-      relayUrl.value = normalizeBaseUrl(storedRelayUrl)
-      relaySessionId.value = storedSessionId
+      if (storedRelayUrl) relayUrl.value = normalizeBaseUrl(storedRelayUrl)
+      if (storedSessionId) relaySessionId.value = storedSessionId
     } else {
       mode.value = 'local'
     }

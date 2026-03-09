@@ -126,6 +126,20 @@
               </div>
             </div>
 
+            <!-- Mixed-content warning -->
+            <div v-if="mixedContentBlocked" class="space-y-1.5 pt-1 px-3 py-2.5 text-[10px]" style="border:1px solid var(--dot-amber);color:var(--dot-amber);line-height:1.6">
+              <p class="font-semibold uppercase tracking-[0.12em]">⚠ Mixed Content — test impossible</p>
+              <p style="color:var(--muted)">
+                Cette page est en <strong style="color:var(--text)">HTTPS</strong> mais l'agent tourne en <strong style="color:var(--text)">HTTP</strong>.
+                Les navigateurs bloquent ces requêtes — les tests échoueront même si l'agent répond correctement.
+              </p>
+              <p style="color:var(--muted)">Deux alternatives :</p>
+              <ul class="space-y-1 pl-2" style="color:var(--muted)">
+                <li>→ Accédez à l'UI via l'URL locale : <span class="font-mono" style="color:var(--text)">http://devbridge.local:8080</span></li>
+                <li>→ Ou activez le mode Relay (connexion chiffrée via le serveur)</li>
+              </ul>
+            </div>
+
             <p v-if="noCandidate" class="text-[10px]" style="color:var(--dot-red)">
               Aucun candidat — configurez une IP manuelle à l'étape 2.
             </p>
@@ -134,7 +148,7 @@
         <div class="flex gap-2">
           <button class="flex-1 text-[11px] uppercase tracking-widest py-3 transition-colors" style="border:1px solid var(--border);color:var(--muted);background:none" @click="step = 2">← Retour</button>
           <button
-            :disabled="!canProceed"
+            :disabled="!canProceed && !mixedContentBlocked"
             class="flex-1 text-[11px] uppercase tracking-widest py-3 transition-colors disabled:opacity-40"
             style="border:1px solid var(--text);color:var(--text);background:none"
             @click="step = 4"
@@ -194,6 +208,15 @@ interface TestResult { url: string; ms: number | null; status: 'pending' | 'ok' 
 const testResults = ref<TestResult[]>([])
 const testing = ref(false)
 const noCandidate = ref(false)
+
+// Detect mixed-content situation: page is HTTPS but all candidates are HTTP
+const mixedContentBlocked = computed(() => {
+  if (!import.meta.client) return false
+  const isHttps = window.location.protocol === 'https:'
+  if (!isHttps) return false
+  const candidates = getCandidates()
+  return candidates.length > 0 && candidates.every(u => u.startsWith('http://'))
+})
 
 const bestUrl = computed(() => testResults.value.find(r => r.status === 'ok')?.url ?? '')
 const canProceed = computed(() => testResults.value.some(r => r.status === 'ok'))

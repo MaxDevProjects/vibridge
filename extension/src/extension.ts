@@ -176,17 +176,31 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage('DevBridge: agent not connected or no pairing code available.');
         return;
       }
-      const { code, qrUrl: relayQrUrl } = result;
+      const { code, qrUrl: relayQrUrl, localQrUrl } = result;
+      const config = vscode.workspace.getConfiguration('devbridge');
+      const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
 
-      // Use relay QR URL if available, otherwise build local URL
+      // Priority: relay QR URL → public pwaUrl override → local URL from agent → legacy fallback
       let pwaUrl: string;
       if (relayQrUrl) {
         pwaUrl = relayQrUrl;
+      } else if (publicPwaUrl && localQrUrl) {
+        // Replace the local base with the configured public domain, keep query params intact
+        try {
+          const local = new URL(localQrUrl);
+          const pub = new URL(publicPwaUrl);
+          pub.search = local.search;
+          pwaUrl = pub.toString();
+        } catch {
+          pwaUrl = localQrUrl;
+        }
+      } else if (publicPwaUrl) {
+        pwaUrl = `${publicPwaUrl}/?view=mobile&agentUrl=${encodeURIComponent('http://devbridge.local:3333')}&token=${encodeURIComponent(code)}`;
+      } else if (localQrUrl) {
+        pwaUrl = localQrUrl;
       } else {
-        const config = vscode.workspace.getConfiguration('devbridge');
-        const host: string = config.get('agentHost') ?? 'devbridge.local';
-        const port: number = config.get('agentPort') ?? 3333;
-        pwaUrl = `http://${host}:${port}?token=${encodeURIComponent(code)}`;
+        // Legacy fallback — agent too old to send localQrUrl
+        pwaUrl = `http://devbridge.local:8080/?view=mobile&agentUrl=${encodeURIComponent('http://devbridge.local:3333')}&token=${encodeURIComponent(code)}`;
       }
 
       // Show in a WebView panel with a QR code (via qrserver.com CDN)

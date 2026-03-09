@@ -78,6 +78,11 @@
           "enum": ["paste", "split"],
           "default": "split",
           "markdownDescription": "How DevBridge sends text to VS Code terminals. `paste` uses a single `sendText(text, true)`. `split` sends the text first, then a separate Enter keypress. `split` is more reliable for TUIs like Codex."
+        },
+        "devbridge.pwaUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL publique de l'interface VibeBridge (ex: https://vibridge.clowerstudio.com). Quand définie, les QR codes pointent vers cette URL au lieu de l'adresse locale devbridge.local."
         }
       }
     }
