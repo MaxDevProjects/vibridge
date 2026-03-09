@@ -22,8 +22,8 @@ services:
     image: devbridge-relay:prod
     container_name: devbridge-relay
     restart: always
-    expose:
-      - "4444"
+    ports:
+      - "4444:4444"
     environment:
       NODE_ENV: production
       RELAY_PORT: 4444
@@ -45,8 +45,8 @@ services:
     image: devbridge-ui:prod
     container_name: devbridge-ui
     restart: always
-    expose:
-      - "4000"
+    ports:
+      - "3000:4000"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -58,24 +58,6 @@ services:
     depends_on:
       relay:
         condition: service_healthy
-    networks:
-      - devbridge
-
-  nginx:
-    image: nginx:alpine
-    container_name: devbridge-nginx
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/maps.conf:/etc/nginx/conf.d/00-maps.conf:ro
-      - ./nginx/devbridge.conf:/etc/nginx/conf.d/devbridge.conf:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - /var/www/certbot:/var/www/certbot:ro
-    depends_on:
-      - relay
-      - ui
     networks:
       - devbridge
 
