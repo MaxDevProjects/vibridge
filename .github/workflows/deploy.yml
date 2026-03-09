@@ -20,7 +20,9 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.SERVER_PATH }}
-            git pull origin main
+            git fetch origin main
+            git checkout -- .
+            git reset --hard origin/main
             # Only relay + nuxt-ui run on the server.
             # The agent runs locally alongside VS Code and cannot be deployed remotely.
             docker-compose -f docker-compose.prod.yml up -d --build
