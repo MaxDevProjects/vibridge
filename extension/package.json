@@ -21,7 +21,7 @@
     "commands": [
       {
         "command": "devbridge.showPairingCode",
-        "title": "DevBridge: Show Pairing Code / QR"
+        "title": "DevBridge: Show QR"
       },
       {
         "command": "devbridge.toggleBridge",

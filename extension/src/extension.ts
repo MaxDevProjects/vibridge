@@ -172,16 +172,30 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('devbridge.showPairingCode', async () => {
       const code = await ipc!.requestPairingCode();
-      if (code) {
-        void vscode.window.showInformationMessage(
-          `DevBridge Pairing Code: ${code}`,
-          'Copy'
-        ).then((action) => {
-          if (action === 'Copy') {
-            void vscode.env.clipboard.writeText(code);
-          }
-        });
+      if (!code) {
+        void vscode.window.showWarningMessage('DevBridge: agent not connected or no pairing code available.');
+        return;
       }
+      // Build the full URL the mobile app needs: http://IP:PORT?token=CODE
+      const config = vscode.workspace.getConfiguration('devbridge');
+      const host: string = config.get('agentHost') ?? 'devbridge.local';
+      const port: number = config.get('agentPort') ?? 3333;
+      const pwaUrl = `http://${host}:${port}?token=${encodeURIComponent(code)}`;
+
+      // Show in a WebView panel with a QR code (via qrserver.com CDN)
+      const panel = vscode.window.createWebviewPanel(
+        'devbridgeQR',
+        'DevBridge — QR Pairing',
+        vscode.ViewColumn.One,
+        { enableScripts: false }
+      );
+      const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(pwaUrl)}`;
+      panel.webview.html = `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:monospace;display:flex;flex-direction:column;align-items:center;padding:40px;gap:24px">
+        <h2 style="margin:0">VibeBridge — Scan to connect</h2>
+        <img src="${qrSrc}" width="260" height="260" style="border-radius:8px" />
+        <p style="font-size:12px;opacity:.6;word-break:break-all;max-width:400px;text-align:center">${pwaUrl}</p>
+        <p style="font-size:11px;opacity:.4">Or enter the IP manually in the VibeBridge app</p>
+      </body></html>`;
     })
   );
 
