@@ -4,6 +4,7 @@
   "description": "Bidirectional bridge between VS Code AI assistants and your phone.",
   "version": "0.1.0",
   "publisher": "devbridge",
+  "repository": { "type": "git", "url": "https://github.com/MaxDevProjects/vibridge.git" },
   "engines": { "vscode": "^1.87.0" },
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished"],
