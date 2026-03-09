@@ -48,4 +48,8 @@ export default defineNuxtConfig({
       agentPort: '3333',
     },
   },
+
+  nitro: {
+    preset: 'node-server',
+  },
 })
