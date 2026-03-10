@@ -460,6 +460,23 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
  */
 function connectWithToken(agentBaseUrl: string, preIssuedToken: string): void {
   const normalizedBaseUrl = normalizeBaseUrl(agentBaseUrl)
+  // In HTTPS context, a ws:// / http:// agentUrl is blocked by Mixed Content.
+  // Fall through to relay mode instead — connect() will resolve the relay URL.
+  const isSecureCtx = import.meta.client && window.location.protocol === 'https:'
+  const isLocalUrl = /^http:\/\//i.test(normalizedBaseUrl)
+  if (isSecureCtx && isLocalUrl) {
+    const relayBaseUrl = inferRelayUrl()
+    if (relayBaseUrl) {
+      mode.value = 'relay'
+      token.value = preIssuedToken
+      _baseUrl = relayBaseUrl
+      storageSet('relay', relayBaseUrl, preIssuedToken)
+      void connect()
+      return
+    }
+    // No relay configured — store token anyway, connect() will warn
+    console.warn('[DevBridge] HTTPS context + local agentUrl + no relay configured; connection may fail')
+  }
   mode.value = 'local'
   storageSet('local', normalizedBaseUrl, preIssuedToken)
   token.value = preIssuedToken
