@@ -1025,6 +1025,14 @@ async function pairFromRoute() {
   if (routeRelayUrl && relayFlag === '1') pairAgentUrl.value = routeRelayUrl
   if (code) pairCode.value = code
   if (relayFlag === '1' && routeSessionId && routeRelayUrl && code.length === 6) {
+    // Persist relay URL into network config so Settings shows it auto-filled
+    try {
+      const stored = localStorage.getItem('vb:network')
+      const net = stored ? JSON.parse(stored) as Record<string, unknown> : {}
+      net.relayUrl = routeRelayUrl
+      net.mode = 'relay'
+      localStorage.setItem('vb:network', JSON.stringify(net))
+    } catch { /* ignore */ }
     await doPair()
     if (!pairError.value) {
       await router.replace({ query: { view: targetView || 'mobile' } })
