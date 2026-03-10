@@ -22,6 +22,7 @@ services:
     environment:
       RELAY_PORT: 4444
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-http://localhost:4444}
+      RELAY_UI_URL: ${RELAY_UI_URL:-${UI_PUBLIC_URL:-}}
       RELAY_JWT_SECRET: ${RELAY_JWT_SECRET:-${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}}
       RELAY_SESSION_TTL_MS: ${RELAY_SESSION_TTL_MS:-43200000}
     healthcheck:

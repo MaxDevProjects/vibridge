@@ -275,6 +275,13 @@ async function connect() {
   // blocked by Mixed Content policy. Force relay-only in that case.
   const isSecureContext = import.meta.client && window.location.protocol === 'https:'
 
+  // If in HTTPS context and _baseUrl still points to a plain http:// address
+  // (stale from a previous local session), discard it so we re-resolve via relay.
+  if (isSecureContext && _baseUrl && /^http:\/\//i.test(_baseUrl)) {
+    console.warn('[DevBridge] Dropping stale http:// baseUrl in HTTPS context:', _baseUrl)
+    _baseUrl = ''
+  }
+
   // Resolve which base URL to use:
   // • If already set (by pairAt / connectWithToken), use it directly.
   // • Relay mode OR secure context: use relay URL.
