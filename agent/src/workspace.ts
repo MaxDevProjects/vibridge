@@ -18,6 +18,8 @@ interface VscodeLikeApi {
   };
 }
 
+const RESERVED_WORKSPACE_NAMES = new Set(['app', 'local', 'workspace']);
+
 function parseDotEnvValue(raw: string): string {
   const trimmed = raw.trim();
   if (
@@ -37,7 +39,12 @@ function slugifyWorkspaceName(value: string): string {
     .replace(/[\s_]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
-  return normalized || 'workspace';
+  return normalized || 'project';
+}
+
+function sanitizeWorkspaceName(value: string): string {
+  const normalized = slugifyWorkspaceName(value);
+  return RESERVED_WORKSPACE_NAMES.has(normalized) ? '' : normalized;
 }
 
 function readWorkspaceIdFromEnvFile(envPath: string): string {
@@ -46,7 +53,7 @@ function readWorkspaceIdFromEnvFile(envPath: string): string {
   for (const line of raw.split(/\r?\n/)) {
     const match = line.match(/^\s*WORKSPACE_ID\s*=\s*(.*)\s*$/);
     if (!match) continue;
-    return parseDotEnvValue(match[1] ?? '');
+    return sanitizeWorkspaceName(parseDotEnvValue(match[1] ?? ''));
   }
   return '';
 }
@@ -69,24 +76,29 @@ function persistWorkspaceId(envPath: string, workspaceId: string): void {
   fs.writeFileSync(envPath, `${raw}${separator}${nextLine}\n`, 'utf8');
 }
 
-function resolveWorkspaceFolderName(projectPath: string): string {
+function resolveWorkspaceFolderName(projectPath: string, cwd: string): string {
   const maybeVscode = (globalThis as typeof globalThis & { vscode?: VscodeLikeApi }).vscode;
-  const vscodeWorkspaceName = maybeVscode?.workspace?.workspaceFolders?.[0]?.name?.trim();
+  const vscodeWorkspaceName = sanitizeWorkspaceName(maybeVscode?.workspace?.workspaceFolders?.[0]?.name?.trim() ?? '');
   if (vscodeWorkspaceName) return vscodeWorkspaceName;
 
-  const configuredWorkspaceName = String(process.env.VSCODE_WORKSPACE_NAME ?? '').trim();
+  const configuredWorkspaceName = sanitizeWorkspaceName(String(process.env.VSCODE_WORKSPACE_NAME ?? '').trim());
   if (configuredWorkspaceName) return configuredWorkspaceName;
 
-  const baseName = path.basename(projectPath).trim();
-  return baseName || 'workspace';
+  const projectBaseName = sanitizeWorkspaceName(path.basename(projectPath).trim());
+  if (projectBaseName) return projectBaseName;
+
+  const cwdBaseName = sanitizeWorkspaceName(path.basename(cwd).trim());
+  if (cwdBaseName) return cwdBaseName;
+
+  return 'project';
 }
 
 export function resolveWorkspaceIdentity(cwd = process.cwd()): WorkspaceIdentity {
   const envPath = path.join(cwd, '.env');
   const projectPath = String(process.env.PROJECT_ROOT ?? '').trim() || cwd;
-  const derivedWorkspaceId = slugifyWorkspaceName(resolveWorkspaceFolderName(projectPath));
+  const derivedWorkspaceId = resolveWorkspaceFolderName(projectPath, cwd);
   const workspaceId = readWorkspaceIdFromEnvFile(envPath)
-    || String(process.env.WORKSPACE_ID ?? '').trim()
+    || sanitizeWorkspaceName(String(process.env.WORKSPACE_ID ?? '').trim())
     || derivedWorkspaceId;
 
   process.env.WORKSPACE_ID = workspaceId;
