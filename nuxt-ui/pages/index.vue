@@ -231,6 +231,7 @@
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="activeWorkspaceKey"
               @select="bridge.setActiveWorkspace"
+              @open-project="requestOpenProject"
             />
           </div>
 
@@ -341,6 +342,7 @@
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="activeWorkspaceKey"
               @select="bridge.setActiveWorkspace"
+              @open-project="requestOpenProject"
             />
           </div>
           <div ref="chatScroll" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
@@ -1201,6 +1203,11 @@ function sendChat() {
   chatDraft.value = ''
   aiTyping.value = true
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
+}
+
+function requestOpenProject() {
+  bridge.send({ type: 'open_project' })
+  pushActivity('sys', 'Ouverture du sélecteur de dossier demandée')
 }
 
 function appendAiMessage(text: string, tool?: string, merge = false) {

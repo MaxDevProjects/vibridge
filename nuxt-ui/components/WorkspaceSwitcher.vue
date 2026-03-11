@@ -31,6 +31,14 @@
       <p v-else class="px-3 py-2 text-[10px] uppercase tracking-[0.16em]" style="color:var(--muted)">
         + Aucun autre workspace connecté
       </p>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 text-left text-[10px] uppercase tracking-[0.16em] transition-colors hover:bg-surface"
+        style="color:var(--text);border-top:1px solid var(--border)"
+        @click="requestOpenProject"
+      >
+        <span>+</span>
+        <span class="truncate flex-1">Ouvrir un projet</span>
+      </button>
     </div>
   </details>
 </template>
@@ -49,6 +57,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [workspaceId: string]
+  openProject: []
 }>()
 
 const open = ref(false)
@@ -59,5 +68,10 @@ const activeWorkspaceLabel = computed(() => activeWorkspace.value?.name ?? 'Aucu
 function selectWorkspace(workspaceId: string) {
   open.value = false
   emit('select', workspaceId)
+}
+
+function requestOpenProject() {
+  open.value = false
+  emit('openProject')
 }
 </script>

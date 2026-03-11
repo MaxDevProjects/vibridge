@@ -19,6 +19,7 @@
         :workspaces="relayWorkspaceOptions"
         :active-workspace-id="activeWorkspaceKey"
         @select="bridge.setActiveWorkspace"
+        @open-project="requestOpenProject"
       />
     </div>
 
@@ -222,6 +223,10 @@ function sendMessage() {
 function clearChat() {
   messages.value = []
   saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
+}
+
+function requestOpenProject() {
+  bridge.send({ type: 'open_project' })
 }
 
 function autoResize(e: Event) {

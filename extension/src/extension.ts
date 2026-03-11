@@ -113,12 +113,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // Handle open_project from agent: open folder in new VS Code window
   ipc.on('open_project', (msg: Record<string, unknown>) => {
     const projectPath = String(msg.projectPath ?? '');
-    if (!projectPath) return;
-    void vscode.commands.executeCommand(
-      'vscode.openFolder',
-      vscode.Uri.file(projectPath),
-      true,
-    );
+    if (!projectPath) {
+      void vscode.commands.executeCommand('vscode.openFolder');
+      return;
+    }
+    void vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath), true);
   });
 
   // Handle start_cli from agent: open (or focus) the terminal and run the command

@@ -348,6 +348,11 @@ export function createServer(deps: ServerDeps) {
         ws.send(JSON.stringify({ type: 'dev_server_url', url: adapters.getPreviewUrl() }));
       }
 
+      if (msg.type === 'open_project') {
+        deps.ipc.sendToExtension({ type: 'open_project' });
+        return;
+      }
+
       // PWA requests to launch a CLI terminal in VS Code
       if (msg.type === 'start_cli') {
         const cliId = String(msg.cliId ?? '');

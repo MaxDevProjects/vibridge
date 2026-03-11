@@ -256,6 +256,11 @@ export class RelayClient {
       return;
     }
 
+    if (type === 'open_project') {
+      this.options.ipc.sendToExtension({ type: 'open_project' });
+      return;
+    }
+
     if (type === 'get_preview_url') {
       this.send('dev_server_url', { url: this.options.adapters.getPreviewUrl() });
       return;
