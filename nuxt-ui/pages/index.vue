@@ -737,27 +737,33 @@ const pairingUrl = computed(() => {
   const relaySession = relayState.value
   const effectiveCode = relaySession?.pairingCode || currentPairingCode.value
   if (!clientReady.value || (!effectiveCode && !preIssuedToken.value)) return ''
+  if (relaySession?.qrUrl) {
+    return relaySession.qrUrl
+  }
   const agentBaseUrl = pairAgentUrl.value || currentAgentBaseUrl()
-  const base = uiTunnelUrl.value || window.location.href
+  const relayUiBase = uiTunnelUrl.value || window.location.origin
+  const localUiBase = uiTunnelUrl.value || window.location.href
+  const base = relaySession?.sessionId ? relayUiBase : localUiBase
   const url = new URL(base)
-  if (!uiTunnelUrl.value) {
+  if (!relaySession?.sessionId && !uiTunnelUrl.value) {
     url.hostname = publicUiHost.value
     url.port = window.location.port
     url.pathname = window.location.pathname
   }
   url.search = ''
   url.hash = ''
-  url.searchParams.set('view', 'mobile')
   if (relaySession?.sessionId && configuredRelayUrl.value) {
     url.searchParams.set('relay', '1')
     url.searchParams.set('relayUrl', configuredRelayUrl.value)
     url.searchParams.set('sessionId', relaySession.sessionId)
     url.searchParams.set('code', relaySession.pairingCode)
   } else if (preIssuedToken.value) {
+    url.searchParams.set('view', 'mobile')
     // Auto-pair path: pre-issued JWT — no code entry needed on mobile
     url.searchParams.set('agentUrl', agentBaseUrl)
     url.searchParams.set('token', preIssuedToken.value)
   } else {
+    url.searchParams.set('view', 'mobile')
     url.searchParams.set('host', pairHost.value)
     url.searchParams.set('port', pairPort.value)
     url.searchParams.set('code', effectiveCode)

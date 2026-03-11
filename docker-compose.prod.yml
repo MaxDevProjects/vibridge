@@ -46,6 +46,7 @@ services:
       HOST: 0.0.0.0
       PORT: 4000
       # In relay mode (prod), the PWA connects to the relay, not a local agent
+      NUXT_PUBLIC_UI_URL: ${RELAY_UI_URL}
       NUXT_PUBLIC_RELAY_URL: ${RELAY_PUBLIC_URL}
       NUXT_PUBLIC_AGENT_HOST: ${NUXT_PUBLIC_AGENT_HOST:-devbridge.local}
       NUXT_PUBLIC_AGENT_PORT: ${NUXT_PUBLIC_AGENT_PORT:-3333}

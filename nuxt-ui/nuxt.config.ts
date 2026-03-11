@@ -42,7 +42,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       agentUrl: '',
-      uiUrl: '',
+      uiUrl: process.env.NUXT_PUBLIC_UI_URL || '',
       relayUrl: process.env.NUXT_PUBLIC_RELAY_URL || '',
       agentHost: process.env.NUXT_PUBLIC_AGENT_HOST || 'devbridge.local',
       agentPort: process.env.NUXT_PUBLIC_AGENT_PORT || '3333',
