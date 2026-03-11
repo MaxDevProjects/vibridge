@@ -186,25 +186,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
       const workspaceName = resolveWorkspaceName();
 
-      // Priority: public tokenized URL → local tokenized URL → legacy relay/code URL
+      // Priority: relay-safe public token URL → local WiFi token URL → legacy fallback
       let pwaUrl: string;
-      if (publicPwaUrl && localQrUrl) {
-        // Replace the local base with the configured public domain, keep query params intact
-        try {
-          const local = new URL(localQrUrl);
-          const pub = new URL(publicPwaUrl);
-          pub.search = local.search;
-          pub.searchParams.set('workspace', workspaceName);
-          pwaUrl = pub.toString();
-        } catch {
-          pwaUrl = localQrUrl;
-        }
+      if (publicPwaUrl) {
+        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       } else if (localQrUrl) {
         pwaUrl = localQrUrl;
       } else if (relayQrUrl) {
         pwaUrl = relayQrUrl;
-      } else if (publicPwaUrl) {
-        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       } else {
         // Legacy fallback — agent too old to send localQrUrl
         pwaUrl = `http://devbridge.local:8080/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;

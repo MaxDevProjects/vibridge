@@ -156,7 +156,9 @@ export class IpcServer {
           const shortToken = this.auth.issueShortLivedToken(600);
           const agentUrl = `http://${agentHost}:${agentPort}`;
           const localQrBase = publicUiUrl || `http://${agentHost}:${uiPort}`;
-          const localQrUrl = `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`;
+          const localQrUrl = publicUiUrl
+            ? `${localQrBase}/?token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`
+            : `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`;
           socket.write(JSON.stringify({
             type: 'pairing_code',
             code: this.auth.getPairCode(),
