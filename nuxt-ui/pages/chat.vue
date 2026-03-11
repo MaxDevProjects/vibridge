@@ -14,6 +14,14 @@
       </div>
     </div>
 
+    <div class="shrink-0 border-b border-border px-4 py-2">
+      <WorkspaceSwitcher
+        :workspaces="relayWorkspaceOptions"
+        :active-workspace-id="activeWorkspaceKey"
+        @select="bridge.setActiveWorkspace"
+      />
+    </div>
+
     <!-- AUTH ERROR BANNER -->
     <div
       v-if="bridge.authError.value"
@@ -96,6 +104,7 @@
 
 <script setup lang="ts">
 import type { WsMessage } from '~/composables/useDevBridge'
+import { loadWorkspaceChatHistory, saveWorkspaceChatHistory } from '~/composables/useWorkspaceChatHistory'
 
 const REPLY_TARGET_KEY = 'vb:chatTarget'
 
@@ -108,6 +117,10 @@ interface ChatMessage {
 }
 
 const bridge = useDevBridge()
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || 'default') : 'local')
+const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
+  ? bridge.relayWorkspaces.value
+  : [{ id: 'local', name: 'Workspace local', active: true }])
 
 // CLI state — synced from WS broadcast
 interface CliItem { id: string; name: string; command: string; detected: boolean; isDefault: boolean }
@@ -198,6 +211,7 @@ function sendMessage() {
   const text = draft.value.trim()
   if (!text || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
   messages.value.push({ id: Date.now().toString(), text, direction: 'user', ts: nowTs() })
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
   bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: true })
   draft.value = ''
   aiTyping.value = true
@@ -205,7 +219,10 @@ function sendMessage() {
   scrollToBottom()
 }
 
-function clearChat() { messages.value = [] }
+function clearChat() {
+  messages.value = []
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
+}
 
 function autoResize(e: Event) {
   const el = e.target as HTMLTextAreaElement
@@ -240,6 +257,10 @@ function toggleRecording() {
 
 // WS messages
 const offMessage = bridge.onMessage((msg: WsMessage) => {
+  if (bridge.mode.value === 'relay') {
+    const msgWorkspaceId = typeof msg.workspaceId === 'string' ? msg.workspaceId : ''
+    if (msgWorkspaceId && msgWorkspaceId !== activeWorkspaceKey.value) return
+  }
   if (msg.type === 'chat_response' || msg.type === 'ai_message') {
     aiTyping.value = false
     currentTool.value = null
@@ -250,6 +271,7 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
       tool: msg.tool,
       ts: nowTs(),
     })
+    saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
     scrollToBottom()
   } else if (msg.type === 'ai_typing') {
     aiTyping.value = true
@@ -300,6 +322,13 @@ watch(chatTargets, (targets) => {
   if (!targets.some(target => target.id === replyTarget.value)) {
     setTarget('bash')
   }
+}, { immediate: true })
+
+watch(activeWorkspaceKey, (workspaceId) => {
+  messages.value = loadWorkspaceChatHistory(workspaceId)
+  aiTyping.value = false
+  currentTool.value = null
+  scrollToBottom()
 }, { immediate: true })
 
 function cliButtonName(cli: CliItem) {

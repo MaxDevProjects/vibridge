@@ -14,7 +14,15 @@ export interface WsMessage {
   isQuestion?: boolean
   path?: string
   event?: string
+  workspaceId?: string
   [key: string]: unknown
+}
+
+export interface ConnectedWorkspace {
+  id: string
+  name: string
+  path?: string
+  active: boolean
 }
 
 export interface RelayState {
@@ -59,6 +67,7 @@ interface RelaySessionResponse {
   expiresAt: number
   agentConnected: boolean
   mobileConnected: boolean
+  workspaces?: ConnectedWorkspace[]
   history: Array<Record<string, unknown>>
 }
 
@@ -71,12 +80,15 @@ const relaySessionId = ref('')
 const relayUrl = ref('')
 const activeUrl = ref<string>('')
 const latencyMs = ref<number | null>(null)
+const relayWorkspaces = ref<ConnectedWorkspace[]>([])
+const activeWorkspaceId = ref('')
 const listeners = new Set<(msg: WsMessage) => void>()
 
 let ws: WebSocket | null = null
 let retryDelay = 1_000
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let _baseUrl = ''
+const RELAY_WORKSPACE_STORAGE_PREFIX = 'vb:relayWorkspace:'
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
@@ -135,6 +147,54 @@ function storageSet(nextMode: BridgeMode, nextBaseUrl: string, nextToken: string
   }
 }
 
+function workspaceStorageKey(sessionId = relaySessionId.value): string {
+  return `${RELAY_WORKSPACE_STORAGE_PREFIX}${sessionId}`
+}
+
+function persistActiveWorkspace(nextWorkspaceId: string) {
+  if (import.meta.server || !relaySessionId.value) return
+  if (!nextWorkspaceId) {
+    localStorage.removeItem(workspaceStorageKey())
+    return
+  }
+  localStorage.setItem(workspaceStorageKey(), nextWorkspaceId)
+}
+
+function resolveStoredWorkspace(sessionId = relaySessionId.value): string {
+  if (import.meta.server || !sessionId) return ''
+  return localStorage.getItem(workspaceStorageKey(sessionId)) ?? ''
+}
+
+function setActiveWorkspace(nextWorkspaceId: string) {
+  activeWorkspaceId.value = nextWorkspaceId
+  relayWorkspaces.value = relayWorkspaces.value.map(workspace => ({
+    ...workspace,
+    active: workspace.id === nextWorkspaceId,
+  }))
+  persistActiveWorkspace(nextWorkspaceId)
+}
+
+function syncRelayWorkspaces(nextWorkspaces: ConnectedWorkspace[]) {
+  relayWorkspaces.value = nextWorkspaces
+  const storedWorkspaceId = resolveStoredWorkspace()
+  const preferredWorkspaceId = storedWorkspaceId
+    || nextWorkspaces.find(workspace => workspace.active)?.id
+    || nextWorkspaces[0]?.id
+    || ''
+  setActiveWorkspace(preferredWorkspaceId)
+}
+
+function upsertRelayWorkspace(nextWorkspace: ConnectedWorkspace) {
+  const workspaces = relayWorkspaces.value.filter(workspace => workspace.id !== nextWorkspace.id)
+  workspaces.push(nextWorkspace)
+  syncRelayWorkspaces(workspaces)
+}
+
+function removeRelayWorkspace(workspaceId: string) {
+  const remaining = relayWorkspaces.value.filter(workspace => workspace.id !== workspaceId)
+  syncRelayWorkspaces(remaining)
+}
+
 function clearStoredSession() {
   if (import.meta.server) return
   localStorage.removeItem('vb:bridgeMode')
@@ -145,6 +205,8 @@ function clearStoredSession() {
   token.value = null
   relaySessionId.value = ''
   relayUrl.value = ''
+  relayWorkspaces.value = []
+  activeWorkspaceId.value = ''
   mode.value = 'local'
   agentStatus.value = null
   _baseUrl = ''
@@ -163,6 +225,15 @@ function normalizeIncoming(msg: WsMessage): WsMessage {
       text: typeof msg.text === 'string' ? msg.text : typeof payload.text === 'string' ? payload.text : undefined,
       tool: typeof msg.tool === 'string' ? msg.tool : typeof payload.tool === 'string' ? payload.tool : undefined,
       target: typeof msg.target === 'string' ? msg.target : typeof payload.target === 'string' ? payload.target : undefined,
+      workspaceId: typeof msg.workspaceId === 'string'
+        ? msg.workspaceId
+        : typeof msg.workspace_id === 'string'
+          ? msg.workspace_id as string
+          : typeof payload.workspaceId === 'string'
+            ? payload.workspaceId
+            : typeof payload.workspace_id === 'string'
+              ? payload.workspace_id as string
+              : undefined,
     }
   }
   return msg
@@ -217,6 +288,18 @@ function emit(msg: WsMessage) {
     }
   }
 
+  if (normalized.type === 'workspace_connected' && typeof normalized.workspace_id === 'string') {
+    upsertRelayWorkspace({
+      id: normalized.workspace_id,
+      name: typeof normalized.workspace_name === 'string' ? normalized.workspace_name : normalized.workspace_id,
+      active: normalized.workspace_id === activeWorkspaceId.value,
+    })
+  }
+
+  if (normalized.type === 'workspace_disconnected' && typeof normalized.workspace_id === 'string') {
+    removeRelayWorkspace(normalized.workspace_id)
+  }
+
   if (normalized.type === 'relay_session') {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as RelayState : null
     if (payload) {
@@ -246,6 +329,14 @@ function handleWsMessage(ev: MessageEvent) {
     status.value = 'connected'
     retryDelay = 1_000
 
+    if (mode.value === 'relay' && Array.isArray(msg.workspaces)) {
+      syncRelayWorkspaces((msg.workspaces as ConnectedWorkspace[]).map(workspace => ({
+        id: String(workspace.id),
+        name: String(workspace.name ?? workspace.id),
+        path: typeof workspace.path === 'string' ? workspace.path : undefined,
+        active: Boolean(workspace.active),
+      })))
+    }
     if (mode.value === 'relay' && Array.isArray(msg.history)) {
       for (const entry of msg.history as WsMessage[]) {
         emit(entry)
@@ -343,6 +434,21 @@ function disconnect() {
 
 function send(data: unknown) {
   if (ws?.readyState === WebSocket.OPEN) {
+    if (
+      mode.value === 'relay'
+      && data
+      && typeof data === 'object'
+      && !Array.isArray(data)
+      && activeWorkspaceId.value
+      && typeof (data as Record<string, unknown>).workspace_id !== 'string'
+      && String((data as Record<string, unknown>).type ?? '') !== 'auth'
+    ) {
+      ws.send(JSON.stringify({
+        ...(data as Record<string, unknown>),
+        workspace_id: activeWorkspaceId.value,
+      }))
+      return
+    }
     ws.send(JSON.stringify(data))
   }
 }
@@ -378,6 +484,12 @@ async function fetchRelayStatus() {
       },
       timestamp: Date.now(),
     })
+    syncRelayWorkspaces(Array.isArray(data.workspaces) ? data.workspaces.map(workspace => ({
+      id: String(workspace.id),
+      name: String(workspace.name ?? workspace.id),
+      path: typeof workspace.path === 'string' ? workspace.path : undefined,
+      active: Boolean(workspace.active),
+    })) : [])
 
     for (const entry of data.history) emit(entry as WsMessage)
   } catch {
@@ -444,6 +556,8 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     mode.value = 'relay'
     relayUrl.value = normalizedBaseUrl
     relaySessionId.value = sessionId
+    relayWorkspaces.value = []
+    activeWorkspaceId.value = ''
     storageSet('relay', normalizedBaseUrl, mobileToken, sessionId)
     token.value = mobileToken
     _baseUrl = normalizedBaseUrl
@@ -503,6 +617,7 @@ export function useDevBridge() {
       mode.value = 'relay'
       if (storedRelayUrl) relayUrl.value = normalizeBaseUrl(storedRelayUrl)
       if (storedSessionId) relaySessionId.value = storedSessionId
+      if (storedSessionId) activeWorkspaceId.value = resolveStoredWorkspace(storedSessionId)
     } else {
       mode.value = 'local'
     }
@@ -518,6 +633,9 @@ export function useDevBridge() {
     relayUrl: readonly(relayUrl),
     activeUrl: readonly(activeUrl),
     latencyMs: readonly(latencyMs),
+    relayWorkspaces: readonly(relayWorkspaces),
+    activeWorkspaceId: readonly(activeWorkspaceId),
+    activeWorkspace: computed(() => relayWorkspaces.value.find(workspace => workspace.id === activeWorkspaceId.value) ?? null),
 
     authError: readonly(authError),
 
@@ -530,6 +648,7 @@ export function useDevBridge() {
     connectWithToken,
     clearStoredSession,
     fetchAgentStatus,
+    setActiveWorkspace,
 
     onMessage(fn: (msg: WsMessage) => void) {
       listeners.add(fn)

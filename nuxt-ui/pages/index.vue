@@ -219,11 +219,19 @@
             <div class="flex items-center gap-2.5">
               <span class="w-1.5 h-1.5 rounded-full" :style="`background:var(--dot-${statusColor})`"></span>
               <div>
-                <p class="text-[10px] uppercase tracking-[0.1em]" style="color:var(--muted)">{{ bridge.status.value }}</p>
+                <p class="text-[10px] uppercase tracking-[0.1em]" style="color:var(--muted)">{{ bridge.status.value }} · {{ activeWorkspaceLabel }} · {{ transportLabel }} · {{ latencyLabel }}</p>
                 <p class="text-[11px] mt-0.5">{{ activeProjectLabel }} · {{ activeToolLabel }}</p>
               </div>
             </div>
             <div class="text-right text-[9px]" style="color:var(--muted)">{{ latencyLabel }}<br><span class="text-[8px]">{{ transportLabel }}</span></div>
+          </div>
+
+          <div class="px-4 mb-4">
+            <WorkspaceSwitcher
+              :workspaces="relayWorkspaceOptions"
+              :active-workspace-id="activeWorkspaceKey"
+              @select="bridge.setActiveWorkspace"
+            />
           </div>
 
           <!-- Notif cards -->
@@ -328,6 +336,13 @@
 
         <!-- CHAT tab -->
         <div v-show="activeTab === 'chat'" class="absolute inset-0 flex flex-col">
+          <div class="shrink-0 px-4 py-3" style="border-bottom:1px solid var(--border)">
+            <WorkspaceSwitcher
+              :workspaces="relayWorkspaceOptions"
+              :active-workspace-id="activeWorkspaceKey"
+              @select="bridge.setActiveWorkspace"
+            />
+          </div>
           <div ref="chatScroll" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
             <ChatBubble v-for="m in chatMessages" :key="m.id" :text="m.text" :direction="m.direction" :tool="m.tool" :ts="m.ts" />
             <TypingIndicator v-if="aiTyping" />
@@ -514,6 +529,7 @@ import { renderSVG } from 'uqr'
 import type { ActivityEntry } from '~/components/ActivityFeed.vue'
 import type { FileNode } from '~/components/FileTree.vue'
 import type { WsMessage } from '~/composables/useDevBridge'
+import { loadWorkspaceChatHistory, saveWorkspaceChatHistory } from '~/composables/useWorkspaceChatHistory'
 
 const bridge    = useDevBridge()
 const view      = useViewMode()
@@ -585,6 +601,13 @@ const tools = computed<Tool[]>(() => (bridge.agentStatus.value?.adapters ?? []).
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
 const activeTool = computed(() => tools.value.find(t => t.active) ?? null)
 const activeToolLabel = computed(() => activeTool.value?.label ?? '—')
+const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
+  ? bridge.activeWorkspace.value?.name ?? 'Aucun workspace'
+  : 'Workspace local')
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || 'default') : 'local')
+const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
+  ? bridge.relayWorkspaces.value
+  : [{ id: 'local', name: 'Workspace local', active: true }])
 const activeProjectLabel = computed(() => {
   const workspace = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
   if (workspace) return shortText(lastPathSegment(String(workspace)), 26)
@@ -1167,6 +1190,7 @@ function sendChat() {
   const text = chatDraft.value.trim()
   if (!text || !selectedChatTargetReady.value) return
   chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, ts: Date.now() })
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
   pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
   bridge.send({
     type: 'message',
@@ -1186,9 +1210,11 @@ function appendAiMessage(text: string, tool?: string, merge = false) {
   if (merge && last && last.direction === 'ai' && last.tool === tool && Date.now() - last.ts < 1500) {
     last.text = `${last.text}${last.text.endsWith('\n') ? '' : '\n'}${clean}`
     last.ts = Date.now()
+    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
     return
   }
   chatMessages.value.push({ id: Date.now().toString(), direction: 'ai', text: clean, tool, ts: Date.now() })
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
 }
 
 function setReplyTarget(nextTarget: string, pinned = false) {
@@ -1235,6 +1261,10 @@ function queueOutputChunk(text: string, tool?: string) {
 
 // WS
 const offMsg = bridge.onMessage((msg: WsMessage) => {
+  if (bridge.mode.value === 'relay') {
+    const msgWorkspaceId = typeof msg.workspaceId === 'string' ? msg.workspaceId : ''
+    if (msgWorkspaceId && msgWorkspaceId !== activeWorkspaceKey.value) return
+  }
   if (msg.type === 'notification') {
     pendingNotifs.value.push({ id: Date.now().toString(), text: msg.text ?? '', tool: (msg.tool as string) ?? '', ts: Date.now() })
     pushActivity('ai', `Validation requise — ${shortText(msg.text ?? '', 70)}`)
@@ -1245,6 +1275,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
       setReplyTarget(String(msg.target))
     }
     appendAiMessage(msg.text ?? '', msg.tool as string)
+    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
     pushActivity('ai', shortText(msg.text ?? '', 70))
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
   } else if (msg.type === 'output' && msg.text) {
@@ -1346,6 +1377,12 @@ watch(chatTargets, (targets) => {
   if (!replyTarget.value && targets.length) {
     setReplyTarget('bash')
   }
+}, { immediate: true })
+
+watch(activeWorkspaceKey, (workspaceId) => {
+  chatMessages.value = loadWorkspaceChatHistory(workspaceId)
+  aiTyping.value = false
+  nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }, { immediate: true })
 
 onMounted(() => {
