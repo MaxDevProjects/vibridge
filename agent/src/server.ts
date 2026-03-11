@@ -68,6 +68,12 @@ export function createServer(deps: ServerDeps) {
       return { handled: true, resolvedTarget: 'bash' };
     }
 
+    if (normalizedTarget === 'chat:devbridge') {
+      console.log('[DIAG][Agent][routeTerminalMessage] -> inject devbridge chat');
+      deps.ipc.sendToExtension({ type: 'inject_message', text, target: 'chat:devbridge', sendEnter: false });
+      return { handled: true, resolvedTarget: 'chat:devbridge' };
+    }
+
     const cli = cliRegistry?.getById(normalizedTarget);
     if (cli) {
       console.log('[DIAG][Agent][routeTerminalMessage] -> inject cli', {

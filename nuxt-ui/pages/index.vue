@@ -368,11 +368,15 @@
                 v-for="target in chatTargets"
                 :key="target.id"
                 :disabled="target.state === 'starting'"
-                class="shrink-0 text-[10px] uppercase tracking-[0.14em] px-3 py-1.5 font-mono disabled:pointer-events-none"
+                class="shrink-0 min-w-[9rem] text-left px-3 py-2 disabled:pointer-events-none"
                 :style="targetButtonStyle(target)"
                 @click="selectChatTarget(target)"
               >
-                {{ targetButtonLabel(target) }}
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[10px] uppercase tracking-[0.14em] font-mono">{{ targetButtonLabel(target) }}</span>
+                  <span class="text-[8px] uppercase tracking-[0.12em]" style="color:var(--muted)">{{ targetSupportLabel(target) }}</span>
+                </div>
+                <div class="mt-1 text-[9px]" style="color:var(--muted)">{{ target.caption }}</div>
               </button>
             </div>
             <div class="flex gap-2 items-end">
@@ -422,14 +426,31 @@
               <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">— Non connecté —</p>
             </div>
           </div>
-          <!-- File tree -->
-          <div class="flex shrink-0 mx-4 my-4" style="border:1px solid var(--border)">
-            <input type="text" placeholder="Rechercher un fichier…" class="flex-1 text-[11px] px-3.5 py-2.5 outline-none text-text" style="background:none;border:none;font-family:inherit" />
-            <button class="w-10 flex items-center justify-center text-sm" style="border-left:1px solid var(--border);color:var(--muted)">⌕</button>
+          <div class="flex shrink-0 mx-4 mt-4" style="border:1px solid var(--border)">
+            <input
+              v-model="fileQuery"
+              type="text"
+              placeholder="Rechercher un fichier…"
+              class="flex-1 text-[11px] px-3.5 py-2.5 outline-none text-text"
+              style="background:none;border:none;font-family:inherit"
+            />
+            <button class="w-10 flex items-center justify-center text-sm" style="border-left:1px solid var(--border);color:var(--muted)" @click="loadFileTree">↺</button>
           </div>
-          <div class="flex-1 overflow-y-auto text-[11px]">
-            <FileTree v-if="fileTree.length" :nodes="fileTree" @select="selectedFile = $event" />
-            <p v-else class="px-5 py-4" style="color:var(--muted)">— Non connecté —</p>
+          <div class="px-4 py-2 text-[9px] uppercase tracking-[0.12em]" style="color:var(--muted)">
+            {{ selectedFile ? `Lecture de ${selectedFile}` : 'Sélectionnez un fichier pour lire son contenu' }}
+          </div>
+          <div class="min-h-0 flex-1 flex flex-col">
+            <div class="basis-[42%] min-h-0 overflow-y-auto text-[11px]">
+              <FileTree v-if="filteredFileTree.length" :nodes="filteredFileTree" @select="openCodeFile" />
+              <p v-else class="px-5 py-4" style="color:var(--muted)">— Aucun fichier —</p>
+            </div>
+            <div class="shrink-0 mx-4" style="border-top:1px solid var(--border)"></div>
+            <div class="basis-[58%] min-h-0 overflow-y-auto px-4 py-3">
+              <p v-if="selectedFileLoading" class="text-[10px] uppercase tracking-[0.12em]" style="color:var(--muted)">Chargement…</p>
+              <pre v-else-if="selectedFileContent" class="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style="color:var(--text);font-family:var(--font-mono)">{{ selectedFileContent }}</pre>
+              <p v-else-if="selectedFileError" class="text-[10px] uppercase tracking-[0.12em]" style="color:var(--dot-red)">{{ selectedFileError }}</p>
+              <p v-else class="text-[10px] uppercase tracking-[0.12em]" style="color:var(--muted)">— Aucun fichier sélectionné —</p>
+            </div>
           </div>
         </div>
 
@@ -677,6 +698,12 @@ function targetButtonLabel(target: ChatTarget) {
   return target.label
 }
 
+function targetSupportLabel(target: ChatTarget) {
+  if (target.support === 'direct') return 'direct'
+  if (target.support === 'vscode') return 'VS Code'
+  return 'lanceur'
+}
+
 function targetButtonStyle(target: ChatTarget) {
   if (target.state === 'active') {
     return 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
@@ -689,7 +716,10 @@ function targetButtonStyle(target: ChatTarget) {
 
 function isChatTargetId(value: unknown) {
   const id = String(value ?? '').trim()
-  return id === 'bash' || cliList.value.some(cli => cli.id === id)
+  return id === 'bash'
+    || id === 'chat:devbridge'
+    || id.startsWith('terminal:')
+    || cliList.value.some(cli => cli.id === id)
 }
 
 function killCli(terminalName: string) {
@@ -707,6 +737,10 @@ function pushActivity(tag: ActivityEntry['tag'], text: string) {
 // File tree
 const fileTree = ref<FileNode[]>([])
 const selectedFile = ref<string | null>(null)
+const selectedFileContent = ref('')
+const selectedFileLoading = ref(false)
+const selectedFileError = ref('')
+const fileQuery = ref('')
 const previewUrl = ref('')
 
 // Projects list
@@ -952,6 +986,26 @@ async function loadPairingCode() {
 
 async function loadFileTree() {
   if (bridge.mode.value === 'relay') {
+    try {
+      const token = bridge.token.value ?? ''
+      const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
+      const workspaceId = bridge.activeWorkspaceId.value
+      if (relayBase && bridge.relaySessionId.value) {
+        const res = await fetch(
+          `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        )
+        if (res.ok) {
+          const data = await res.json() as { tree?: FileNode[] }
+          if (Array.isArray(data.tree)) {
+            fileTree.value = data.tree
+            return
+          }
+        }
+      }
+    } catch {
+      // fall back to the latest cached snapshot below
+    }
     const snapshotTree = bridge.agentStatus.value?.fileTree as FileNode[] | undefined
     if (Array.isArray(snapshotTree)) fileTree.value = snapshotTree
     return
@@ -969,6 +1023,75 @@ async function loadFileTree() {
   } catch {
     // ignore transient network errors
   }
+}
+
+function filterFileNodes(nodes: FileNode[], query: string): FileNode[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return nodes
+  return nodes.flatMap((node) => {
+    if (node.type === 'file') {
+      return node.path.toLowerCase().includes(needle) || node.name.toLowerCase().includes(needle) ? [node] : []
+    }
+    const children = filterFileNodes(node.children ?? [], needle)
+    if (children.length || node.name.toLowerCase().includes(needle)) {
+      return [{ ...node, children }]
+    }
+    return []
+  })
+}
+
+const filteredFileTree = computed(() => filterFileNodes(fileTree.value, fileQuery.value))
+
+async function loadSelectedFileContent(path: string) {
+  selectedFile.value = path
+  selectedFileLoading.value = true
+  selectedFileError.value = ''
+  selectedFileContent.value = ''
+
+  if (bridge.mode.value === 'relay') {
+    try {
+      const token = bridge.token.value ?? ''
+      const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
+      const workspaceId = bridge.activeWorkspaceId.value
+      const res = await fetch(
+        `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      if (!res.ok) {
+        selectedFileError.value = `[ERREUR ${res.status}]`
+        return
+      }
+      const data = await res.json() as { content?: string }
+      selectedFileContent.value = data.content ?? ''
+      return
+    } catch {
+      selectedFileError.value = '[IMPOSSIBLE DE CHARGER]'
+      return
+    } finally {
+      selectedFileLoading.value = false
+    }
+  }
+
+  try {
+    const token = bridge.token.value ?? ''
+    const res = await fetch(`${currentAgentBaseUrl()}/files/${encodeURIComponent(path)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      selectedFileError.value = `[ERREUR ${res.status}]`
+      return
+    }
+    const data = await res.json() as { content?: string }
+    selectedFileContent.value = data.content ?? ''
+  } catch {
+    selectedFileError.value = '[IMPOSSIBLE DE CHARGER]'
+  } finally {
+    selectedFileLoading.value = false
+  }
+}
+
+function openCodeFile(path: string) {
+  void loadSelectedFileContent(path)
 }
 
 async function loadPreviewUrl() {
@@ -1185,7 +1308,17 @@ const quickActions = computed(() => [
 // Chat
 interface ChatMsg { id: string; text: string; direction: 'user' | 'ai'; tool?: string; ts: number }
 type ChatTargetState = 'idle' | 'starting' | 'active'
-interface ChatTarget { id: string; label: string; terminalName?: string; state: ChatTargetState }
+type ChatTargetKind = 'terminal' | 'vscode' | 'launcher'
+interface ChatTarget {
+  id: string
+  label: string
+  caption: string
+  support: 'direct' | 'vscode' | 'launcher'
+  kind: ChatTargetKind
+  terminalName?: string
+  cliId?: string
+  state: ChatTargetState
+}
 const chatMessages = ref<ChatMsg[]>([])
 const chatDraft  = ref('')
 const aiTyping   = ref(false)
@@ -1199,13 +1332,50 @@ const replyTarget = ref(
 const replyTargetPinned = ref(false)
 const replyTargetLabel = computed(() => {
   const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  return target?.label ?? 'BASH'
+  return target ? `${target.label} · ${target.caption}` : 'Terminal VS Code'
 })
 const chatTargets = computed<ChatTarget[]>(() => {
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
-  const targets: ChatTarget[] = [
-    { id: 'bash', label: 'BASH', terminalName: 'bash', state: replyTarget.value === 'bash' ? 'active' : 'idle' },
-  ]
+  const targets: ChatTarget[] = []
+  const seenTerminalNames = new Set<string>()
+
+  for (const terminal of terminals) {
+    const terminalName = String(terminal?.name ?? '').trim()
+    if (!terminalName || seenTerminalNames.has(terminalName)) continue
+    seenTerminalNames.add(terminalName)
+    const cwd = typeof terminal?.cwd === 'string' ? terminal.cwd : ''
+    targets.push({
+      id: `terminal:${terminalName}`,
+      label: terminalName,
+      caption: cwd ? `terminal direct · ${lastPathSegment(cwd)}` : 'terminal direct',
+      support: 'direct',
+      kind: 'terminal',
+      terminalName,
+      state: replyTarget.value === `terminal:${terminalName}` ? 'active' : 'idle',
+    })
+  }
+
+  if (!seenTerminalNames.has('bash')) {
+    targets.push({
+      id: 'bash',
+      label: 'bash',
+      caption: 'ouvre un terminal VS Code',
+      support: 'direct',
+      kind: 'terminal',
+      terminalName: 'bash',
+      state: replyTarget.value === 'bash' ? 'active' : 'idle',
+    })
+  }
+
+  targets.push({
+    id: 'chat:devbridge',
+    label: 'DevBridge Chat',
+    caption: 'canal VS Code',
+    support: 'vscode',
+    kind: 'vscode',
+    state: replyTarget.value === 'chat:devbridge' ? 'active' : 'idle',
+  })
+
   for (const cli of cliList.value) {
     const terminalName = `DevBridge ${cli.name}`
     const isLaunched = terminals.some(terminal => String(terminal?.name ?? '').trim() === terminalName)
@@ -1213,7 +1383,11 @@ const chatTargets = computed<ChatTarget[]>(() => {
     targets.push({
       id: cli.id,
       label: cliButtonName(cli),
+      caption: isLaunched ? `terminal prêt · ${terminalName}` : `lance ${cli.command}`,
+      support: 'launcher',
+      kind: 'launcher',
       terminalName,
+      cliId: cli.id,
       state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
     })
   }
@@ -1221,10 +1395,12 @@ const chatTargets = computed<ChatTarget[]>(() => {
 })
 
 const selectedChatTargetReady = computed(() => {
-  if (replyTarget.value === 'bash') return true
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
   const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  return Boolean(target && target.state !== 'starting' && target.terminalName && terminals.some(
+  if (!target) return false
+  if (target.id === 'bash' || target.id === 'chat:devbridge') return true
+  if (target.kind === 'terminal') return true
+  return Boolean(target.state !== 'starting' && target.terminalName && terminals.some(
     terminal => String(terminal?.name ?? '').trim() === target.terminalName
   ))
 })
@@ -1275,12 +1451,12 @@ function setReplyTarget(nextTarget: string, pinned = false) {
 function selectChatTarget(target: ChatTarget) {
   if (target.state === 'starting') return
   setReplyTarget(target.id, true)
-  if (target.id === 'bash') return
+  if (target.kind !== 'launcher') return
   const isLaunched = Boolean(target.terminalName && Array.isArray(ideState.value?.terminals) && ideState.value?.terminals?.some(
     terminal => String(terminal?.name ?? '').trim() === target.terminalName
   ))
-  if (!cliList.value.some(cli => cli.id === target.id) || isLaunched) return
-  launchCli(target.id)
+  if (!target.cliId || isLaunched) return
+  launchCli(target.cliId)
 }
 
 function flushBufferedOutput(tool = 'agent') {
@@ -1376,6 +1552,9 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'file_changed') {
     pushActivity('sys', `Fichier changé — ${String(msg.path ?? '')}`)
     void loadFileTree()
+    if (selectedFile.value && String(msg.path ?? '') === selectedFile.value) {
+      void loadSelectedFileContent(selectedFile.value)
+    }
   } else if (msg.type === 'clis_update' && Array.isArray(msg.clis)) {
     cliList.value = msg.clis as CliItem[]
   } else if (msg.type === 'projects_update' && Array.isArray(msg.projects)) {
@@ -1437,6 +1616,9 @@ watch(chatTargets, (targets) => {
 watch(activeWorkspaceKey, (workspaceId) => {
   chatMessages.value = loadWorkspaceChatHistory(workspaceId)
   aiTyping.value = false
+  selectedFile.value = null
+  selectedFileContent.value = ''
+  selectedFileError.value = ''
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }, { immediate: true })
 

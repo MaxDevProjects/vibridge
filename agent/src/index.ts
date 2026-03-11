@@ -11,6 +11,7 @@ import { MessageQueue } from './queue';
 import { AuthService } from './auth';
 import { RelayClient } from './relay-client';
 import { CliRegistry } from './cliRegistry';
+import { resolveWorkspaceIdentity } from './workspace';
 
 const PORT = parseInt(process.env.AGENT_PORT ?? '3333', 10);
 const IPC_SOCK = process.env.IPC_SOCK_PATH ?? '/tmp/devbridge/ipc.sock';
@@ -22,6 +23,8 @@ const DATA_DIR = process.env.DATA_DIR ?? require('path').dirname(IPC_SOCK);
 
 async function main() {
   console.log(`[DevBridge Agent] Starting on port ${PORT}…`);
+  const workspace = resolveWorkspaceIdentity();
+  console.log(`[DevBridge Agent] Workspace: ${workspace.id} (${workspace.path})`);
 
   const queue = new MessageQueue();
   const auth = new AuthService();
@@ -37,6 +40,7 @@ async function main() {
         publicUrl: RELAY_PUBLIC_URL,
         sessionLabel: `DevBridge on ${process.env.HOSTNAME ?? 'local-agent'}`,
         workspaceFolders: [PROJECT_ROOT],
+        workspace,
         adapters,
         files,
         ipc,
@@ -44,7 +48,7 @@ async function main() {
       })
     : null;
 
-  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry });
+  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry, workspace });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[DevBridge Agent] HTTP + WS listening on :${PORT}`);

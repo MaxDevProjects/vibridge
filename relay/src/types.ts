@@ -39,3 +39,13 @@ export interface ConnectedWorkspace {
   path?: string
   active: boolean
 }
+
+export interface WorkspaceSnapshot {
+  workspaceId: string
+  ideState?: unknown
+  previewUrl?: string | null
+  fileTree?: unknown
+  adapters?: unknown
+  activeAdapter?: string | null
+  timestamp: number
+}

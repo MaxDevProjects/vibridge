@@ -19,9 +19,17 @@ export class ChatParticipant {
       const terminalName = String(msg.terminalName ?? '').trim();
       const command = String(msg.command ?? '').trim();
       const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
+      console.log('[DIAG][Extension][inject_message]', {
+        text,
+        target,
+        terminalName,
+        command,
+        args,
+      });
       if (!text) return;
 
       const resolved = this.resolveTerminalTarget(target, terminalName);
+      console.log('[DIAG][Extension][resolveTerminalTarget]', resolved);
       if (resolved) {
         const fullCommand = command ? (args.length ? `${command} ${args.join(' ')}` : command) : '';
         const terminal = this.ensureTerminal(resolved.terminalName, fullCommand);
@@ -130,6 +138,11 @@ export class ChatParticipant {
   private sendToTerminal(terminal: vscode.Terminal, text: string): void {
     const config = vscode.workspace.getConfiguration('devbridge');
     const mode = String(config.get('terminalSendMode') ?? 'split');
+    console.log('[DIAG][Extension][sendToTerminal]', {
+      terminal: terminal.name,
+      text,
+      mode,
+    });
     if (mode === 'paste') {
       terminal.sendText(text, true);
       return;

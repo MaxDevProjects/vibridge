@@ -293,6 +293,17 @@ export class RelayClient {
     if (type === 'get_pairing_code') {
       if (!this.session) return;
       this.send('relay_session', { payload: this.getState() });
+      return;
+    }
+
+    if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
+      const filePath = typeof msg.path === 'string' ? msg.path : '';
+      const content = this.options.files.read(filePath);
+      this.send('relay_file_response', {
+        request_id: msg.request_id,
+        path: filePath,
+        ...(content === null ? { error: 'not found' } : { content }),
+      });
     }
   }
 

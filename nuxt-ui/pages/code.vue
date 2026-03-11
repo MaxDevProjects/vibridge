@@ -4,12 +4,20 @@
     <aside class="w-64 shrink-0 border-r border-border flex flex-col hidden lg:flex">
       <div class="flex items-center justify-between px-4 py-3 border-b border-border">
         <p class="text-xs uppercase tracking-widest text-muted">FICHIERS</p>
-        <button class="text-xs text-muted hover:text-text" @click="refreshTree">↺</button>
+        <div class="flex items-center gap-2">
+          <input
+            v-model="fileQuery"
+            type="text"
+            placeholder="Rechercher"
+            class="w-28 bg-transparent text-[11px] text-text border border-border px-2 py-1 outline-none"
+          >
+          <button class="text-xs text-muted hover:text-text" @click="refreshTree">↺</button>
+        </div>
       </div>
       <div class="flex-1 overflow-y-auto p-2">
         <FileTree
-          v-if="tree.length"
-          :nodes="tree"
+          v-if="filteredTree.length"
+          :nodes="filteredTree"
           :active="activePath ?? undefined"
           @select="openFile"
         />
@@ -24,15 +32,22 @@
         <p class="text-xs text-muted font-mono truncate max-w-xs lg:max-w-none">
           {{ activePath ?? 'AUCUN FICHIER' }}
         </p>
-        <!-- Mobile: file picker -->
-        <button class="lg:hidden text-xs text-muted hover:text-text uppercase tracking-widest" @click="showMobileTree = !showMobileTree">
-          ◧ FICHIERS
-        </button>
+        <div class="flex items-center gap-2">
+          <input
+            v-model="fileQuery"
+            type="text"
+            placeholder="Rechercher"
+            class="lg:hidden w-24 bg-transparent text-[11px] text-text border border-border px-2 py-1 outline-none"
+          >
+          <button class="lg:hidden text-xs text-muted hover:text-text uppercase tracking-widest" @click="showMobileTree = !showMobileTree">
+            ◧ FICHIERS
+          </button>
+        </div>
       </div>
 
       <!-- Mobile tree drawer -->
       <div v-if="showMobileTree" class="lg:hidden border-b border-border p-2 max-h-48 overflow-y-auto bg-surface">
-        <FileTree v-if="tree.length" :nodes="tree" :active="activePath ?? undefined" @select="openFileMobile" />
+        <FileTree v-if="filteredTree.length" :nodes="filteredTree" :active="activePath ?? undefined" @select="openFileMobile" />
       </div>
 
       <!-- File content -->
@@ -65,14 +80,50 @@ const activePath = ref<string | null>(null)
 const fileContent = ref<string | null>(null)
 const loading = ref(false)
 const showMobileTree = ref(false)
+const fileQuery = ref('')
 
 function baseUrl() {
   if (import.meta.server) return ''
   return localStorage.getItem('vb:agentUrl') ?? `http://${config.public.agentHost}:${config.public.agentPort}`
 }
 
+function relayBaseUrl() {
+  if (import.meta.server) return ''
+  return bridge.relayUrl.value || String(config.public.relayUrl ?? '')
+}
+
+function filterNodes(nodes: FileNode[], query: string): FileNode[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return nodes
+  return nodes.flatMap((node) => {
+    if (node.type === 'file') {
+      return node.path.toLowerCase().includes(needle) || node.name.toLowerCase().includes(needle) ? [node] : []
+    }
+    const children = filterNodes(node.children ?? [], needle)
+    if (children.length || node.name.toLowerCase().includes(needle)) {
+      return [{ ...node, children }]
+    }
+    return []
+  })
+}
+
+const filteredTree = computed(() => filterNodes(tree.value, fileQuery.value))
+
 async function refreshTree() {
   if (bridge.mode.value === 'relay') {
+    const workspaceId = bridge.activeWorkspaceId.value
+    try {
+      const res = await fetch(`${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}`, {
+        headers: { Authorization: `Bearer ${bridge.token.value}` },
+      })
+      if (res.ok) {
+        const data = await res.json() as { tree?: FileNode[] }
+        tree.value = Array.isArray(data.tree) ? data.tree : []
+        return
+      }
+    } catch {
+      // ignore and fall back to cached snapshot
+    }
     tree.value = (bridge.agentStatus.value?.fileTree as FileNode[] | undefined) ?? []
     return
   }
@@ -89,15 +140,33 @@ async function openFile(path: string) {
   fileContent.value = null
   loading.value = true
   if (bridge.mode.value === 'relay') {
-    fileContent.value = '[LECTURE DE FICHIER DIRECTE NON ENCORE RELAYEE]'
-    loading.value = false
+    try {
+      const workspaceId = bridge.activeWorkspaceId.value
+      const res = await fetch(
+        `${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+        { headers: { Authorization: `Bearer ${bridge.token.value}` } },
+      )
+      if (res.ok) {
+        const data = await res.json() as { content?: string }
+        fileContent.value = data.content ?? ''
+      } else {
+        fileContent.value = `[ERREUR ${res.status}]`
+      }
+    } catch {
+      fileContent.value = '[IMPOSSIBLE DE CHARGER]'
+    } finally {
+      loading.value = false
+    }
     return
   }
   try {
     const res = await fetch(`${baseUrl()}/files/${encodeURIComponent(path)}`, {
       headers: { Authorization: `Bearer ${bridge.token.value}` },
     })
-    if (res.ok) fileContent.value = await res.text()
+    if (res.ok) {
+      const data = await res.json() as { content?: string }
+      fileContent.value = data.content ?? ''
+    }
     else fileContent.value = `[ERREUR ${res.status}]`
   } catch {
     fileContent.value = '[IMPOSSIBLE DE CHARGER]'
@@ -124,6 +193,14 @@ onMounted(() => {
 
 watch(() => bridge.status.value, (s) => {
   if (s === 'connected') refreshTree()
+})
+
+watch(() => bridge.activeWorkspaceId.value, () => {
+  if (bridge.status.value === 'connected') {
+    fileContent.value = null
+    activePath.value = null
+    void refreshTree()
+  }
 })
 
 onUnmounted(offMessage)

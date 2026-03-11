@@ -25,6 +25,16 @@ export interface ConnectedWorkspace {
   active: boolean
 }
 
+interface WorkspaceSnapshot {
+  workspaceId: string
+  ideState?: AgentStatus['ideState']
+  previewUrl?: string | null
+  fileTree?: unknown
+  adapters?: AgentStatus['adapters']
+  activeAdapter?: string | null
+  timestamp: number
+}
+
 export interface RelayState {
   enabled: boolean
   relayUrl: string
@@ -68,6 +78,7 @@ interface RelaySessionResponse {
   agentConnected: boolean
   mobileConnected: boolean
   workspaces?: ConnectedWorkspace[]
+  workspaceSnapshots?: WorkspaceSnapshot[]
   history: Array<Record<string, unknown>>
 }
 
@@ -248,6 +259,7 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
       : agentStatus.value?.activeAdapter ?? null,
     ideState: snapshot.ideState ?? agentStatus.value?.ideState ?? null,
     previewUrl: snapshot.previewUrl ?? agentStatus.value?.previewUrl ?? null,
+    fileTree: snapshot.fileTree ?? agentStatus.value?.fileTree,
     relay: snapshot.relay ?? agentStatus.value?.relay ?? null,
     timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : Date.now(),
   }
@@ -490,6 +502,24 @@ async function fetchRelayStatus() {
       path: typeof workspace.path === 'string' ? workspace.path : undefined,
       active: Boolean(workspace.active),
     })) : [])
+
+    const snapshots = Array.isArray(data.workspaceSnapshots) ? data.workspaceSnapshots : []
+    const selectedSnapshot = snapshots.find(snapshot => snapshot.workspaceId === activeWorkspaceId.value)
+      ?? snapshots[0]
+    if (selectedSnapshot) {
+      applyStatusSnapshot({
+        adapters: Array.isArray(selectedSnapshot.adapters) ? selectedSnapshot.adapters : agentStatus.value?.adapters ?? [],
+        activeAdapter: typeof selectedSnapshot.activeAdapter === 'string' || selectedSnapshot.activeAdapter === null
+          ? selectedSnapshot.activeAdapter
+          : agentStatus.value?.activeAdapter ?? null,
+        ideState: selectedSnapshot.ideState ?? agentStatus.value?.ideState ?? null,
+        previewUrl: typeof selectedSnapshot.previewUrl === 'string' || selectedSnapshot.previewUrl === null
+          ? selectedSnapshot.previewUrl
+          : agentStatus.value?.previewUrl ?? null,
+        fileTree: selectedSnapshot.fileTree ?? agentStatus.value?.fileTree,
+        timestamp: typeof selectedSnapshot.timestamp === 'number' ? selectedSnapshot.timestamp : Date.now(),
+      })
+    }
 
     for (const entry of data.history) emit(entry as WsMessage)
   } catch {
