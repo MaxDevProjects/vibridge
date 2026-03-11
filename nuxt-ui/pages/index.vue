@@ -753,6 +753,7 @@ const pairing   = ref(false)
 const pairError = ref('')
 const currentPairingCode = ref('')
 const showQrModal = ref(false)
+const preIssuedWorkspace = ref('')
 
 function queryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? ''
@@ -783,10 +784,14 @@ const pairingUrl = computed(() => {
     url.searchParams.set('sessionId', relaySession.sessionId)
     url.searchParams.set('code', relaySession.pairingCode)
   } else if (preIssuedToken.value) {
-    url.searchParams.set('view', 'mobile')
-    // Auto-pair path: pre-issued JWT — no code entry needed on mobile
-    url.searchParams.set('agentUrl', agentBaseUrl)
     url.searchParams.set('token', preIssuedToken.value)
+    if (preIssuedWorkspace.value) {
+      url.searchParams.set('workspace', preIssuedWorkspace.value)
+    }
+    const shouldUseDirectAgent = url.protocol === 'http:' && !configuredRelayUrl.value
+    if (shouldUseDirectAgent && agentBaseUrl) {
+      url.searchParams.set('agentUrl', agentBaseUrl)
+    }
   } else {
     url.searchParams.set('view', 'mobile')
     url.searchParams.set('host', pairHost.value)
@@ -817,10 +822,15 @@ const pairingQrDataUrl = computed(() => {
 
 // Fallback QR — same URL but host replaced by raw LAN IP
 const fallbackQrDataUrl = computed(() => {
-  if (!clientReady.value || !localIpInfo.value || !preIssuedToken.value) return ''
+  if (!clientReady.value || !localIpInfo.value || !preIssuedToken.value || window.location.protocol === 'https:') return ''
   const uiPort = import.meta.client ? (window.location.port || '8080') : '8080'
-  const fallbackUrl = `http://${localIpInfo.value.ip}:${uiPort}/?view=mobile&agentUrl=${encodeURIComponent(localIpInfo.value.agentUrl)}&token=${encodeURIComponent(preIssuedToken.value)}`
-  const svg = renderSVG(fallbackUrl, { border: 1, ecc: 'M', pixelSize: 5, whiteColor: '#ffffff', blackColor: '#111111' })
+  const fallbackUrl = new URL(`http://${localIpInfo.value.ip}:${uiPort}/`)
+  fallbackUrl.searchParams.set('token', preIssuedToken.value)
+  if (preIssuedWorkspace.value) {
+    fallbackUrl.searchParams.set('workspace', preIssuedWorkspace.value)
+  }
+  fallbackUrl.searchParams.set('agentUrl', localIpInfo.value.agentUrl)
+  const svg = renderSVG(fallbackUrl.toString(), { border: 1, ecc: 'M', pixelSize: 5, whiteColor: '#ffffff', blackColor: '#111111' })
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 })
 
@@ -891,8 +901,9 @@ async function loadPairingCode() {
       `${currentAgentBaseUrl()}/pairing-url?uiHost=${encodeURIComponent(String(config.public.agentHost))}&uiPort=${uiPort}`
     )
     if (res2.ok) {
-      const d = await res2.json() as { token?: string }
+      const d = await res2.json() as { token?: string; workspace?: string }
       if (d.token) preIssuedToken.value = d.token
+      if (d.workspace) preIssuedWorkspace.value = d.workspace
     }
   } catch {
     // pre-issued token is optional — fall back to code pairing

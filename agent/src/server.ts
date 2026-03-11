@@ -14,6 +14,7 @@ import type { AdapterManager } from './adapters/manager';
 import type { IpcServer } from './ipc';
 import type { RelayClient } from './relay-client';
 import type { CliRegistry } from './cliRegistry';
+import type { WorkspaceIdentity } from './workspace';
 
 interface ServerDeps {
   PORT: number;
@@ -25,6 +26,7 @@ interface ServerDeps {
   auth: AuthService;
   relay?: RelayClient | null;
   cliRegistry?: CliRegistry;
+  workspace: WorkspaceIdentity;
 }
 
 export function createServer(deps: ServerDeps) {
@@ -51,15 +53,26 @@ export function createServer(deps: ServerDeps) {
     sendEnter = true,
   ): { handled: boolean; resolvedTarget?: string } => {
     const normalizedTarget = String(target ?? '').trim();
+    console.log('[DIAG][Agent][routeTerminalMessage]', {
+      text,
+      target,
+      normalizedTarget,
+      sendEnter,
+    });
     if (!normalizedTarget) return { handled: false };
 
     if (normalizedTarget === 'bash') {
+      console.log('[DIAG][Agent][routeTerminalMessage] -> inject bash');
       deps.ipc.sendToExtension({ type: 'inject_message', text, target: 'bash', sendEnter });
       return { handled: true, resolvedTarget: 'bash' };
     }
 
     const cli = cliRegistry?.getById(normalizedTarget);
     if (cli) {
+      console.log('[DIAG][Agent][routeTerminalMessage] -> inject cli', {
+        cliId: cli.id,
+        terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
+      });
       deps.ipc.sendToExtension({
         type: 'inject_message',
         text,
@@ -74,10 +87,12 @@ export function createServer(deps: ServerDeps) {
     }
 
     if (normalizedTarget.startsWith('terminal:')) {
+      console.log('[DIAG][Agent][routeTerminalMessage] -> inject terminal target');
       deps.ipc.sendToExtension({ type: 'inject_message', text, target: normalizedTarget, sendEnter });
       return { handled: true, resolvedTarget: normalizedTarget };
     }
 
+    console.log('[DIAG][Agent][routeTerminalMessage] -> not handled');
     return { handled: false };
   };
 
@@ -101,6 +116,14 @@ export function createServer(deps: ServerDeps) {
   /** Read current pairing code for the local pairing screen / QR generation */
   app.get('/pairing-code', (_req, res) => {
     res.json({ code: auth.getPairCode(), relay: relay?.getState() ?? null });
+  });
+
+  app.get('/workspace', (_req, res) => {
+    res.json({
+      id: deps.workspace.id,
+      name: deps.workspace.name,
+      path: deps.workspace.path,
+    });
   });
 
   /**
@@ -127,21 +150,32 @@ export function createServer(deps: ServerDeps) {
   });
 
   /**
-   * Returns a pairing URL that contains a pre-issued short-lived JWT.
-   * The nuxt-ui uses this URL to build a QR code so mobile users can
-   * auto-connect without typing a 6-digit code.
-   * The caller optionally passes ?uiHost=devbridge.local&uiPort=8080
-   * to embed the nuxt-ui base URL for the redirect.
+   * Returns a pairing URL that contains a pre-issued persistent JWT.
+   * In public/HTTPS mode the QR must not embed a local agentUrl because
+   * the phone cannot reach it directly from outside the LAN.
    */
   app.get('/pairing-url', (req: Request, res: Response) => {
-    const token = auth.issueShortLivedToken(600); // 10-minute token
+    const token = auth.issueShortLivedToken(600);
     const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
     const agentPort = deps.PORT;
-    const uiHost = String((req.query as Record<string, string>).uiHost ?? agentHost);
-    const uiPort = String((req.query as Record<string, string>).uiPort ?? '8080');
+    const uiHost = String((req.query as Record<string, string>).uiHost ?? agentHost).trim();
+    const uiPort = String((req.query as Record<string, string>).uiPort ?? '8080').trim();
+    const publicUiUrl = (process.env.UI_PUBLIC_URL ?? process.env.NUXT_PUBLIC_UI_URL ?? '').trim().replace(/\/$/, '');
+    const uiBase = publicUiUrl || `http://${uiHost}:${uiPort}`;
+    const useDirectAgentUrl = !/^https:/i.test(uiBase);
     const agentUrl = `http://${agentHost}:${agentPort}`;
-    const pairingUrl = `http://${uiHost}:${uiPort}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(token)}&workspace=${encodeURIComponent(deps.workspace.id)}`;
-    res.json({ token, agentUrl, pairingUrl });
+    const pairingUrl = new URL(`${uiBase}/`);
+    pairingUrl.searchParams.set('token', token);
+    pairingUrl.searchParams.set('workspace', deps.workspace.id);
+    if (useDirectAgentUrl) {
+      pairingUrl.searchParams.set('agentUrl', agentUrl);
+    }
+    res.json({
+      token,
+      workspace: deps.workspace.id,
+      agentUrl: useDirectAgentUrl ? agentUrl : undefined,
+      pairingUrl: pairingUrl.toString(),
+    });
   });
 
   // ── Protected REST ─────────────────────────────────────────
@@ -308,6 +342,12 @@ export function createServer(deps: ServerDeps) {
       if (msg.type === 'message' || msg.type === 'chat') {
         const target = msg.target as string | undefined;
         const sendEnter = msg.sendEnter !== false;
+        console.log('[DIAG][Agent][ws message]', {
+          type: msg.type,
+          text: String(msg.text ?? ''),
+          target,
+          sendEnter,
+        });
         const routed = routeTerminalMessage(String(msg.text ?? ''), target, sendEnter);
         if (routed.handled) {
           return;

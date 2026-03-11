@@ -186,14 +186,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
       const workspaceName = resolveWorkspaceName();
 
-      // Priority: relay-safe public token URL → local WiFi token URL → legacy fallback
+      // Priority: agent-provided QR URL → relay URL → legacy fallback
       let pwaUrl: string;
-      if (publicPwaUrl) {
-        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
-      } else if (localQrUrl) {
+      if (localQrUrl) {
         pwaUrl = localQrUrl;
       } else if (relayQrUrl) {
         pwaUrl = relayQrUrl;
+      } else if (publicPwaUrl) {
+        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       } else {
         // Legacy fallback — agent too old to send localQrUrl
         pwaUrl = `http://devbridge.local:8080/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
