@@ -10,6 +10,13 @@ import { QuestionDetector } from './questionDetector';
 export class ChatParticipant {
   private detector = new QuestionDetector();
   private inbox = vscode.window.createOutputChannel('DevBridge Chat');
+  private readonly cliTerminalAliases: Record<string, string> = {
+    'claude-code': 'DevBridge Claude Code',
+    'claude': 'DevBridge Claude Code',
+    'codex': 'DevBridge Codex CLI',
+    'aider': 'DevBridge Aider',
+    'copilot': 'DevBridge GitHub Copilot CLI',
+  };
 
   constructor(private ipc: IpcClient) {
     // Forward injected messages from phone → VS Code chat
@@ -42,16 +49,14 @@ export class ChatParticipant {
         return;
       }
 
-      this.inbox.appendLine(`[${new Date().toLocaleTimeString()}] MOBILE > ${text}`);
-      this.inbox.show(true);
       this.ipc.send({
         type: 'ide_event',
-        kind: 'mobile_message_routed_devbridge_chat',
-        target: target || 'chat:devbridge',
+        kind: 'mobile_message_route_failed',
+        target: target || null,
         textPreview: text.slice(0, 160),
         ts: Date.now(),
       });
-      void vscode.window.setStatusBarMessage('DevBridge: message routed to DevBridge Chat.', 4000);
+      void vscode.window.showWarningMessage('DevBridge: no terminal target available for this message.');
     });
   }
 
@@ -173,6 +178,38 @@ export class ChatParticipant {
         reportTarget: target,
         existed: Boolean(existing),
         needsBootDelay: !existing,
+      };
+    }
+
+    const normalizedTarget = target.trim().toLowerCase();
+    const aliasName = this.cliTerminalAliases[normalizedTarget];
+    if (aliasName) {
+      const existing = vscode.window.terminals.find((item) => item.name === aliasName);
+      return {
+        terminalName: existing?.name ?? aliasName,
+        reportTarget: target,
+        existed: Boolean(existing),
+        needsBootDelay: !existing,
+      };
+    }
+
+    const activeTerminal = vscode.window.activeTerminal;
+    if (activeTerminal) {
+      return {
+        terminalName: activeTerminal.name,
+        reportTarget: target || `terminal:${activeTerminal.name}`,
+        existed: true,
+        needsBootDelay: false,
+      };
+    }
+
+    const preferredExisting = vscode.window.terminals.find((item) => item.name.startsWith('DevBridge '));
+    if (preferredExisting) {
+      return {
+        terminalName: preferredExisting.name,
+        reportTarget: target || `terminal:${preferredExisting.name}`,
+        existed: true,
+        needsBootDelay: false,
       };
     }
 
