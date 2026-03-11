@@ -33,9 +33,9 @@ export class AuthService {
     return jwt.sign({}, SECRET, { expiresIn: TTL_SECONDS });
   }
 
-  /** Issue a short-lived token intended for QR-code auto-pairing (default 10 min). */
-  issueShortLivedToken(ttlSeconds = 600): string {
-    return jwt.sign({ qr: true }, SECRET, { expiresIn: ttlSeconds });
+  /** Issue a persistent token intended for QR-code auto-pairing. */
+  issueShortLivedToken(_ttlSeconds = 600): string {
+    return jwt.sign({ qr: true }, SECRET);
   }
 
   verify(token: string): boolean {
