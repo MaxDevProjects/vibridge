@@ -152,10 +152,11 @@ export class IpcServer {
           const agentPort = process.env.AGENT_PORT ?? '3333';
           const uiPort = process.env.NUXT_UI_PORT ?? process.env.UI_PORT ?? '8080';
           const publicUiUrl = (process.env.UI_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
+          const workspaceId = String(process.env.WORKSPACE_ID ?? process.env.PROJECT_ROOT ?? 'workspace').trim().split(/[\\/]/).filter(Boolean).pop() ?? 'workspace';
           const shortToken = this.auth.issueShortLivedToken(600);
           const agentUrl = `http://${agentHost}:${agentPort}`;
           const localQrBase = publicUiUrl || `http://${agentHost}:${uiPort}`;
-          const localQrUrl = `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${shortToken}`;
+          const localQrUrl = `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`;
           socket.write(JSON.stringify({
             type: 'pairing_code',
             code: this.auth.getPairCode(),

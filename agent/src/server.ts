@@ -140,7 +140,7 @@ export function createServer(deps: ServerDeps) {
     const uiHost = String((req.query as Record<string, string>).uiHost ?? agentHost);
     const uiPort = String((req.query as Record<string, string>).uiPort ?? '8080');
     const agentUrl = `http://${agentHost}:${agentPort}`;
-    const pairingUrl = `http://${uiHost}:${uiPort}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${token}`;
+    const pairingUrl = `http://${uiHost}:${uiPort}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(token)}&workspace=${encodeURIComponent(deps.workspace.id)}`;
     res.json({ token, agentUrl, pairingUrl });
   });
 

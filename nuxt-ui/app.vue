@@ -6,6 +6,8 @@
 
 <script setup lang="ts">
 const route = useRoute()
+const router = useRouter()
+const config = useRuntimeConfig()
 const { config: netConfig } = useNetworkConfig()
 
 onMounted(() => {
@@ -20,11 +22,35 @@ onMounted(() => {
     } catch { /* invalid URL — ignore */ }
   }
 
+  const qrToken = typeof route.query.token === 'string' ? route.query.token.trim() : ''
+  const qrAgentUrl = typeof route.query.agentUrl === 'string' ? route.query.agentUrl.trim() : ''
+  const qrWorkspace = typeof route.query.workspace === 'string' ? route.query.workspace.trim() : ''
+
+  if (qrToken) {
+    localStorage.setItem('vb:token', qrToken)
+    if (qrWorkspace) {
+      localStorage.setItem('vb:lastWorkspace', qrWorkspace)
+    }
+    if (qrAgentUrl) {
+      localStorage.setItem('vb:bridgeMode', 'local')
+      localStorage.setItem('vb:agentUrl', qrAgentUrl)
+    } else {
+      const relayBaseUrl = String(config.public.relayUrl ?? '').trim()
+      localStorage.setItem('vb:bridgeMode', 'relay')
+      if (relayBaseUrl) localStorage.setItem('vb:relayUrl', relayBaseUrl)
+    }
+    void router.replace({ path: '/', query: {} })
+    return
+  }
+
   // First launch: no stored session + not scanning a QR → redirect to onboarding
   const hasToken = Boolean(localStorage.getItem('vb:token'))
-  const hasQrToken = Boolean(route.query.token)
   const isSetup = route.path.startsWith('/setup') || route.path.startsWith('/settings')
-  if (!hasToken && !hasQrToken && !isSetup) {
+  if (hasToken && route.path.startsWith('/setup')) {
+    void navigateTo('/')
+    return
+  }
+  if (!hasToken && !isSetup) {
     navigateTo('/setup')
   }
 })

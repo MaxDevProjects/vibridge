@@ -66,6 +66,12 @@ function resolveWorkspaceCwd(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
+function resolveWorkspaceName(): string {
+  return vscode.workspace.workspaceFolders?.[0]?.name?.trim()
+    || path.basename(resolveWorkspaceCwd() ?? '')
+    || 'workspace';
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   console.log('[DevBridge] Extension activating');
 
@@ -179,28 +185,30 @@ export function activate(context: vscode.ExtensionContext): void {
       const { code, qrUrl: relayQrUrl, localQrUrl } = result;
       const config = vscode.workspace.getConfiguration('devbridge');
       const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
+      const workspaceName = resolveWorkspaceName();
 
-      // Priority: relay QR URL → public pwaUrl override → local URL from agent → legacy fallback
+      // Priority: public tokenized URL → local tokenized URL → legacy relay/code URL
       let pwaUrl: string;
-      if (relayQrUrl) {
-        pwaUrl = relayQrUrl;
-      } else if (publicPwaUrl && localQrUrl) {
+      if (publicPwaUrl && localQrUrl) {
         // Replace the local base with the configured public domain, keep query params intact
         try {
           const local = new URL(localQrUrl);
           const pub = new URL(publicPwaUrl);
           pub.search = local.search;
+          pub.searchParams.set('workspace', workspaceName);
           pwaUrl = pub.toString();
         } catch {
           pwaUrl = localQrUrl;
         }
-      } else if (publicPwaUrl) {
-        pwaUrl = `${publicPwaUrl}/?view=mobile&agentUrl=${encodeURIComponent('http://devbridge.local:3333')}&token=${encodeURIComponent(code)}`;
       } else if (localQrUrl) {
         pwaUrl = localQrUrl;
+      } else if (relayQrUrl) {
+        pwaUrl = relayQrUrl;
+      } else if (publicPwaUrl) {
+        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       } else {
         // Legacy fallback — agent too old to send localQrUrl
-        pwaUrl = `http://devbridge.local:8080/?view=mobile&agentUrl=${encodeURIComponent('http://devbridge.local:3333')}&token=${encodeURIComponent(code)}`;
+        pwaUrl = `http://devbridge.local:8080/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       }
 
       // Show in a WebView panel with a QR code (via qrserver.com CDN)
