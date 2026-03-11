@@ -110,14 +110,20 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Handle open_project from agent: open folder in new VS Code window
+  // Handle open_project from agent: open folder picker, replace current window,
+  // or force a parallel VS Code window depending on the payload.
   ipc.on('open_project', (msg: Record<string, unknown>) => {
     const projectPath = String(msg.projectPath ?? '');
+    const newWindow = msg.newWindow === true;
     if (!projectPath) {
       void vscode.commands.executeCommand('vscode.openFolder');
       return;
     }
-    void vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath), true);
+    void vscode.commands.executeCommand(
+      'vscode.openFolder',
+      vscode.Uri.file(projectPath),
+      { forceNewWindow: newWindow },
+    );
   });
 
   // Handle start_cli from agent: open (or focus) the terminal and run the command
