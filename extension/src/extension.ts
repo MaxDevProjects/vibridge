@@ -186,9 +186,11 @@ export function activate(context: vscode.ExtensionContext): void {
       const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
       const workspaceName = resolveWorkspaceName();
 
-      // Priority: agent-provided QR URL → relay URL → legacy fallback
+      // Priority: relay session QR in public mode → local WiFi QR → legacy fallback
       let pwaUrl: string;
-      if (localQrUrl) {
+      if (publicPwaUrl && relayQrUrl) {
+        pwaUrl = relayQrUrl;
+      } else if (localQrUrl) {
         pwaUrl = localQrUrl;
       } else if (relayQrUrl) {
         pwaUrl = relayQrUrl;
