@@ -15,6 +15,7 @@ import type { IpcServer } from './ipc';
 import type { RelayClient } from './relay-client';
 import type { CliRegistry } from './cliRegistry';
 import type { WorkspaceIdentity } from './workspace';
+import { listProjects } from './projects';
 
 interface ServerDeps {
   PORT: number;
@@ -281,20 +282,21 @@ export function createServer(deps: ServerDeps) {
 
   // ── Projects endpoints ─────────────────────────────────
   app.get('/projects', requireAuth, (_req, res) => {
-    res.json({ projects: deps.ipc.getProjects(), parentDir: deps.ipc.getProjectsParentDir() });
+    res.json(listProjects(deps.workspace.path));
   });
 
   app.post('/projects/open', requireAuth, (req, res) => {
-    const { projectPath } = req.body as { projectPath?: string };
+    const { projectPath, newWindow } = req.body as { projectPath?: string; newWindow?: boolean };
     if (!projectPath) { res.status(400).json({ error: 'projectPath required' }); return; }
-    const parentDir = deps.ipc.getProjectsParentDir();
+    const listing = listProjects(deps.workspace.path);
+    const parentDir = listing.parentDir;
     // Security: path must be within parentDir and must be a known project
     if (parentDir && !projectPath.startsWith(parentDir + '/') && projectPath !== parentDir) {
       res.status(403).json({ error: 'Chemin non autorisé' }); return;
     }
-    const known = deps.ipc.getProjects().some(p => p.path === projectPath);
+    const known = listing.projects.some(p => p.path === projectPath);
     if (!known) { res.status(403).json({ error: 'Projet inconnu' }); return; }
-    deps.ipc.sendToExtension({ type: 'open_project', projectPath });
+    deps.ipc.sendToExtension({ type: 'open_project', projectPath, newWindow });
     res.json({ ok: true });
   });
 
@@ -389,7 +391,17 @@ export function createServer(deps: ServerDeps) {
       }
 
       if (msg.type === 'open_project') {
-        deps.ipc.sendToExtension({ type: 'open_project' });
+        deps.ipc.sendToExtension({
+          type: 'open_project',
+          projectPath: typeof msg.path === 'string' ? msg.path : undefined,
+          newWindow: msg.newWindow === true,
+        });
+        return;
+      }
+
+      if (msg.type === 'list_projects') {
+        const listing = listProjects(deps.workspace.path);
+        ws.send(JSON.stringify({ type: 'projects_list', projects: listing.projects, parentDir: listing.parentDir }));
         return;
       }
 

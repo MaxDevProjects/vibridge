@@ -18,8 +18,13 @@
       <WorkspaceSwitcher
         :workspaces="relayWorkspaceOptions"
         :active-workspace-id="activeWorkspaceKey"
+        :projects="projects"
+        :loading-projects="loadingProjects"
+        :project-opening="projectOpening"
         @select="bridge.setActiveWorkspace"
         @open-project="requestOpenProject"
+        @request-projects="requestOpenProject"
+        @open-listed-project="openListedProject"
       />
     </div>
 
@@ -117,6 +122,12 @@ interface ChatMessage {
   ts: number
 }
 
+interface ProjectItem {
+  name: string
+  path: string
+  isActive: boolean
+}
+
 const bridge = useDevBridge()
 const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
@@ -199,6 +210,9 @@ const currentTool = ref<string | null>(null)
 const recording = ref(false)
 const scrollEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+const projects = ref<ProjectItem[]>([])
+const loadingProjects = ref(false)
+const projectOpening = ref<Record<string, string>>({})
 
 function nowTs() { return Date.now() }
 
@@ -226,7 +240,14 @@ function clearChat() {
 }
 
 function requestOpenProject() {
-  bridge.send({ type: 'open_project' })
+  loadingProjects.value = true
+  bridge.send({ type: 'list_projects' })
+}
+
+function openListedProject(payload: { path: string; newWindow: boolean }) {
+  projectOpening.value[payload.path] = payload.newWindow ? 'parallel' : 'replace'
+  bridge.send({ type: 'open_project', path: payload.path, newWindow: payload.newWindow })
+  setTimeout(() => { delete projectOpening.value[payload.path] }, 4_000)
 }
 
 function autoResize(e: Event) {
@@ -294,6 +315,9 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
     const closedCli = cliList.value.find(cli => `DevBridge ${cli.name}` === terminalName)
     if (closedCli && replyTarget.value === closedCli.id) setTarget('bash')
     if (terminalName === 'bash' && replyTarget.value === 'bash') setTarget('bash')
+  } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
+    loadingProjects.value = false
+    projects.value = msg.projects as ProjectItem[]
   }
 })
 

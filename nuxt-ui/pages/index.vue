@@ -99,14 +99,14 @@
               <span v-if="proj.isActive" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
               <button
                 v-else
-                :disabled="projectOpening[proj.path] === 'opening'"
+                :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
                 class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
                 :style="projectOpening[proj.path] === 'done'
                   ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
                   : 'border:1px solid var(--border);color:var(--text);background:none'"
                 @click="openProject(proj.path, proj.name)"
               >
-                {{ projectOpening[proj.path] === 'opening' ? 'Ouverture…' : projectOpening[proj.path] === 'done' ? 'Ouvert ✓' : 'Ouvrir →' }}
+                {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? 'Ouverture…' : projectOpening[proj.path] === 'done' ? 'Ouvert ✓' : 'Ouvrir →' }}
               </button>
             </div>
             <p v-if="!projectsList.length" class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
@@ -230,8 +230,13 @@
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="activeWorkspaceKey"
+              :projects="projectsList"
+              :loading-projects="projectsLoading"
+              :project-opening="projectOpening"
               @select="bridge.setActiveWorkspace"
-              @open-project="requestOpenProject"
+              @open-project="requestProjects"
+              @request-projects="requestProjects"
+              @open-listed-project="openListedProject"
             />
           </div>
 
@@ -341,8 +346,13 @@
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="activeWorkspaceKey"
+              :projects="projectsList"
+              :loading-projects="projectsLoading"
+              :project-opening="projectOpening"
               @select="bridge.setActiveWorkspace"
-              @open-project="requestOpenProject"
+              @open-project="requestProjects"
+              @request-projects="requestProjects"
+              @open-listed-project="openListedProject"
             />
           </div>
           <div ref="chatScroll" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
@@ -399,14 +409,14 @@
                 <span v-if="proj.isActive" class="text-[9px] shrink-0 ml-2" style="color:var(--muted)">actif</span>
                 <button
                   v-else
-                  :disabled="projectOpening[proj.path] === 'opening'"
+                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
                   class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
                   :style="projectOpening[proj.path] === 'done'
                     ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
                     : 'border:1px solid var(--border);color:var(--text);background:none'"
                   @click="openProject(proj.path, proj.name)"
                 >
-                  {{ projectOpening[proj.path] === 'opening' ? '…' : projectOpening[proj.path] === 'done' ? '✓' : '→' }}
+                  {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? '…' : projectOpening[proj.path] === 'done' ? '✓' : '→' }}
                 </button>
               </div>
               <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">— Non connecté —</p>
@@ -702,9 +712,11 @@ const previewUrl = ref('')
 // Projects list
 interface ProjectItem { name: string; path: string; isActive: boolean }
 const projectsList = ref<ProjectItem[]>([])
+const projectsLoading = ref(false)
 const projectOpening = ref<Record<string, string>>({})
 
 async function loadProjects() {
+  projectsLoading.value = true
   try {
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
@@ -714,17 +726,20 @@ async function loadProjects() {
       projectsList.value = data.projects ?? []
     }
   } catch { /* silent if not connected */ }
+  finally {
+    projectsLoading.value = false
+  }
 }
 
-async function openProject(projPath: string, projName: string) {
-  projectOpening.value[projPath] = 'opening'
+async function openProject(projPath: string, projName: string, newWindow = true) {
+  projectOpening.value[projPath] = newWindow ? 'parallel' : 'replace'
   try {
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
     const res = await fetch(`${base}/projects/open`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectPath: projPath }),
+      body: JSON.stringify({ projectPath: projPath, newWindow }),
     })
     if (res.ok) {
       projectOpening.value[projPath] = 'done'
@@ -736,6 +751,21 @@ async function openProject(projPath: string, projName: string) {
   } catch {
     projectOpening.value[projPath] = ''
   }
+}
+
+async function requestProjects() {
+  if (bridge.mode.value === 'relay') {
+    projectsLoading.value = true
+    bridge.send({ type: 'list_projects' })
+    return
+  }
+  await loadProjects()
+}
+
+function openListedProject(payload: { path: string; newWindow: boolean }) {
+  const project = projectsList.value.find(item => item.path === payload.path)
+  if (!project) return
+  void openProject(project.path, project.name, payload.newWindow)
 }
 
 const previewFrame = ref<HTMLIFrameElement | null>(null)
@@ -1217,8 +1247,8 @@ function sendChat() {
 }
 
 function requestOpenProject() {
-  bridge.send({ type: 'open_project' })
-  pushActivity('sys', 'Ouverture du sélecteur de dossier demandée')
+  void requestProjects()
+  pushActivity('sys', 'Chargement de la liste des projets')
 }
 
 function appendAiMessage(text: string, tool?: string, merge = false) {
@@ -1350,6 +1380,9 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     cliList.value = msg.clis as CliItem[]
   } else if (msg.type === 'projects_update' && Array.isArray(msg.projects)) {
     projectsList.value = msg.projects as ProjectItem[]
+  } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
+    projectsLoading.value = false
+    projectsList.value = msg.projects as ProjectItem[]
   } else if (msg.type === 'cli_started') {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
@@ -1382,7 +1415,7 @@ watch(() => bridge.status.value, (next) => {
         .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
         .then(d => { if (d.clis) cliList.value = d.clis })
         .catch(() => {})
-      void loadProjects()
+      void requestProjects()
     }
   }
 }, { immediate: true })

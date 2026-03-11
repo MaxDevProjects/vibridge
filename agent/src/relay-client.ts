@@ -3,6 +3,8 @@ import type { AdapterManager } from './adapters/manager';
 import type { FileService } from './files';
 import type { IpcServer } from './ipc';
 import type { MessageQueue, OutputPayload } from './queue';
+import type { WorkspaceIdentity } from './workspace';
+import { listProjects } from './projects';
 
 interface RelaySessionState {
   enabled: boolean;
@@ -40,6 +42,7 @@ interface RelayClientOptions {
   publicUrl: string;
   sessionLabel: string;
   workspaceFolders: string[];
+  workspace: WorkspaceIdentity;
   adapters: AdapterManager;
   files: FileService;
   ipc: IpcServer;
@@ -210,6 +213,12 @@ export class RelayClient {
     if (msg.type === 'auth_ok') {
       if (!this.session) return;
       this.session = { ...this.session, connected: true, agentConnected: true, lastError: null };
+      this.send('agent_hello', {
+        token: this.session.agentToken,
+        workspace_id: this.options.workspace.id,
+        workspace_name: this.options.workspace.name,
+        workspace_path: this.options.workspace.path,
+      });
       void this.sendStatusSnapshot();
       return;
     }
@@ -257,7 +266,20 @@ export class RelayClient {
     }
 
     if (type === 'open_project') {
-      this.options.ipc.sendToExtension({ type: 'open_project' });
+      this.options.ipc.sendToExtension({
+        type: 'open_project',
+        projectPath: typeof msg.path === 'string' ? msg.path : undefined,
+        newWindow: msg.newWindow === true,
+      });
+      return;
+    }
+
+    if (type === 'list_projects') {
+      const listing = listProjects(this.options.workspace.path);
+      this.send('projects_list', {
+        projects: listing.projects,
+        parentDir: listing.parentDir,
+      });
       return;
     }
 
