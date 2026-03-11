@@ -3,7 +3,7 @@ import express, { Request, Response, NextFunction } from 'express'
 import { WebSocketServer, WebSocket, RawData } from 'ws'
 import { RelayAuth } from './auth'
 import { RelayStore } from './store'
-import type { RelayRole, SessionClaims } from './types'
+import type { ConnectedWorkspace, RelayRole, SessionClaims } from './types'
 
 interface RelayServerOptions {
   port: number
@@ -16,12 +16,21 @@ interface RelayServerOptions {
 
 interface AuthenticatedSocket extends WebSocket {
   claims?: SessionClaims
+  workspaceId?: string
+  workspaceName?: string
+  workspacePath?: string
+}
+
+interface SessionPeers {
+  mobile: AuthenticatedSocket | null
+  agents: Map<string, AuthenticatedSocket>
+  activeWorkspaceId: string | null
 }
 
 export function createRelayServer(options: RelayServerOptions) {
   const app = express()
   const { auth, store, publicBaseUrl, uiBaseUrl, sessionTtlMs } = options
-  const peers = new Map<string, Map<RelayRole, AuthenticatedSocket>>()
+  const peers = new Map<string, SessionPeers>()
 
   app.use((_req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -48,6 +57,16 @@ export function createRelayServer(options: RelayServerOptions) {
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true })
+  })
+
+  app.get('/workspaces', (req, res) => {
+    const token = String(req.query.token ?? '').trim()
+    const claims = auth.verify(token)
+    if (!claims) {
+      res.status(401).json({ error: 'unauthorized' })
+      return
+    }
+    res.json(listConnectedWorkspaces(claims.sessionId))
   })
 
   app.post('/api/relay/sessions', (req, res) => {
@@ -114,8 +133,9 @@ export function createRelayServer(options: RelayServerOptions) {
       workspaceFolders: session.workspaceFolders,
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
-      agentConnected: Boolean(sessionPeers?.get('agent')),
-      mobileConnected: Boolean(sessionPeers?.get('mobile')),
+      agentConnected: Boolean(sessionPeers?.agents.size),
+      mobileConnected: Boolean(sessionPeers?.mobile),
+      workspaces: listConnectedWorkspaces(session.id),
       history: session.history,
     })
   })
@@ -123,17 +143,90 @@ export function createRelayServer(options: RelayServerOptions) {
   const httpServer = http.createServer(app)
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
 
+  function getSessionPeers(sessionId: string): SessionPeers {
+    const sessionPeers = peers.get(sessionId)
+    if (sessionPeers) return sessionPeers
+    const next: SessionPeers = {
+      mobile: null,
+      agents: new Map<string, AuthenticatedSocket>(),
+      activeWorkspaceId: null,
+    }
+    peers.set(sessionId, next)
+    return next
+  }
+
+  function listConnectedWorkspaces(sessionId: string): ConnectedWorkspace[] {
+    const sessionPeers = peers.get(sessionId)
+    if (!sessionPeers) return []
+    return Array.from(sessionPeers.agents.entries()).map(([workspaceId, socket]) => ({
+      id: workspaceId,
+      name: socket.workspaceName || workspaceId,
+      path: socket.workspacePath,
+      active: sessionPeers.activeWorkspaceId === workspaceId,
+    }))
+  }
+
   function broadcastPeerStatus(sessionId: string) {
     const sessionPeers = peers.get(sessionId)
     if (!sessionPeers) return
     const payload = JSON.stringify({
       type: 'peer_status',
-      agentConnected: Boolean(sessionPeers.get('agent')),
-      mobileConnected: Boolean(sessionPeers.get('mobile')),
+      agentConnected: sessionPeers.agents.size > 0,
+      mobileConnected: Boolean(sessionPeers.mobile),
     })
-    for (const peer of sessionPeers.values()) {
+    if (sessionPeers.mobile?.readyState === WebSocket.OPEN) {
+      sessionPeers.mobile.send(payload)
+    }
+    for (const peer of sessionPeers.agents.values()) {
       if (peer.readyState === WebSocket.OPEN) peer.send(payload)
     }
+  }
+
+  function sendWorkspaceEvent(sessionId: string, payload: Record<string, unknown>) {
+    const mobile = peers.get(sessionId)?.mobile
+    if (mobile?.readyState === WebSocket.OPEN) {
+      mobile.send(JSON.stringify(payload))
+    }
+  }
+
+  function registerAgentWorkspace(ws: AuthenticatedSocket, workspaceId: string, workspaceName: string, workspacePath?: string) {
+    if (!ws.claims) return
+    const sessionPeers = getSessionPeers(ws.claims.sessionId)
+    const normalizedWorkspaceId = workspaceId.trim()
+    if (!normalizedWorkspaceId) return
+
+    if (ws.workspaceId && ws.workspaceId !== normalizedWorkspaceId) {
+      sessionPeers.agents.delete(ws.workspaceId)
+    }
+
+    ws.workspaceId = normalizedWorkspaceId
+    ws.workspaceName = workspaceName || normalizedWorkspaceId
+    ws.workspacePath = workspacePath
+
+    sessionPeers.agents.delete(normalizedWorkspaceId)
+    sessionPeers.agents.set(normalizedWorkspaceId, ws)
+    sessionPeers.activeWorkspaceId = normalizedWorkspaceId
+
+    sendWorkspaceEvent(ws.claims.sessionId, {
+      type: 'workspace_connected',
+      workspace_id: normalizedWorkspaceId,
+      workspace_name: ws.workspaceName,
+    })
+    broadcastPeerStatus(ws.claims.sessionId)
+  }
+
+  function resolveTargetAgent(sessionId: string, requestedWorkspaceId?: string): AuthenticatedSocket | null {
+    const sessionPeers = peers.get(sessionId)
+    if (!sessionPeers) return null
+    const explicitWorkspaceId = requestedWorkspaceId?.trim()
+    if (explicitWorkspaceId) {
+      return sessionPeers.agents.get(explicitWorkspaceId) ?? null
+    }
+    if (sessionPeers.activeWorkspaceId) {
+      return sessionPeers.agents.get(sessionPeers.activeWorkspaceId) ?? null
+    }
+    const lastAgent = Array.from(sessionPeers.agents.values()).at(-1)
+    return lastAgent ?? null
   }
 
   wss.on('connection', (ws: AuthenticatedSocket) => {
@@ -162,13 +255,15 @@ export function createRelayServer(options: RelayServerOptions) {
           return
         }
         ws.claims = claims
-        const sessionPeers = peers.get(claims.sessionId) ?? new Map<RelayRole, AuthenticatedSocket>()
-        sessionPeers.set(claims.role, ws)
-        peers.set(claims.sessionId, sessionPeers)
+        const sessionPeers = getSessionPeers(claims.sessionId)
+        if (claims.role === 'mobile') {
+          sessionPeers.mobile = ws
+        }
         ws.send(JSON.stringify({
           type: 'auth_ok',
           role: claims.role,
           sessionId: claims.sessionId,
+          workspaces: listConnectedWorkspaces(claims.sessionId),
           history: session.history,
         }))
         broadcastPeerStatus(claims.sessionId)
@@ -176,8 +271,28 @@ export function createRelayServer(options: RelayServerOptions) {
       }
 
       const { sessionId, role } = ws.claims
+      if (role === 'agent' && msg.type === 'agent_hello') {
+        const workspaceId = typeof msg.workspace_id === 'string' ? msg.workspace_id : ''
+        if (!workspaceId.trim()) return
+        registerAgentWorkspace(
+          ws,
+          workspaceId,
+          typeof msg.workspace_name === 'string' ? msg.workspace_name : workspaceId,
+          typeof msg.workspace_path === 'string' ? msg.workspace_path : undefined,
+        )
+        return
+      }
+
+      const targetWorkspaceId = typeof msg.workspace_id === 'string'
+        ? msg.workspace_id
+        : role === 'agent'
+          ? ws.workspaceId
+          : undefined
       const envelope = store.append(sessionId, role, {
         type: String(msg.type ?? 'relay_message'),
+        workspaceId: targetWorkspaceId,
+        workspaceName: role === 'agent' ? ws.workspaceName : undefined,
+        workspacePath: role === 'agent' ? ws.workspacePath : undefined,
         target: typeof msg.target === 'string' ? msg.target : undefined,
         tool: typeof msg.tool === 'string' ? msg.tool : undefined,
         text: typeof msg.text === 'string' ? msg.text : undefined,
@@ -189,21 +304,39 @@ export function createRelayServer(options: RelayServerOptions) {
       }
       const sessionPeers = peers.get(sessionId)
       if (!sessionPeers) return
-      const peerRole: RelayRole = role === 'agent' ? 'mobile' : 'agent'
-      const peer = sessionPeers.get(peerRole)
-      if (peer?.readyState === WebSocket.OPEN) {
-        peer.send(JSON.stringify(envelope))
+      if (role === 'agent') {
+        if (sessionPeers.mobile?.readyState === WebSocket.OPEN) {
+          sessionPeers.mobile.send(JSON.stringify(envelope))
+        }
+        return
+      }
+      const targetAgent = resolveTargetAgent(sessionId, targetWorkspaceId)
+      if (targetAgent?.readyState === WebSocket.OPEN) {
+        targetAgent.send(JSON.stringify(envelope))
       }
     })
 
     ws.on('close', () => {
       if (!ws.claims) return
       const sessionPeers = peers.get(ws.claims.sessionId)
-      sessionPeers?.delete(ws.claims.role)
-      if (sessionPeers && sessionPeers.size === 0) {
-        peers.delete(ws.claims.sessionId)
+      if (!sessionPeers) return
+      if (ws.claims.role === 'mobile') {
+        if (sessionPeers.mobile === ws) sessionPeers.mobile = null
+      } else if (ws.workspaceId) {
+        sessionPeers.agents.delete(ws.workspaceId)
+        sendWorkspaceEvent(ws.claims.sessionId, {
+          type: 'workspace_disconnected',
+          workspace_id: ws.workspaceId,
+        })
+        if (sessionPeers.activeWorkspaceId === ws.workspaceId) {
+          sessionPeers.activeWorkspaceId = Array.from(sessionPeers.agents.keys()).at(-1) ?? null
+        }
       }
-      broadcastPeerStatus(ws.claims.sessionId)
+      if (!sessionPeers.mobile && sessionPeers.agents.size === 0) {
+        peers.delete(ws.claims.sessionId)
+      } else {
+        broadcastPeerStatus(ws.claims.sessionId)
+      }
     })
   })
 

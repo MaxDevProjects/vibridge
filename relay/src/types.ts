@@ -5,6 +5,9 @@ export interface RelayEnvelope {
   sessionId: string
   source: RelayRole | 'relay'
   type: string
+  workspaceId?: string
+  workspaceName?: string
+  workspacePath?: string
   target?: string
   tool?: string
   text?: string
@@ -28,4 +31,11 @@ export interface RelaySession {
 export interface SessionClaims {
   sessionId: string
   role: RelayRole
+}
+
+export interface ConnectedWorkspace {
+  id: string
+  name: string
+  path?: string
+  active: boolean
 }
