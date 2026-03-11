@@ -25,34 +25,18 @@
     </div>
 
     <!-- TARGET SELECTOR -->
-    <div class="shrink-0 border-b border-border px-3 py-1.5 flex items-center gap-2">
-      <span class="text-[9px] uppercase tracking-[0.15em] text-muted shrink-0">➡</span>
+    <div class="shrink-0 border-b border-border px-3 py-2">
       <div class="flex gap-1.5 overflow-x-auto">
         <button
-          v-for="t in activeTargets"
-          :key="t.id"
-          class="shrink-0 text-[9px] uppercase tracking-[0.1em] px-2 py-1 transition-colors"
-          :style="replyTarget === t.id
-            ? 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
-            : t.launched
-              ? 'border:1px solid var(--border);color:var(--muted);background:none'
-              : 'border:1px solid var(--border);color:var(--dot-red);background:none;opacity:0.6'"
-          @click="setTarget(t.id)"
+          v-for="target in chatTargets"
+          :key="target.id"
+          :disabled="target.state === 'starting'"
+          class="shrink-0 text-[10px] uppercase tracking-[0.14em] px-3 py-1.5 font-mono transition-colors disabled:pointer-events-none"
+          :style="targetButtonStyle(target)"
+          @click="selectChatTarget(target)"
         >
-          {{ t.label }}
+          {{ targetButtonLabel(target) }}
         </button>
-        <!-- Undetected / unlaunched CLIs with a [Lancer] button -->
-        <template v-for="cli in cliList.filter(c => c.detected)" :key="'launch-' + cli.id">
-          <button
-            v-if="!activeTargets.some(t => t.id === `terminal:DevBridge ${cli.name}`)"
-            :disabled="!!cliLaunching[cli.id]"
-            class="shrink-0 text-[9px] uppercase tracking-[0.1em] px-2 py-1 transition-colors disabled:opacity-40"
-            style="border:1px dashed var(--border);color:var(--muted);background:none"
-            @click="launchCli(cli.id)"
-          >
-            {{ cliLaunching[cli.id] ? '…' : `+ ${cli.name}` }}
-          </button>
-        </template>
       </div>
     </div>
 
@@ -96,7 +80,7 @@
         </button>
         <!-- Send button -->
         <button
-          :disabled="!draft.trim() || bridge.status.value !== 'connected'"
+          :disabled="!draft.trim() || bridge.status.value !== 'connected' || !selectedTargetReady"
           class="border border-text text-text text-xs uppercase tracking-widest px-4 py-2 hover:bg-surface2 disabled:opacity-30 transition-colors"
           @click="sendMessage"
         >
@@ -113,7 +97,7 @@
 <script setup lang="ts">
 import type { WsMessage } from '~/composables/useDevBridge'
 
-const REPLY_TARGET_KEY = 'vb:replyTarget'
+const REPLY_TARGET_KEY = 'vb:chatTarget'
 
 interface ChatMessage {
   id: string
@@ -130,9 +114,18 @@ interface CliItem { id: string; name: string; command: string; detected: boolean
 const cliList = ref<CliItem[]>([])
 const cliLaunching = ref<Record<string, boolean>>({})
 
+type ChatTargetState = 'idle' | 'starting' | 'active'
+
+interface ChatTarget {
+  id: string
+  label: string
+  terminalName?: string
+  state: ChatTargetState
+}
+
 // Target (synced with index.vue via localStorage)
 const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? '') : ''
+  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
 )
 
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
@@ -140,25 +133,21 @@ const terminals = computed(() =>
   Array.isArray(ideState.value?.terminals) ? ideState.value!.terminals! : []
 )
 
-const activeTargets = computed(() => {
-  const list: Array<{ id: string; label: string; launched: boolean }> = []
-  // Detected CLIs — launched ones come first
+const chatTargets = computed<ChatTarget[]>(() => {
+  const list: ChatTarget[] = [
+    { id: 'bash', label: 'BASH', terminalName: 'bash', state: replyTarget.value === 'bash' ? 'active' : 'idle' },
+  ]
   for (const cli of cliList.value) {
-    if (!cli.detected) continue
-    const termName = `DevBridge ${cli.name}`
-    const isLaunched = terminals.value.some(t => String((t as { name?: string }).name ?? '') === termName)
-    list.push({ id: `terminal:${termName}`, label: `⟨⟩ ${cli.name}`, launched: isLaunched })
+    const terminalName = `DevBridge ${cli.name}`
+    const isLaunched = terminals.value.some(t => String((t as { name?: string }).name ?? '') === terminalName)
+    const isStarting = Boolean(cliLaunching.value[cli.id])
+    list.push({
+      id: cli.id,
+      label: cliButtonName(cli),
+      terminalName,
+      state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
+    })
   }
-  // Sort: launched first
-  list.sort((a, b) => (b.launched ? 1 : 0) - (a.launched ? 1 : 0))
-  // Other open terminals (not from CLIs)
-  for (const t of terminals.value) {
-    const name = String((t as { name?: string }).name ?? '').trim()
-    if (!name) continue
-    if (list.some(l => l.id === `terminal:${name}`)) continue
-    list.push({ id: `terminal:${name}`, label: `■ ${name}`, launched: true })
-  }
-  list.push({ id: 'chat:devbridge', label: '◈ Chat', launched: true })
   return list
 })
 
@@ -172,6 +161,21 @@ function launchCli(cliId: string) {
 function setTarget(id: string) {
   replyTarget.value = id
   if (import.meta.client) localStorage.setItem(REPLY_TARGET_KEY, id)
+}
+
+function selectChatTarget(target: ChatTarget) {
+  if (target.id === 'bash') {
+    setTarget('bash')
+    return
+  }
+  if (target.state === 'starting') return
+  setTarget(target.id)
+  const cli = cliList.value.find(item => item.id === target.id)
+  const isLaunched = target.terminalName
+    ? terminals.value.some(t => String((t as { name?: string }).name ?? '') === target.terminalName)
+    : false
+  if (!cli || isLaunched) return
+  launchCli(target.id)
 }
 
 const messages = ref<ChatMessage[]>([])
@@ -192,10 +196,9 @@ function scrollToBottom() {
 
 function sendMessage() {
   const text = draft.value.trim()
-  if (!text || bridge.status.value !== 'connected') return
+  if (!text || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
   messages.value.push({ id: Date.now().toString(), text, direction: 'user', ts: nowTs() })
-  const isTerminal = replyTarget.value.startsWith('terminal:')
-  bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: isTerminal })
+  bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: true })
   draft.value = ''
   aiTyping.value = true
   if (inputEl.value) { inputEl.value.style.height = 'auto' }
@@ -256,10 +259,14 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'cli_started') {
     const termName = String(msg.terminalName ?? '')
     cliLaunching.value[String(msg.cliId ?? '')] = false
-    // Auto-select the new terminal
-    if (termName) setTarget(`terminal:${termName}`)
+    if (msg.cliId) setTarget(String(msg.cliId))
     // Refresh IDE state so the terminal appears in the list
     void bridge.fetchAgentStatus()
+  } else if (msg.type === 'terminal_closed') {
+    const terminalName = String(msg.terminalName ?? '')
+    const closedCli = cliList.value.find(cli => `DevBridge ${cli.name}` === terminalName)
+    if (closedCli && replyTarget.value === closedCli.id) setTarget('bash')
+    if (terminalName === 'bash' && replyTarget.value === 'bash') setTarget('bash')
   }
 })
 
@@ -280,4 +287,43 @@ watch(() => bridge.status.value, (status) => {
 onUnmounted(offMessage)
 
 useHead({ title: 'Chat — VibeBridge' })
+
+const selectedTargetReady = computed(() => {
+  if (replyTarget.value === 'bash') return true
+  const selected = chatTargets.value.find(target => target.id === replyTarget.value)
+  return Boolean(selected && selected.state !== 'starting' && selected.terminalName && terminals.value.some(
+    t => String((t as { name?: string }).name ?? '') === selected.terminalName
+  ))
+})
+
+watch(chatTargets, (targets) => {
+  if (!targets.some(target => target.id === replyTarget.value)) {
+    setTarget('bash')
+  }
+}, { immediate: true })
+
+function cliButtonName(cli: CliItem) {
+  if (cli.id === 'claude-code') return 'CLAUDE'
+  if (cli.id === 'copilot') return 'COPILOT'
+  if (cli.id === 'codex') return 'CODEX'
+  if (cli.id === 'aider') return 'AIDER'
+  const firstToken = String(cli.command ?? '').trim().split(/\s+/)[0] ?? ''
+  return (firstToken || cli.name).replace(/[^a-z0-9]+/gi, '').toUpperCase()
+}
+
+function targetButtonLabel(target: ChatTarget) {
+  if (target.state === 'starting') return `▶ ${target.label}`
+  if (target.state === 'active') return `${target.label} ●`
+  return target.label
+}
+
+function targetButtonStyle(target: ChatTarget) {
+  if (target.state === 'active') {
+    return 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
+  }
+  if (target.state === 'starting') {
+    return 'border:1px solid var(--border);color:var(--muted);background:none;opacity:0.45'
+  }
+  return 'border:1px solid var(--border);color:var(--muted);background:none'
+}
 </script>

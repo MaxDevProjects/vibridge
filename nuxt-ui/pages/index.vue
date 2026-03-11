@@ -338,13 +338,14 @@
             </div>
             <div class="flex gap-2 overflow-x-auto pb-2 mb-2">
               <button
-                v-for="target in activeTargets"
+                v-for="target in chatTargets"
                 :key="target.id"
-                class="shrink-0 text-[9px] uppercase tracking-[0.1em] px-2.5 py-1.5"
-                :style="replyTarget === target.id ? 'border:1px solid var(--text);color:var(--text);background:var(--surface)' : 'border:1px solid var(--border);color:var(--muted);background:none'"
-                @click="setReplyTarget(target.id, true)"
+                :disabled="target.state === 'starting'"
+                class="shrink-0 text-[10px] uppercase tracking-[0.14em] px-3 py-1.5 font-mono disabled:pointer-events-none"
+                :style="targetButtonStyle(target)"
+                @click="selectChatTarget(target)"
               >
-                {{ target.label }} · {{ target.support }}
+                {{ targetButtonLabel(target) }}
               </button>
             </div>
             <div class="flex gap-2 items-end">
@@ -356,7 +357,7 @@
               style="background:var(--surface);border:1px solid var(--border);max-height:120px;font-family:inherit"
               @keydown.enter.exact.prevent="sendChat"
             />
-            <button class="w-10 h-10 flex items-center justify-center text-sm shrink-0" style="background:var(--text);color:var(--bg);border:1px solid var(--text)" @click="sendChat">↑</button>
+            <button :disabled="!selectedChatTargetReady" class="w-10 h-10 flex items-center justify-center text-sm shrink-0 disabled:opacity-30" style="background:var(--text);color:var(--bg);border:1px solid var(--text)" @click="sendChat">↑</button>
             </div>
           </div>
         </div>
@@ -624,6 +625,36 @@ function launchCli(cliId: string) {
   bridge.send({ type: 'start_cli', cliId })
   // Optimistic: clear busy flag after 5s (cli_started message will update UI too)
   setTimeout(() => { cliLaunching.value[cliId] = false }, 5_000)
+}
+
+function cliButtonName(cli: CliItem) {
+  if (cli.id === 'claude-code') return 'CLAUDE'
+  if (cli.id === 'copilot') return 'COPILOT'
+  if (cli.id === 'codex') return 'CODEX'
+  if (cli.id === 'aider') return 'AIDER'
+  const firstToken = String(cli.command ?? '').trim().split(/\s+/)[0] ?? ''
+  return (firstToken || cli.name).replace(/[^a-z0-9]+/gi, '').toUpperCase()
+}
+
+function targetButtonLabel(target: ChatTarget) {
+  if (target.state === 'starting') return `▶ ${target.label}`
+  if (target.state === 'active') return `${target.label} ●`
+  return target.label
+}
+
+function targetButtonStyle(target: ChatTarget) {
+  if (target.state === 'active') {
+    return 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
+  }
+  if (target.state === 'starting') {
+    return 'border:1px solid var(--border);color:var(--muted);background:none;opacity:0.45'
+  }
+  return 'border:1px solid var(--border);color:var(--muted);background:none'
+}
+
+function isChatTargetId(value: unknown) {
+  const id = String(value ?? '').trim()
+  return id === 'bash' || cliList.value.some(cli => cli.id === id)
 }
 
 function killCli(terminalName: string) {
@@ -1081,76 +1112,61 @@ const quickActions = computed(() => [
 
 // Chat
 interface ChatMsg { id: string; text: string; direction: 'user' | 'ai'; tool?: string; ts: number }
+type ChatTargetState = 'idle' | 'starting' | 'active'
+interface ChatTarget { id: string; label: string; terminalName?: string; state: ChatTargetState }
 const chatMessages = ref<ChatMsg[]>([])
 const chatDraft  = ref('')
 const aiTyping   = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const outputBuffer = new Map<string, string>()
 const outputTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const REPLY_TARGET_KEY = 'vb:replyTarget'
+const REPLY_TARGET_KEY = 'vb:chatTarget'
 const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'terminal:DevBridge Codex') : 'terminal:DevBridge Codex'
+  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
 )
 const replyTargetPinned = ref(false)
 const replyTargetLabel = computed(() => {
-  const target = activeTargets.value.find((item) => item.id === replyTarget.value)
-  return target?.label ?? replyTarget.value ?? activeToolLabel.value ?? 'adapter actif'
+  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
+  return target?.label ?? 'BASH'
 })
-const activeTargets = computed(() => {
-  const targets: Array<{ id: string; label: string; support: 'direct' | 'vscode' | 'local' }> = []
+const chatTargets = computed<ChatTarget[]>(() => {
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
-
-  // DevBridge Codex terminal always first
-  targets.push({ id: 'terminal:DevBridge Codex', label: '⟨⟩ DevBridge Codex', support: 'direct' })
-
-  for (const terminal of terminals) {
-    const name = String(terminal?.name ?? '').trim()
-    const cwd = String(terminal?.cwd ?? '').trim()
-    if (!name) continue
-    const project = cwd ? lastPathSegment(cwd) : ''
+  const targets: ChatTarget[] = [
+    { id: 'bash', label: 'BASH', terminalName: 'bash', state: replyTarget.value === 'bash' ? 'active' : 'idle' },
+  ]
+  for (const cli of cliList.value) {
+    const terminalName = `DevBridge ${cli.name}`
+    const isLaunched = terminals.some(terminal => String(terminal?.name ?? '').trim() === terminalName)
+    const isStarting = Boolean(cliLaunching.value[cli.id])
     targets.push({
-      id: `terminal:${name}`,
-      label: project ? `Terminal ${name} · ${project}` : `Terminal ${name}`,
-      support: 'direct',
+      id: cli.id,
+      label: cliButtonName(cli),
+      terminalName,
+      state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
     })
   }
-
-  for (const tool of tools.value) {
-    if (!tool.available) continue
-    if (targets.some((item) => item.id === tool.id)) continue
-    targets.push({
-      id: tool.id,
-      label: tool.active ? `${tool.label} · par défaut` : tool.label,
-      support: tool.id.includes('cli') ? 'local' : 'vscode',
-    })
-  }
-
-  targets.push({ id: 'chat:devbridge', label: '◈ DevBridge Chat', support: 'vscode' })
-
   return targets
 })
 
-function resolveChatDestination(target: string) {
-  const normalized = target.trim()
-  if (!normalized) return { target: undefined, tool: undefined }
-  const tool = tools.value.find((item) => item.id === normalized)
-  if (tool) return { target: undefined, tool: tool.id }
-  return { target: normalized, tool: undefined }
-}
+const selectedChatTargetReady = computed(() => {
+  if (replyTarget.value === 'bash') return true
+  const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
+  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
+  return Boolean(target && target.state !== 'starting' && target.terminalName && terminals.some(
+    terminal => String(terminal?.name ?? '').trim() === target.terminalName
+  ))
+})
 
 function sendChat() {
   const text = chatDraft.value.trim()
-  if (!text) return
+  if (!text || !selectedChatTargetReady.value) return
   chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, ts: Date.now() })
   pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
-  const destination = resolveChatDestination(replyTarget.value || activeTool.value?.id || '')
-  const isTerminalTarget = (destination.target ?? '').startsWith('terminal:')
   bridge.send({
     type: 'message',
     text,
-    target: destination.target,
-    tool: destination.tool,
-    sendEnter: isTerminalTarget,
+    target: replyTarget.value,
+    sendEnter: true,
   })
   chatDraft.value = ''
   aiTyping.value = true
@@ -1174,6 +1190,17 @@ function setReplyTarget(nextTarget: string, pinned = false) {
   replyTarget.value = nextTarget
   if (import.meta.client) localStorage.setItem(REPLY_TARGET_KEY, nextTarget)
   if (pinned) replyTargetPinned.value = true
+}
+
+function selectChatTarget(target: ChatTarget) {
+  if (target.state === 'starting') return
+  setReplyTarget(target.id, true)
+  if (target.id === 'bash') return
+  const isLaunched = Boolean(target.terminalName && Array.isArray(ideState.value?.terminals) && ideState.value?.terminals?.some(
+    terminal => String(terminal?.name ?? '').trim() === target.terminalName
+  ))
+  if (!cliList.value.some(cli => cli.id === target.id) || isLaunched) return
+  launchCli(target.id)
 }
 
 function flushBufferedOutput(tool = 'agent') {
@@ -1208,17 +1235,14 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'chat_response' || msg.type === 'ai_message') {
     flushBufferedOutput((msg.tool as string) ?? 'agent')
     aiTyping.value = false
-    if (!replyTargetPinned.value) {
-      setReplyTarget(String(msg.target ?? msg.tool ?? replyTarget.value ?? ''))
+    if (!replyTargetPinned.value && isChatTargetId(msg.target)) {
+      setReplyTarget(String(msg.target))
     }
     appendAiMessage(msg.text ?? '', msg.tool as string)
     pushActivity('ai', shortText(msg.text ?? '', 70))
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
   } else if (msg.type === 'output' && msg.text) {
     aiTyping.value = false
-    if (!replyTargetPinned.value) {
-      setReplyTarget(String(msg.tool ?? replyTarget.value ?? ''))
-    }
     queueOutputChunk(msg.text, msg.tool as string)
   } else if (msg.type === 'adapter_exit') {
     flushBufferedOutput((msg.tool as string) ?? 'agent')
@@ -1252,7 +1276,6 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const textPreview = String(msg.textPreview ?? '')
     const workspaceFolders = Array.isArray(msg.workspaceFolders) ? String(msg.workspaceFolders[0] ?? '') : ''
     const label = textPreview || commandLine || activeFile || terminal || workspaceFolders || kind
-    if (target && !replyTargetPinned.value) setReplyTarget(target)
     pushActivity('sys', `VS Code — ${shortText(label, 80)}`)
   } else if (msg.type === 'pairing_code' && msg.code) {
     currentPairingCode.value = String(msg.code)
@@ -1276,10 +1299,16 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
     pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
-    if (import.meta.client) localStorage.setItem('vb:replyTarget', `terminal:${String(msg.terminalName ?? '')}`)
+    if (cliId) setReplyTarget(cliId, true)
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_closed') {
     pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)
+    const terminalName = String(msg.terminalName ?? '')
+    const closedCli = cliList.value.find(cli => `DevBridge ${cli.name}` === terminalName)
+    if (closedCli && replyTarget.value === closedCli.id) {
+      replyTargetPinned.value = false
+      setReplyTarget('bash')
+    }
   }
 })
 
@@ -1303,15 +1332,13 @@ watch(() => bridge.status.value, (next) => {
   }
 }, { immediate: true })
 
-watch(activeTargets, (targets) => {
-  // Only reset if the stored target is truly gone AND it's not the static Codex entry
-  const isStaticTerminal = replyTarget.value === 'terminal:DevBridge Codex'
-  if (!isStaticTerminal && !targets.some((target) => target.id === replyTarget.value)) {
+watch(chatTargets, (targets) => {
+  if (!targets.some((target) => target.id === replyTarget.value)) {
     replyTargetPinned.value = false
-    replyTarget.value = ''
+    replyTarget.value = 'bash'
   }
   if (!replyTarget.value && targets.length) {
-    setReplyTarget(targets[0]?.id ?? '')
+    setReplyTarget('bash')
   }
 }, { immediate: true })
 

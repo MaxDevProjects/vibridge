@@ -45,6 +45,42 @@ export function createServer(deps: ServerDeps) {
     next();
   };
 
+  const routeTerminalMessage = (
+    text: string,
+    target?: string,
+    sendEnter = true,
+  ): { handled: boolean; resolvedTarget?: string } => {
+    const normalizedTarget = String(target ?? '').trim();
+    if (!normalizedTarget) return { handled: false };
+
+    if (normalizedTarget === 'bash') {
+      deps.ipc.sendToExtension({ type: 'inject_message', text, target: 'bash', sendEnter });
+      return { handled: true, resolvedTarget: 'bash' };
+    }
+
+    const cli = cliRegistry?.getById(normalizedTarget);
+    if (cli) {
+      deps.ipc.sendToExtension({
+        type: 'inject_message',
+        text,
+        target: cli.id,
+        cliId: cli.id,
+        terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
+        command: cli.command,
+        args: cli.args,
+        sendEnter,
+      });
+      return { handled: true, resolvedTarget: cli.id };
+    }
+
+    if (normalizedTarget.startsWith('terminal:')) {
+      deps.ipc.sendToExtension({ type: 'inject_message', text, target: normalizedTarget, sendEnter });
+      return { handled: true, resolvedTarget: normalizedTarget };
+    }
+
+    return { handled: false };
+  };
+
   // ── Public endpoints ───────────────────────────────────────
   /** Lightweight health probe — no auth required */
   app.get('/health', (_req, res) => {
@@ -137,8 +173,28 @@ export function createServer(deps: ServerDeps) {
 
   app.post('/message', requireAuth, (req, res) => {
     const { text, tool, target } = req.body as { text: string; tool?: string; target?: string };
+    const routed = routeTerminalMessage(text, target, true);
+    if (routed.handled) {
+      res.json({ queued: true, target: routed.resolvedTarget });
+      return;
+    }
     adapters.send({ text, tool, target });
     res.json({ queued: true });
+  });
+
+  app.post('/terminal/send', requireAuth, (req, res) => {
+    const { message, target, sendEnter } = req.body as { message?: string; target?: string; sendEnter?: boolean };
+    const text = String(message ?? '').trim();
+    if (!text) {
+      res.status(400).json({ error: 'message required' });
+      return;
+    }
+    const routed = routeTerminalMessage(text, target, sendEnter !== false);
+    if (!routed.handled) {
+      res.status(400).json({ error: 'unknown target' });
+      return;
+    }
+    res.json({ ok: true, target: routed.resolvedTarget });
   });
 
   app.post('/action', requireAuth, async (req, res) => {
@@ -252,10 +308,8 @@ export function createServer(deps: ServerDeps) {
       if (msg.type === 'message' || msg.type === 'chat') {
         const target = msg.target as string | undefined;
         const sendEnter = msg.sendEnter !== false;
-
-        if (typeof target === 'string' && target.startsWith('terminal:')) {
-          // Bypass adapters — inject directly into the named VS Code terminal
-          deps.ipc.sendToExtension({ type: 'inject_message', text: msg.text, target, sendEnter });
+        const routed = routeTerminalMessage(String(msg.text ?? ''), target, sendEnter);
+        if (routed.handled) {
           return;
         }
 

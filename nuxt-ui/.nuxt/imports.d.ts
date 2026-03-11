@@ -30,6 +30,7 @@ export { requestIdleCallback, cancelIdleCallback } from '#app/compat/idle-callba
 export { setInterval } from '#app/compat/interval';
 export { definePageMeta } from '../node_modules/nuxt/dist/pages/runtime/composables';
 export { defineLazyHydrationComponent } from '#app/composables/lazy-hydration';
-export { useDevBridge, BridgeStatus, BridgeMode, WsMessage, RelayState, AgentStatus } from '../composables/useDevBridge';
+export { useDevBridge, BridgeStatus, BridgeMode, BridgeAuthError, WsMessage, RelayState, AgentStatus } from '../composables/useDevBridge';
+export { isHttpsContext, useNetworkConfig, NetworkMode, NetworkConfig, DetectResult } from '../composables/useNetworkConfig';
 export { useViewMode, ViewMode } from '../composables/useViewMode';
 export { useColorMode } from '../node_modules/@nuxtjs/color-mode/dist/runtime/composables';

@@ -16,40 +16,29 @@ export class ChatParticipant {
     ipc.on('inject_message', (msg: Record<string, unknown>) => {
       const text = String(msg.text ?? '').trim();
       const target = String(msg.target ?? '').trim();
+      const terminalName = String(msg.terminalName ?? '').trim();
+      const command = String(msg.command ?? '').trim();
+      const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
       if (!text) return;
 
-      if (target.startsWith('terminal:')) {
-        const terminalName = target.slice('terminal:'.length);
-        const terminal = vscode.window.terminals.find((item) => item.name === terminalName);
-        if (terminal) {
+      const resolved = this.resolveTerminalTarget(target, terminalName);
+      if (resolved) {
+        const fullCommand = command ? (args.length ? `${command} ${args.join(' ')}` : command) : '';
+        const terminal = this.ensureTerminal(resolved.terminalName, fullCommand);
+        terminal.show(true);
+        const injectDelay = resolved.needsBootDelay || (fullCommand && !resolved.existed) ? 1200 : 0;
+        setTimeout(() => {
           terminal.show(true);
           this.sendToTerminal(terminal, text);
-          this.ipc.send({
-            type: 'ide_event',
-            kind: 'mobile_message_routed_terminal',
-            target,
-            terminal: terminalName,
-            textPreview: text.slice(0, 160),
-            ts: Date.now(),
-          });
-        } else {
-          // Terminal is closed — recreate it (no auto-launch; CLI must be started explicitly)
-          const newTerminal = vscode.window.createTerminal({ name: terminalName });
-          newTerminal.show(true);
-          // Wait for the shell / process to be ready before injecting
-          setTimeout(() => {
-            newTerminal.show(true);
-            this.sendToTerminal(newTerminal, text);
-          }, 1200);
-          this.ipc.send({
-            type: 'ide_event',
-            kind: 'mobile_message_routed_terminal_created',
-            target,
-            terminal: terminalName,
-            textPreview: text.slice(0, 160),
-            ts: Date.now(),
-          });
-        }
+        }, injectDelay);
+        this.ipc.send({
+          type: 'ide_event',
+          kind: resolved.existed ? 'mobile_message_routed_terminal' : 'mobile_message_routed_terminal_created',
+          target: resolved.reportTarget,
+          terminal: resolved.terminalName,
+          textPreview: text.slice(0, 160),
+          ts: Date.now(),
+        });
         return;
       }
 
@@ -150,5 +139,52 @@ export class ChatParticipant {
     // then send a distinct Enter keypress.
     terminal.sendText(text, false);
     setTimeout(() => terminal.sendText('', true), 30);
+  }
+
+  private resolveTerminalTarget(
+    target: string,
+    requestedTerminalName: string,
+  ): { terminalName: string; reportTarget: string; existed: boolean; needsBootDelay: boolean } | null {
+    if (target === 'bash') {
+      const existing = vscode.window.terminals.find((item) => item.name === 'bash');
+      return {
+        terminalName: existing?.name ?? 'bash',
+        reportTarget: 'bash',
+        existed: Boolean(existing),
+        needsBootDelay: !existing,
+      };
+    }
+
+    if (target.startsWith('terminal:')) {
+      const terminalName = target.slice('terminal:'.length);
+      const existing = vscode.window.terminals.find((item) => item.name === terminalName);
+      return {
+        terminalName,
+        reportTarget: target,
+        existed: Boolean(existing),
+        needsBootDelay: !existing,
+      };
+    }
+
+    if (requestedTerminalName) {
+      const existing = vscode.window.terminals.find((item) => item.name === requestedTerminalName);
+      return {
+        terminalName: requestedTerminalName,
+        reportTarget: target,
+        existed: Boolean(existing),
+        needsBootDelay: !existing,
+      };
+    }
+
+    return null;
+  }
+
+  private ensureTerminal(terminalName: string, launchCommand: string): vscode.Terminal {
+    const existing = vscode.window.terminals.find((item) => item.name === terminalName);
+    if (existing) return existing;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const terminal = vscode.window.createTerminal({ name: terminalName, cwd });
+    if (launchCommand) terminal.sendText(launchCommand, true);
+    return terminal;
   }
 }

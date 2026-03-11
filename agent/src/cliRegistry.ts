@@ -28,6 +28,14 @@ interface PersistedConfig {
   customClis: CliDefinition[];
 }
 
+const TARGET_ALIASES: Record<string, string> = {
+  'claude-code': 'claude-code',
+  'claude': 'claude-code',
+  'codex': 'codex',
+  'aider': 'aider',
+  'copilot': 'copilot',
+};
+
 const BUILTIN_SPECS: Omit<CliDefinition, 'detected' | 'isDefault' | 'isCustom'>[] = [
   { id: 'codex',       name: 'Codex CLI',          command: 'codex',      args: [],  checkCommand: 'codex --version'      },
   { id: 'claude-code', name: 'Claude Code',         command: 'claude',     args: [],  checkCommand: 'claude --version'     },
@@ -55,7 +63,8 @@ export class CliRegistry {
       const config = JSON.parse(raw) as Partial<PersistedConfig>;
 
       if (config.defaultCliId) {
-        const def = this.clis.get(config.defaultCliId);
+        const normalizedDefaultId = this.resolveId(config.defaultCliId);
+        const def = normalizedDefaultId ? this.clis.get(normalizedDefaultId) : undefined;
         if (def) def.isDefault = true;
       }
       for (const custom of config.customClis ?? []) {
@@ -129,13 +138,29 @@ export class CliRegistry {
   }
 
   getById(id: string): CliDefinition | undefined {
-    return this.clis.get(id);
+    const normalizedId = this.resolveId(id);
+    return normalizedId ? this.clis.get(normalizedId) : undefined;
+  }
+
+  resolveId(id: string): string | null {
+    const normalized = String(id ?? '').trim().toLowerCase();
+    if (!normalized) return null;
+    const alias = TARGET_ALIASES[normalized];
+    if (alias && this.clis.has(alias)) return alias;
+    return this.clis.has(normalized) ? normalized : null;
+  }
+
+  getTerminalName(id: string): string | null {
+    const cli = this.getById(id);
+    if (!cli) return null;
+    return `DevBridge ${cli.name}`;
   }
 
   setDefault(id: string): boolean {
-    if (!this.clis.has(id)) return false;
+    const normalizedId = this.resolveId(id);
+    if (!normalizedId || !this.clis.has(normalizedId)) return false;
     for (const cli of this.clis.values()) cli.isDefault = false;
-    this.clis.get(id)!.isDefault = true;
+    this.clis.get(normalizedId)!.isDefault = true;
     this.persist();
     return true;
   }

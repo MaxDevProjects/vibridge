@@ -1,8 +1,8 @@
-import process from 'node:process';globalThis._importMeta_=globalThis._importMeta_||{url:"file:///_entry.js",env:process.env};import { hasInjectionContext, inject, toRef, isRef, getCurrentInstance, defineAsyncComponent, defineComponent, h, computed, unref, shallowRef, provide, shallowReactive, ref, Suspense, Fragment, createApp, onErrorCaptured, onServerPrefetch, createVNode, resolveDynamicComponent, reactive, effectScope, mergeProps, getCurrentScope, withCtx, nextTick, isReadonly, useSSRContext, isShallow, isReactive, toRaw } from 'vue';
+import process from 'node:process';globalThis._importMeta_=globalThis._importMeta_||{url:"file:///_entry.js",env:process.env};import { hasInjectionContext, inject, toRef, isRef, ref, getCurrentInstance, defineAsyncComponent, defineComponent, h, computed, unref, shallowRef, provide, shallowReactive, Suspense, Fragment, watch, useSSRContext, createApp, withCtx, createVNode, onErrorCaptured, onServerPrefetch, resolveDynamicComponent, reactive, effectScope, nextTick, mergeProps, getCurrentScope, isReadonly, isShallow, isReactive, toRaw } from 'vue';
 import { p as parseURL, i as encodePath, k as decodePath, l as hasProtocol, m as isScriptProtocol, f as joinURL, w as withQuery, s as sanitizeStatusCode, n as getContext, $ as $fetch, o as createHooks, c as createError$1, q as defu, r as executeAsync } from '../nitro/nitro.mjs';
 import { u as useHead$1, h as headSymbol, b as baseURL } from '../routes/renderer.mjs';
 import { useRoute as useRoute$1, RouterView, createMemoryHistory, createRouter, START_LOCATION } from 'vue-router';
-import { ssrRenderSuspense, ssrRenderComponent, ssrRenderVNode } from 'vue/server-renderer';
+import { ssrRenderComponent, ssrRenderSuspense, ssrRenderVNode } from 'vue/server-renderer';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -409,22 +409,32 @@ const _routes = [
   {
     name: "chat",
     path: "/chat",
-    component: () => import('./chat-CnAER_KY.mjs')
+    component: () => import('./chat-D4sfzvaL.mjs')
   },
   {
     name: "code",
     path: "/code",
-    component: () => import('./code-CfJR7QrJ.mjs')
+    component: () => import('./code-BuDyx5La.mjs')
   },
   {
     name: "index",
     path: "/",
-    component: () => import('./index-Cn9XDYrW.mjs')
+    component: () => import('./index-DWnlTdIM.mjs')
+  },
+  {
+    name: "setup",
+    path: "/setup",
+    component: () => import('./setup-BrONdte4.mjs')
   },
   {
     name: "preview",
     path: "/preview",
-    component: () => import('./preview-Cm41FOMa.mjs')
+    component: () => import('./preview-CGMr2WN_.mjs')
+  },
+  {
+    name: "settings",
+    path: "/settings",
+    component: () => import('./settings-Bl-gC6oc.mjs')
   }
 ];
 const _wrapInTransition = (props, children) => {
@@ -837,7 +847,7 @@ const plugins = [
   plugin_server_9Ca9_HhnjAGwBWpwAydRauMHxWoxTDY60BrArRnXN_A
 ];
 const layouts = {
-  default: defineAsyncComponent(() => import('./default-BR94txIi.mjs').then((m) => m.default || m))
+  default: defineAsyncComponent(() => import('./default-DKvnKqWW.mjs').then((m) => m.default || m))
 };
 const routeRulesMatcher = _routeRulesMatcher;
 const LayoutLoader = defineComponent({
@@ -1051,37 +1061,89 @@ function normalizeSlot(slot, data) {
   const slotContent = slot(data);
   return slotContent.length === 1 ? h(slotContent[0]) : h(Fragment, void 0, slotContent);
 }
-const _export_sfc = (sfc, props) => {
-  const target = sfc.__vccOpts || sfc;
-  for (const [key, val] of props) {
-    target[key] = val;
-  }
-  return target;
+const DEFAULT = {
+  mode: "auto",
+  manualIp: "",
+  manualPort: 3333,
+  relayUrl: ""
 };
-const _sfc_main$2 = {};
-function _sfc_ssrRender(_ctx, _push, _parent, _attrs) {
-  const _component_NuxtLayout = __nuxt_component_0;
-  const _component_NuxtPage = __nuxt_component_1;
-  _push(ssrRenderComponent(_component_NuxtLayout, _attrs, {
-    default: withCtx((_, _push2, _parent2, _scopeId) => {
-      if (_push2) {
-        _push2(ssrRenderComponent(_component_NuxtPage, null, null, _parent2, _scopeId));
-      } else {
-        return [
-          createVNode(_component_NuxtPage)
-        ];
-      }
-    }),
-    _: 1
-  }, _parent));
+const config = ref({ ...DEFAULT });
+watch(
+  config,
+  (v) => {
+    return;
+  },
+  { deep: true }
+);
+function mdnsBase() {
+  return "http://devbridge.local:3333";
 }
+function manualBase() {
+  const { manualIp, manualPort } = config.value;
+  return manualIp ? `http://${manualIp}:${manualPort}` : "";
+}
+function relayBase() {
+  return config.value.relayUrl ? config.value.relayUrl.replace(/\/+$/, "") : "";
+}
+function isHttpsContext() {
+  return false;
+}
+function getCandidates() {
+  const { mode } = config.value;
+  const relay = relayBase();
+  const manual = manualBase();
+  if (mode === "relay") return relay ? [relay] : [];
+  if (mode === "local") return manual ? [manual] : [mdnsBase()];
+  const out = [mdnsBase()];
+  if (manual) out.push(manual);
+  if (relay) out.push(relay);
+  return out;
+}
+async function testUrl(baseUrl) {
+  return null;
+}
+async function detectBestUrl() {
+  for (const url of getCandidates()) {
+    const ms = await testUrl();
+    if (ms !== null) {
+      console.log(`[Network] Reachable: ${url} (${ms}ms)`);
+      return { url, ms };
+    }
+  }
+  return null;
+}
+function useNetworkConfig() {
+  return { config, getCandidates, testUrl, detectBestUrl, isHttpsContext };
+}
+const _sfc_main$2 = /* @__PURE__ */ defineComponent({
+  __name: "app",
+  __ssrInlineRender: true,
+  setup(__props) {
+    useRoute();
+    return (_ctx, _push, _parent, _attrs) => {
+      const _component_NuxtLayout = __nuxt_component_0;
+      const _component_NuxtPage = __nuxt_component_1;
+      _push(ssrRenderComponent(_component_NuxtLayout, _attrs, {
+        default: withCtx((_, _push2, _parent2, _scopeId) => {
+          if (_push2) {
+            _push2(ssrRenderComponent(_component_NuxtPage, null, null, _parent2, _scopeId));
+          } else {
+            return [
+              createVNode(_component_NuxtPage)
+            ];
+          }
+        }),
+        _: 1
+      }, _parent));
+    };
+  }
+});
 const _sfc_setup$2 = _sfc_main$2.setup;
 _sfc_main$2.setup = (props, ctx) => {
   const ssrContext = useSSRContext();
   (ssrContext.modules || (ssrContext.modules = /* @__PURE__ */ new Set())).add("app.vue");
   return _sfc_setup$2 ? _sfc_setup$2(props, ctx) : void 0;
 };
-const AppComponent = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["ssrRender", _sfc_ssrRender]]);
 const _sfc_main$1 = {
   __name: "nuxt-error-page",
   __ssrInlineRender: true,
@@ -1096,8 +1158,8 @@ const _sfc_main$1 = {
     const statusText = _error.statusMessage ?? (is404 ? "Page Not Found" : "Internal Server Error");
     const description = _error.message || _error.toString();
     const stack = void 0;
-    const _Error404 = defineAsyncComponent(() => import('./error-404-D5bnZQuI.mjs'));
-    const _Error = defineAsyncComponent(() => import('./error-500-BkuYtDQb.mjs'));
+    const _Error404 = defineAsyncComponent(() => import('./error-404-DM4yvvE4.mjs'));
+    const _Error = defineAsyncComponent(() => import('./error-500-BX3WKKC6.mjs'));
     const ErrorTemplate = is404 ? _Error404 : _Error;
     return (_ctx, _push, _parent, _attrs) => {
       _push(ssrRenderComponent(unref(ErrorTemplate), mergeProps({ status: unref(status), statusText: unref(statusText), statusCode: unref(status), statusMessage: unref(statusText), description: unref(description), stack: unref(stack) }, _attrs), null, _parent));
@@ -1144,7 +1206,7 @@ const _sfc_main = {
           } else if (unref(SingleRenderer)) {
             ssrRenderVNode(_push, createVNode(resolveDynamicComponent(unref(SingleRenderer)), null, null), _parent);
           } else {
-            _push(ssrRenderComponent(unref(AppComponent), null, null, _parent));
+            _push(ssrRenderComponent(unref(_sfc_main$2), null, null, _parent));
           }
         },
         _: 1
@@ -1178,5 +1240,5 @@ let entry;
 }
 const entry_default = ((ssrContext) => entry(ssrContext));
 
-export { _export_sfc as _, useNuxtApp as a, useRuntimeConfig as b, nuxtLinkDefaults as c, useHead as d, entry_default as default, encodeRoutePath as e, useRoute as f, useState as g, navigateTo as n, resolveRouteObject as r, useRouter as u };
+export { useRoute as a, useRouter as b, useRuntimeConfig as c, useNetworkConfig as d, entry_default as default, useNuxtApp as e, useState as f, encodeRoutePath as g, nuxtLinkDefaults as h, navigateTo as n, resolveRouteObject as r, useHead as u };
 //# sourceMappingURL=server.mjs.map
