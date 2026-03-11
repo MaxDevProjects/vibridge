@@ -277,8 +277,10 @@ export class RelayClient {
     if (type === 'list_projects') {
       const listing = listProjects(this.options.workspace.path);
       this.send('projects_list', {
-        projects: listing.projects,
-        parentDir: listing.parentDir,
+        payload: {
+          projects: listing.projects,
+          parentDir: listing.parentDir,
+        },
       });
       return;
     }

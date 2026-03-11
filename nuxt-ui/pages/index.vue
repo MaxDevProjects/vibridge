@@ -1383,6 +1383,10 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
     projectsLoading.value = false
     projectsList.value = msg.projects as ProjectItem[]
+  } else if (msg.type === 'projects_list') {
+    const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as { projects?: ProjectItem[] } : {}
+    projectsLoading.value = false
+    projectsList.value = Array.isArray(payload.projects) ? payload.projects : []
   } else if (msg.type === 'cli_started') {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false

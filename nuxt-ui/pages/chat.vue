@@ -318,6 +318,10 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
     loadingProjects.value = false
     projects.value = msg.projects as ProjectItem[]
+  } else if (msg.type === 'projects_list') {
+    const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as { projects?: ProjectItem[] } : {}
+    loadingProjects.value = false
+    projects.value = Array.isArray(payload.projects) ? payload.projects : []
   }
 })
 
