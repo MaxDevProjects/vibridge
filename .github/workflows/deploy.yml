@@ -25,4 +25,6 @@ jobs:
             git reset --hard origin/main
             # Only relay + nuxt-ui run on the server.
             # The agent runs locally alongside VS Code and cannot be deployed remotely.
-            docker-compose -f docker-compose.prod.yml up -d --build
+            docker-compose -f docker-compose.prod.yml build --no-cache relay
+            docker-compose -f docker-compose.prod.yml up -d relay
+            docker-compose -f docker-compose.prod.yml up -d --build ui
