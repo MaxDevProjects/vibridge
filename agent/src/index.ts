@@ -35,10 +35,10 @@ async function main() {
   cliRegistry.load();
   const ipc = new IpcServer(IPC_SOCK, adapters, queue, push, auth, cliRegistry);
   const relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
-    ? new RelayClient({
+      ? new RelayClient({
         internalUrl: RELAY_INTERNAL_URL,
         publicUrl: RELAY_PUBLIC_URL,
-        sessionLabel: `DevBridge on ${process.env.HOSTNAME ?? 'local-agent'}`,
+        sessionLabel: workspace.id,
         workspaceFolders: [PROJECT_ROOT],
         workspace,
         adapters,

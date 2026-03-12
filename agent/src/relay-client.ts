@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { WebSocket } from 'ws';
 import type { AdapterManager } from './adapters/manager';
 import type { FileService } from './files';
@@ -33,8 +34,19 @@ interface CreateSessionResponse {
 interface SessionStatusResponse {
   id: string;
   status: 'waiting' | 'paired' | 'closed';
+  expiresAt: number;
   agentConnected: boolean;
   mobileConnected: boolean;
+}
+
+interface PersistedRelaySession {
+  workspaceId: string;
+  relayUrl: string;
+  sessionId: string;
+  pairingCode: string;
+  qrUrl: string;
+  agentToken: string;
+  expiresAt: number;
 }
 
 interface RelayClientOptions {
@@ -52,6 +64,7 @@ interface RelayClientOptions {
 export class RelayClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private sessionRotationTimer: ReturnType<typeof setTimeout> | null = null;
   private session: RelaySessionState | null = null;
   private outputOff: (() => void) | null = null;
 
@@ -65,6 +78,7 @@ export class RelayClient {
 
   stop(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.sessionRotationTimer) clearTimeout(this.sessionRotationTimer);
     this.outputOff?.();
     this.outputOff = null;
     this.ws?.close();
@@ -81,10 +95,18 @@ export class RelayClient {
 
   async refreshSessionState(): Promise<void> {
     if (!this.session) return;
+    if (this.session.expiresAt <= Date.now()) {
+      await this.rotateSession('session expired locally');
+      return;
+    }
     try {
       const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions/${this.session.sessionId}`, {
         headers: { Authorization: `Bearer ${this.session.agentToken}` },
       });
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        await this.rotateSession(`session rejected by relay (${res.status})`);
+        return;
+      }
       if (!res.ok) return;
       const data = await res.json() as SessionStatusResponse;
       this.session = {
@@ -122,12 +144,21 @@ export class RelayClient {
 
   private async ensureSession(): Promise<void> {
     if (!this.isEnabled()) return;
+    const restored = await this.restorePersistedSession();
+    if (restored) {
+      this.session = restored;
+      this.options.ipc.setRelayQrUrl?.(restored.qrUrl ?? null);
+      this.scheduleSessionRotation();
+      console.log(`[Relay] Restored session: ${restored.sessionId}`);
+      return;
+    }
     try {
       const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           label: this.options.sessionLabel,
+          workspaceId: this.options.workspace.id,
           workspaceFolders: this.options.workspaceFolders,
         }),
       });
@@ -153,6 +184,8 @@ export class RelayClient {
         lastError: null,
       };
       this.options.ipc.setRelayQrUrl?.(this.session.qrUrl ?? null);
+      this.persistSession(this.session);
+      this.scheduleSessionRotation();
       console.log(`[Relay] Session created: ${this.session.sessionId}`);
     } catch (err) {
       console.warn(`[Relay] ensureSession error — will retry in 15s:`, err);
@@ -168,6 +201,135 @@ export class RelayClient {
         if (this.session) this.connect();
       });
     }, delayMs);
+  }
+
+  private scheduleSessionRotation(): void {
+    if (this.sessionRotationTimer) clearTimeout(this.sessionRotationTimer);
+    if (!this.session) return;
+    const rotateInMs = Math.max(this.session.expiresAt - Date.now() - 60_000, 1_000);
+    this.sessionRotationTimer = setTimeout(() => {
+      this.sessionRotationTimer = null;
+      void this.rotateSession('session nearing expiry');
+    }, rotateInMs);
+  }
+
+  private async rotateSession(reason: string): Promise<void> {
+    console.warn(`[Relay] Rotating session — ${reason}`);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.sessionRotationTimer) {
+      clearTimeout(this.sessionRotationTimer);
+      this.sessionRotationTimer = null;
+    }
+    const socket = this.ws;
+    this.ws = null;
+    this.session = null;
+    socket?.close();
+    this.options.ipc.setRelayQrUrl?.(null);
+    this.clearPersistedSession();
+    await this.ensureSession();
+    if (this.session) this.connect();
+  }
+
+  private async restorePersistedSession(): Promise<RelaySessionState | null> {
+    const persisted = this.readPersistedSession();
+    if (!persisted) return null;
+    if (persisted.workspaceId !== this.options.workspace.id) {
+      this.clearPersistedSession();
+      return null;
+    }
+    if (persisted.expiresAt <= Date.now()) {
+      this.clearPersistedSession();
+      return null;
+    }
+
+    try {
+      const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions/${persisted.sessionId}`, {
+        headers: { Authorization: `Bearer ${persisted.agentToken}` },
+      });
+      if (!res.ok) {
+        this.clearPersistedSession();
+        return null;
+      }
+      const data = await res.json() as SessionStatusResponse;
+      const restored: RelaySessionState = {
+        enabled: true,
+        relayUrl: persisted.relayUrl,
+        sessionId: persisted.sessionId,
+        pairingCode: persisted.pairingCode,
+        qrUrl: persisted.qrUrl,
+        agentToken: persisted.agentToken,
+        expiresAt: persisted.expiresAt,
+        status: data.status,
+        agentConnected: data.agentConnected,
+        mobileConnected: data.mobileConnected,
+        connected: false,
+        lastError: null,
+      };
+      this.persistSession(restored);
+      return restored;
+    } catch {
+      return null;
+    }
+  }
+
+  private readPersistedSession(): PersistedRelaySession | null {
+    try {
+      if (!fs.existsSync(this.options.workspace.sessionFilePath)) return null;
+      const raw = fs.readFileSync(this.options.workspace.sessionFilePath, 'utf8');
+      if (!raw.trim()) return null;
+      const parsed = JSON.parse(raw) as Partial<PersistedRelaySession>;
+      if (
+        typeof parsed.workspaceId !== 'string'
+        || typeof parsed.relayUrl !== 'string'
+        || typeof parsed.sessionId !== 'string'
+        || typeof parsed.pairingCode !== 'string'
+        || typeof parsed.qrUrl !== 'string'
+        || typeof parsed.agentToken !== 'string'
+        || typeof parsed.expiresAt !== 'number'
+      ) {
+        return null;
+      }
+      return {
+        workspaceId: parsed.workspaceId,
+        relayUrl: parsed.relayUrl,
+        sessionId: parsed.sessionId,
+        pairingCode: parsed.pairingCode,
+        qrUrl: parsed.qrUrl,
+        agentToken: parsed.agentToken,
+        expiresAt: parsed.expiresAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private persistSession(session: RelaySessionState): void {
+    try {
+      fs.writeFileSync(this.options.workspace.sessionFilePath, JSON.stringify({
+        workspaceId: this.options.workspace.id,
+        relayUrl: session.relayUrl,
+        sessionId: session.sessionId,
+        pairingCode: session.pairingCode,
+        qrUrl: session.qrUrl,
+        agentToken: session.agentToken,
+        expiresAt: session.expiresAt,
+      } satisfies PersistedRelaySession, null, 2));
+    } catch (err) {
+      console.warn('[Relay] Failed to persist session:', err);
+    }
+  }
+
+  private clearPersistedSession(): void {
+    try {
+      if (fs.existsSync(this.options.workspace.sessionFilePath)) {
+        fs.unlinkSync(this.options.workspace.sessionFilePath);
+      }
+    } catch (err) {
+      console.warn('[Relay] Failed to clear persisted session:', err);
+    }
   }
 
   private connect(): void {
@@ -213,6 +375,7 @@ export class RelayClient {
     if (msg.type === 'auth_ok') {
       if (!this.session) return;
       this.session = { ...this.session, connected: true, agentConnected: true, lastError: null };
+      this.persistSession(this.session);
       this.send('agent_hello', {
         token: this.session.agentToken,
         workspace_id: this.options.workspace.id,
@@ -230,6 +393,7 @@ export class RelayClient {
         agentConnected: Boolean(msg.agentConnected),
         mobileConnected: Boolean(msg.mobileConnected),
       };
+      this.persistSession(this.session);
       return;
     }
 

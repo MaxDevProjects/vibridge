@@ -6,6 +6,7 @@ export interface WorkspaceIdentity {
   name: string;
   path: string;
   envPath: string;
+  sessionFilePath: string;
 }
 
 interface VscodeLikeWorkspaceFolder {
@@ -109,5 +110,6 @@ export function resolveWorkspaceIdentity(cwd = process.cwd()): WorkspaceIdentity
     name: workspaceId,
     path: projectPath,
     envPath,
+    sessionFilePath: path.join(projectPath, '.vibridge-session'),
   };
 }
