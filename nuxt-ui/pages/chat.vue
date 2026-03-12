@@ -21,7 +21,7 @@
         :projects="projects"
         :loading-projects="loadingProjects"
         :project-opening="projectOpening"
-        @select="bridge.setActiveWorkspace"
+        @select="selectWorkspaceOrSession"
         @open-project="requestOpenProject"
         @request-projects="requestOpenProject"
         @open-listed-project="openListedProject"
@@ -129,10 +129,24 @@ interface ProjectItem {
 }
 
 const bridge = useDevBridge()
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || 'default') : 'local')
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
-  ? bridge.relayWorkspaces.value
+  ? (bridge.relaySessions.value.length
+      ? bridge.relaySessions.value.map(session => ({
+          id: session.id,
+          name: session.label,
+          active: session.id === bridge.relaySessionId.value,
+        }))
+      : bridge.relayWorkspaces.value)
   : [{ id: 'local', name: 'Workspace local', active: true }])
+
+function selectWorkspaceOrSession(id: string) {
+  if (bridge.mode.value === 'relay' && bridge.relaySessions.value.length) {
+    void bridge.switchRelaySession(id)
+    return
+  }
+  bridge.setActiveWorkspace(id)
+}
 
 // CLI state — synced from WS broadcast
 interface CliItem { id: string; name: string; command: string; detected: boolean; isDefault: boolean }
@@ -285,7 +299,7 @@ function toggleRecording() {
 const offMessage = bridge.onMessage((msg: WsMessage) => {
   if (bridge.mode.value === 'relay') {
     const msgWorkspaceId = typeof msg.workspaceId === 'string' ? msg.workspaceId : ''
-    if (msgWorkspaceId && msgWorkspaceId !== activeWorkspaceKey.value) return
+    if (msgWorkspaceId && msgWorkspaceId !== bridge.activeWorkspaceId.value) return
   }
   if (msg.type === 'chat_response' || msg.type === 'ai_message') {
     aiTyping.value = false
@@ -328,6 +342,7 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
 // Fetch CLI list on connect
 watch(() => bridge.status.value, (status) => {
   if (status === 'connected') {
+    if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? ''
     if (base) {

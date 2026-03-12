@@ -25,6 +25,19 @@ export interface ConnectedWorkspace {
   active: boolean
 }
 
+export interface RelaySessionListItem {
+  id: string
+  workspaceId: string
+  label: string
+  createdAt: number
+  expiresAt: number
+  status: 'waiting' | 'paired' | 'closed'
+  mobileToken?: string | null
+  agentConnected: boolean
+  mobileConnected: boolean
+  workspaces?: ConnectedWorkspace[]
+}
+
 interface WorkspaceSnapshot {
   workspaceId: string
   ideState?: AgentStatus['ideState']
@@ -70,6 +83,7 @@ export interface AgentStatus {
 
 interface RelaySessionResponse {
   id: string
+  workspaceId?: string | null
   status: 'waiting' | 'paired' | 'closed'
   label?: string | null
   workspaceFolders: string[]
@@ -92,6 +106,7 @@ const relayUrl = ref('')
 const activeUrl = ref<string>('')
 const latencyMs = ref<number | null>(null)
 const relayWorkspaces = ref<ConnectedWorkspace[]>([])
+const relaySessions = ref<RelaySessionListItem[]>([])
 const activeWorkspaceId = ref('')
 const listeners = new Set<(msg: WsMessage) => void>()
 
@@ -100,6 +115,8 @@ let retryDelay = 1_000
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let _baseUrl = ''
 const RELAY_WORKSPACE_STORAGE_PREFIX = 'vb:relayWorkspace:'
+const RELAY_SESSION_TOKEN_STORAGE_KEY = 'vb:relaySessionTokens'
+let suppressReconnect = false
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
@@ -156,6 +173,34 @@ function storageSet(nextMode: BridgeMode, nextBaseUrl: string, nextToken: string
   } else {
     localStorage.setItem('vb:agentUrl', nextBaseUrl)
   }
+}
+
+function readRelaySessionTokenMap(): Record<string, string> {
+  if (import.meta.server) return {}
+  try {
+    const raw = localStorage.getItem(RELAY_SESSION_TOKEN_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+  } catch {
+    return {}
+  }
+}
+
+function persistRelaySessionToken(sessionId: string, sessionToken: string) {
+  if (import.meta.server || !sessionId || !sessionToken) return
+  const tokens = readRelaySessionTokenMap()
+  tokens[sessionId] = sessionToken
+  localStorage.setItem(RELAY_SESSION_TOKEN_STORAGE_KEY, JSON.stringify(tokens))
+}
+
+function resolveRelaySessionToken(sessionId: string): string {
+  if (!sessionId) return ''
+  if (relaySessionId.value === sessionId && token.value) return token.value
+  const session = relaySessions.value.find(item => item.id === sessionId)
+  if (typeof session?.mobileToken === 'string' && session.mobileToken) return session.mobileToken
+  const stored = readRelaySessionTokenMap()
+  return stored[sessionId] ?? ''
 }
 
 function workspaceStorageKey(sessionId = relaySessionId.value): string {
@@ -217,6 +262,7 @@ function clearStoredSession() {
   relaySessionId.value = ''
   relayUrl.value = ''
   relayWorkspaces.value = []
+  relaySessions.value = []
   activeWorkspaceId.value = ''
   mode.value = 'local'
   agentStatus.value = null
@@ -427,6 +473,10 @@ async function connect() {
   ws.onclose = (ev) => {
     status.value = 'disconnected'
     ws = null
+    if (suppressReconnect) {
+      suppressReconnect = false
+      return
+    }
     // Code 1008 = server rejected auth (even if auth_fail message was lost in transit)
     if (ev.code === 1008) authError.value = 'invalid_token'
     // Don't retry if auth was explicitly rejected
@@ -439,6 +489,7 @@ async function connect() {
 
 function disconnect() {
   if (retryTimer) clearTimeout(retryTimer)
+  suppressReconnect = true
   ws?.close()
   ws = null
   status.value = 'disconnected'
@@ -527,6 +578,40 @@ async function fetchRelayStatus() {
   }
 }
 
+async function fetchRelaySessions() {
+  if (!token.value) return
+  const baseUrl = inferRelayUrl()
+  if (!baseUrl) return
+  try {
+    const res = await fetch(`${baseUrl}/api/relay/sessions?token=${encodeURIComponent(token.value)}`)
+    if (!res.ok) return
+    const data = await res.json() as { sessions?: RelaySessionListItem[] }
+    const sessions = Array.isArray(data.sessions) ? data.sessions.map(session => ({
+      id: String(session.id),
+      workspaceId: String(session.workspaceId ?? session.label ?? session.id),
+      label: String(session.label ?? session.workspaceId ?? session.id),
+      createdAt: Number(session.createdAt ?? 0),
+      expiresAt: Number(session.expiresAt ?? 0),
+      status: String(session.status ?? 'waiting') as RelaySessionListItem['status'],
+      mobileToken: typeof session.mobileToken === 'string' ? session.mobileToken : null,
+      agentConnected: Boolean(session.agentConnected),
+      mobileConnected: Boolean(session.mobileConnected),
+      workspaces: Array.isArray(session.workspaces) ? session.workspaces.map(workspace => ({
+        id: String(workspace.id),
+        name: String(workspace.name ?? workspace.id),
+        path: typeof workspace.path === 'string' ? workspace.path : undefined,
+        active: Boolean(workspace.active),
+      })) : [],
+    })) : []
+    relaySessions.value = sessions
+    for (const session of sessions) {
+      if (session.mobileToken) persistRelaySessionToken(session.id, session.mobileToken)
+    }
+  } catch {
+    // ignore transient relay fetch errors
+  }
+}
+
 async function fetchLocalStatus() {
   try {
     const res = await fetch(`${_baseUrl}/status`, {
@@ -587,8 +672,10 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     relayUrl.value = normalizedBaseUrl
     relaySessionId.value = sessionId
     relayWorkspaces.value = []
+    relaySessions.value = []
     activeWorkspaceId.value = ''
     storageSet('relay', normalizedBaseUrl, mobileToken, sessionId)
+    persistRelaySessionToken(sessionId, mobileToken)
     token.value = mobileToken
     _baseUrl = normalizedBaseUrl
     void connect()
@@ -615,6 +702,7 @@ function connectWithToken(agentBaseUrl: string, preIssuedToken: string): void {
       token.value = preIssuedToken
       _baseUrl = relayBaseUrl
       storageSet('relay', relayBaseUrl, preIssuedToken)
+      if (relaySessionId.value) persistRelaySessionToken(relaySessionId.value, preIssuedToken)
       void connect()
       return
     }
@@ -654,6 +742,23 @@ export function useDevBridge() {
     void connect()
   })
 
+  async function switchRelaySession(sessionId: string): Promise<boolean> {
+    if (mode.value !== 'relay' || !sessionId || sessionId === relaySessionId.value) return true
+    const nextToken = resolveRelaySessionToken(sessionId)
+    if (!nextToken) return false
+    disconnect()
+    authError.value = null
+    relaySessionId.value = sessionId
+    token.value = nextToken
+    relayWorkspaces.value = []
+    activeWorkspaceId.value = resolveStoredWorkspace(sessionId)
+    storageSet('relay', inferRelayUrl(), nextToken, sessionId)
+    _baseUrl = inferRelayUrl()
+    await fetchRelaySessions()
+    void connect()
+    return true
+  }
+
   return {
     status: readonly(status),
     mode: readonly(mode),
@@ -664,6 +769,7 @@ export function useDevBridge() {
     activeUrl: readonly(activeUrl),
     latencyMs: readonly(latencyMs),
     relayWorkspaces: readonly(relayWorkspaces),
+    relaySessions: readonly(relaySessions),
     activeWorkspaceId: readonly(activeWorkspaceId),
     activeWorkspace: computed(() => relayWorkspaces.value.find(workspace => workspace.id === activeWorkspaceId.value) ?? null),
 
@@ -678,7 +784,9 @@ export function useDevBridge() {
     connectWithToken,
     clearStoredSession,
     fetchAgentStatus,
+    fetchRelaySessions,
     setActiveWorkspace,
+    switchRelaySession,
 
     onMessage(fn: (msg: WsMessage) => void) {
       listeners.add(fn)

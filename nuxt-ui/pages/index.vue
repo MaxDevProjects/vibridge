@@ -233,7 +233,7 @@
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
-              @select="bridge.setActiveWorkspace"
+              @select="selectWorkspaceOrSession"
               @open-project="requestProjects"
               @request-projects="requestProjects"
               @open-listed-project="openListedProject"
@@ -349,7 +349,7 @@
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
-              @select="bridge.setActiveWorkspace"
+              @select="selectWorkspaceOrSession"
               @open-project="requestProjects"
               @request-projects="requestProjects"
               @open-listed-project="openListedProject"
@@ -635,11 +635,19 @@ const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
 const activeTool = computed(() => tools.value.find(t => t.active) ?? null)
 const activeToolLabel = computed(() => activeTool.value?.label ?? '—')
 const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
-  ? bridge.activeWorkspace.value?.name ?? 'Aucun workspace'
+  ? bridge.relaySessions.value.find(session => session.id === bridge.relaySessionId.value)?.label
+    ?? bridge.activeWorkspace.value?.name
+    ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
   : 'Workspace local')
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || 'default') : 'local')
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
-  ? bridge.relayWorkspaces.value
+  ? (bridge.relaySessions.value.length
+      ? bridge.relaySessions.value.map(session => ({
+          id: session.id,
+          name: session.label,
+          active: session.id === bridge.relaySessionId.value,
+        }))
+      : bridge.relayWorkspaces.value)
   : [{ id: 'local', name: 'Workspace local', active: true }])
 const activeProjectLabel = computed(() => {
   const workspace = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
@@ -668,6 +676,14 @@ function toggleTool(id: string, val: boolean) {
     bridge.send({ type: 'adapter_toggle', id, active: true })
     void bridge.fetchAgentStatus()
   }
+}
+
+function selectWorkspaceOrSession(id: string) {
+  if (bridge.mode.value === 'relay' && bridge.relaySessions.value.length) {
+    void bridge.switchRelaySession(id)
+    return
+  }
+  bridge.setActiveWorkspace(id)
 }
 
 // ── CLI Registry ───────────────────────────────────────
@@ -1487,7 +1503,7 @@ function queueOutputChunk(text: string, tool?: string) {
 const offMsg = bridge.onMessage((msg: WsMessage) => {
   if (bridge.mode.value === 'relay') {
     const msgWorkspaceId = typeof msg.workspaceId === 'string' ? msg.workspaceId : ''
-    if (msgWorkspaceId && msgWorkspaceId !== activeWorkspaceKey.value) return
+    if (msgWorkspaceId && msgWorkspaceId !== bridge.activeWorkspaceId.value) return
   }
   if (msg.type === 'notification') {
     pendingNotifs.value.push({ id: Date.now().toString(), text: msg.text ?? '', tool: (msg.tool as string) ?? '', ts: Date.now() })
@@ -1546,6 +1562,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as Record<string, unknown> : {}
     if (payload.pairingCode) currentPairingCode.value = String(payload.pairingCode)
     if (payload.sessionId) relaySessionId.value = String(payload.sessionId)
+    void bridge.fetchRelaySessions()
   } else if (msg.type === 'dev_server_url') {
     previewUrl.value = String(msg.url ?? '')
     if (previewUrl.value) pushActivity('sys', `Preview détectée — ${shortText(previewUrl.value, 70)}`)
@@ -1587,6 +1604,7 @@ watch(() => bridge.status.value, (next) => {
   if (next === 'connected') {
     void loadFileTree()
     void bridge.fetchAgentStatus()
+    if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
     void loadPreviewUrl()
     bridge.send({ type: 'get_preview_url' })
     if (bridge.mode.value === 'local') bridge.send({ type: 'get_pairing_code' })
@@ -1643,6 +1661,7 @@ onMounted(() => {
   pairHost.value = resolvedAgentHost.value || publicUiHost.value
   void loadPairingCode()
   void pairFromRoute()
+  if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
 })
 
 onUnmounted(() => {
