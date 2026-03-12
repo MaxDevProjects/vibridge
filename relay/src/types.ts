@@ -17,6 +17,7 @@ export interface RelayEnvelope {
 
 export interface RelaySession {
   id: string
+  workspaceId?: string
   pairingCode: string
   status: 'waiting' | 'paired' | 'closed'
   createdAt: number

@@ -10,9 +10,10 @@ export class RelayStore {
   private sessions = new Map<string, RelaySession>()
   private historyLimit = 100
 
-  createSession(input: { label?: string; workspaceFolders?: string[]; agentToken: string; expiresAt: number }) {
+  createSession(input: { label?: string; workspaceId?: string; workspaceFolders?: string[]; agentToken: string; expiresAt: number }) {
     const session: RelaySession = {
       id: `sess_${uuidv4()}`,
+      workspaceId: input.workspaceId,
       pairingCode: makePairingCode(),
       status: 'waiting',
       createdAt: Date.now(),
@@ -29,6 +30,10 @@ export class RelayStore {
 
   getSession(sessionId: string) {
     return this.sessions.get(sessionId) ?? null
+  }
+
+  listSessions() {
+    return Array.from(this.sessions.values())
   }
 
   findByToken(token: string, role: RelayRole): RelaySession | null {

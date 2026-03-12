@@ -78,13 +78,49 @@ export function createRelayServer(options: RelayServerOptions) {
     res.json(listConnectedWorkspaces(claims.sessionId))
   })
 
+  app.get('/api/relay/sessions', (req, res) => {
+    const token = String(req.query.token ?? '').trim()
+    const claims = auth.verify(token)
+    if (!claims) {
+      res.status(401).json({ error: 'unauthorized' })
+      return
+    }
+
+    const sessions = store.listSessions()
+      .filter(session => session.expiresAt > Date.now())
+      .map(session => {
+        const sessionPeers = peers.get(session.id)
+        return {
+          id: session.id,
+          workspaceId: session.workspaceId ?? session.label ?? session.id,
+          label: session.label ?? session.workspaceId ?? session.id,
+          createdAt: session.createdAt,
+          expiresAt: session.expiresAt,
+          status: session.status,
+          agentConnected: Boolean(sessionPeers?.agents.size),
+          mobileConnected: Boolean(sessionPeers?.mobile),
+          workspaces: listConnectedWorkspaces(session.id),
+        }
+      })
+
+    const activeSessionId = claims.sessionId
+    const ordered = sessions.sort((a, b) => {
+      if (a.id === activeSessionId) return -1
+      if (b.id === activeSessionId) return 1
+      return a.label.localeCompare(b.label)
+    })
+
+    res.json({ sessions: ordered })
+  })
+
   app.post('/api/relay/sessions', (req, res) => {
-    const { label, workspaceFolders } = req.body as { label?: string; workspaceFolders?: string[] }
+    const { label, workspaceId, workspaceFolders } = req.body as { label?: string; workspaceId?: string; workspaceFolders?: string[] }
     const expiresAt = Date.now() + sessionTtlMs
     const seedSessionId = `seed_${Date.now()}`
     const agentToken = auth.issueSessionToken(seedSessionId, 'agent')
     const session = store.createSession({
       label,
+      workspaceId,
       workspaceFolders,
       agentToken,
       expiresAt,
@@ -94,6 +130,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
     res.json({
       sessionId: session.id,
+      workspaceId: session.workspaceId ?? null,
       pairingCode: session.pairingCode,
       agentToken: finalAgentToken,
       expiresAt: session.expiresAt,
@@ -137,6 +174,7 @@ export function createRelayServer(options: RelayServerOptions) {
     const sessionPeers = peers.get(sessionId)
     res.json({
       id: session.id,
+      workspaceId: session.workspaceId ?? null,
       status: session.status,
       label: session.label ?? null,
       workspaceFolders: session.workspaceFolders,
