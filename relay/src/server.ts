@@ -65,7 +65,7 @@ export function createRelayServer(options: RelayServerOptions) {
   }
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true })
+    res.json({ status: 'ok' })
   })
 
   app.get('/workspaces', (req, res) => {
