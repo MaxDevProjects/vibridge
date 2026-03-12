@@ -97,6 +97,7 @@ export function createRelayServer(options: RelayServerOptions) {
           createdAt: session.createdAt,
           expiresAt: session.expiresAt,
           status: session.status,
+          mobileToken: session.mobileToken,
           agentConnected: Boolean(sessionPeers?.agents.size),
           mobileConnected: Boolean(sessionPeers?.mobile),
           workspaces: listConnectedWorkspaces(session.id),
