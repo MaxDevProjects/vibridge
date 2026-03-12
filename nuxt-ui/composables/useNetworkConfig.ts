@@ -63,6 +63,10 @@ function relayBase(): string {
   return config.value.relayUrl ? config.value.relayUrl.replace(/\/+$/, '') : ''
 }
 
+function healthUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/health`
+}
+
 // ── Secure-context detection ──────────────────────────────────
 // When the page is served over HTTPS, local HTTP candidates are
 // blocked by Mixed Content policy. Only the relay (wss://) works.
@@ -100,7 +104,7 @@ async function testUrl(baseUrl: string): Promise<number | null> {
   if (!baseUrl || import.meta.server) return null
   const start = Date.now()
   try {
-    const res = await fetch(`${baseUrl}/health`, {
+    const res = await fetch(healthUrl(baseUrl), {
       signal: AbortSignal.timeout(3000),
       cache: 'no-store',
     })
