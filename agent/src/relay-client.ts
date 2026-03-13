@@ -474,15 +474,17 @@ export class RelayClient {
     }
 
     if (type === 'focus_terminal') {
+      const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as Record<string, unknown> : {};
       this.options.ipc.sendToExtension({
         type: 'focus_terminal',
-        terminalName: String(msg.terminalName ?? ''),
+        terminalName: String(msg.terminalName ?? payload.terminalName ?? ''),
       });
       return;
     }
 
     if (type === 'create_terminal') {
-      const terminalName = String(msg.terminalName ?? '').trim() || 'DevBridge 1';
+      const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as Record<string, unknown> : {};
+      const terminalName = String(msg.terminalName ?? payload.terminalName ?? '').trim() || 'DevBridge 1';
       this.options.ipc.sendToExtension({ type: 'create_terminal', terminalName });
       return;
     }

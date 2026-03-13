@@ -3,6 +3,7 @@ export interface WorkspaceChatMessage {
   text: string
   direction: 'user' | 'ai'
   tool?: string
+  target?: string
   ts: number
 }
 

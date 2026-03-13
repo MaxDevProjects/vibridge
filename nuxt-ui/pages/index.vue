@@ -356,7 +356,7 @@
             />
           </div>
           <div ref="chatScroll" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-            <ChatBubble v-for="m in chatMessages" :key="m.id" :text="m.text" :direction="m.direction" :tool="m.tool" :ts="m.ts" />
+            <ChatBubble v-for="m in filteredChatMessages" :key="m.id" :text="m.text" :direction="m.direction" :tool="m.tool" :ts="m.ts" />
             <TypingIndicator v-if="aiTyping" />
           </div>
           <div class="shrink-0 p-3" style="border-top:1px solid var(--border);background:var(--bg)">
@@ -1337,7 +1337,7 @@ const quickActions = computed(() => [
 ])
 
 // Chat
-interface ChatMsg { id: string; text: string; direction: 'user' | 'ai'; tool?: string; ts: number }
+interface ChatMsg { id: string; text: string; direction: 'user' | 'ai'; tool?: string; target?: string; ts: number }
 type ChatTargetState = 'idle' | 'starting' | 'active'
 type ChatTargetKind = 'terminal' | 'vscode' | 'launcher'
 interface ChatTarget {
@@ -1465,10 +1465,15 @@ const selectedChatTargetReady = computed(() => {
   ))
 })
 
+const filteredChatMessages = computed(() => {
+  const target = replyTarget.value
+  return chatMessages.value.filter(m => !m.target || m.target === target)
+})
+
 function sendChat() {
   const text = chatDraft.value.trim()
   if (!text || !selectedChatTargetReady.value) return
-  chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, ts: Date.now() })
+  chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, target: replyTarget.value, ts: Date.now() })
   saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
   pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
   bridge.send({
@@ -1487,17 +1492,18 @@ function requestOpenProject() {
   pushActivity('sys', 'Chargement de la liste des projets')
 }
 
-function appendAiMessage(text: string, tool?: string, merge = false) {
+function appendAiMessage(text: string, tool?: string, merge = false, target?: string) {
   const clean = stripAnsi(text).trim()
   if (!clean) return
+  const msgTarget = target || replyTarget.value
   const last = chatMessages.value.at(-1)
-  if (merge && last && last.direction === 'ai' && last.tool === tool && Date.now() - last.ts < 1500) {
+  if (merge && last && last.direction === 'ai' && last.tool === tool && last.target === msgTarget && Date.now() - last.ts < 1500) {
     last.text = `${last.text}${last.text.endsWith('\n') ? '' : '\n'}${clean}`
     last.ts = Date.now()
     saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
     return
   }
-  chatMessages.value.push({ id: Date.now().toString(), direction: 'ai', text: clean, tool, ts: Date.now() })
+  chatMessages.value.push({ id: Date.now().toString(), direction: 'ai', text: clean, tool, target: msgTarget, ts: Date.now() })
   saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
 }
 
@@ -1518,7 +1524,7 @@ function createNewTerminal() {
   while (existing.has(`DevBridge ${idx}`)) idx += 1
   const terminalName = `DevBridge ${idx}`
   creatingTerminal.value = true
-  bridge.send({ type: 'create_terminal', terminalName })
+  bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })
   setReplyTarget(`terminal:${terminalName}`, true)
   setTimeout(() => { creatingTerminal.value = false }, 3_000)
 }
@@ -1527,7 +1533,7 @@ function selectChatTarget(target: ChatTarget) {
   if (target.state === 'starting') return
   setReplyTarget(target.id, true)
   if (target.kind === 'terminal' && target.terminalName) {
-    bridge.send({ type: 'focus_terminal', terminalName: target.terminalName })
+    bridge.send({ type: 'focus_terminal', terminalName: target.terminalName, payload: { terminalName: target.terminalName } })
     return
   }
   if (target.kind !== 'launcher') return
@@ -1577,7 +1583,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     if (!replyTargetPinned.value && isChatTargetId(msg.target)) {
       setReplyTarget(String(msg.target))
     }
-    appendAiMessage(msg.text ?? '', msg.tool as string)
+    appendAiMessage(msg.text ?? '', msg.tool as string, false, typeof msg.target === 'string' ? msg.target : undefined)
     saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
     pushActivity('ai', shortText(msg.text ?? '', 70))
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
@@ -1652,6 +1658,12 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     cliLaunching.value[cliId] = false
     pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
     if (cliId) setReplyTarget(cliId, true)
+    if (activeTab.value !== 'chat') activeTab.value = 'chat'
+  } else if (msg.type === 'terminal_created') {
+    const terminalName = String(msg.terminalName ?? '')
+    creatingTerminal.value = false
+    pushActivity('sys', `✓ Terminal ${terminalName} créé`)
+    if (terminalName) setReplyTarget(`terminal:${terminalName}`, true)
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_closed') {
     pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)

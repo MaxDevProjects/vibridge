@@ -156,6 +156,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const existing = vscode.window.terminals.find(t => t.name === terminalName);
     const terminal = existing ?? vscode.window.createTerminal({ name: terminalName, cwd });
     terminal.show(true);
+    ipc!.send({ type: 'terminal_created', terminalName });
   });
 
   // Handle focus_terminal from agent: focus an existing terminal by name
