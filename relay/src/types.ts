@@ -41,6 +41,13 @@ export interface ConnectedWorkspace {
   active: boolean
 }
 
+export interface StoredWorkspace {
+  id: string
+  name: string
+  path?: string
+  lastSeenAt: number
+}
+
 export interface WorkspaceSnapshot {
   workspaceId: string
   ideState?: unknown

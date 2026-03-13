@@ -4,7 +4,7 @@ import express, { Request, Response, NextFunction } from 'express'
 import { WebSocketServer, WebSocket, RawData } from 'ws'
 import { RelayAuth } from './auth'
 import { RelayStore } from './store'
-import type { ConnectedWorkspace, RelayRole, SessionClaims, WorkspaceSnapshot } from './types'
+import type { ConnectedWorkspace, RelayRole, SessionClaims } from './types'
 
 interface RelayServerOptions {
   port: number
@@ -38,7 +38,6 @@ export function createRelayServer(options: RelayServerOptions) {
   const app = express()
   const { auth, store, publicBaseUrl, uiBaseUrl, sessionTtlMs } = options
   const peers = new Map<string, SessionPeers>()
-  const workspaceSnapshots = new Map<string, Map<string, WorkspaceSnapshot>>()
   const pendingAgentRequests = new Map<string, PendingAgentRequest>()
 
   app.use((_req, res, next) => {
@@ -127,7 +126,7 @@ export function createRelayServer(options: RelayServerOptions) {
       expiresAt,
     })
     const finalAgentToken = auth.issueSessionToken(session.id, 'agent')
-    session.agentToken = finalAgentToken
+    store.updateSessionTokens(session.id, { agentToken: finalAgentToken })
 
     res.json({
       sessionId: session.id,
@@ -202,7 +201,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
     if (!filePath) {
       const snapshot = workspaceId
-        ? getSessionSnapshots(sessionId).get(workspaceId)
+        ? store.getWorkspaceSnapshot(sessionId, workspaceId)
         : listWorkspaceSnapshots(sessionId)[0]
       res.json({ tree: snapshot?.fileTree ?? [] })
       return
@@ -240,27 +239,31 @@ export function createRelayServer(options: RelayServerOptions) {
     return next
   }
 
-  function getSessionSnapshots(sessionId: string): Map<string, WorkspaceSnapshot> {
-    const existing = workspaceSnapshots.get(sessionId)
-    if (existing) return existing
-    const next = new Map<string, WorkspaceSnapshot>()
-    workspaceSnapshots.set(sessionId, next)
-    return next
-  }
-
   function listConnectedWorkspaces(sessionId: string): ConnectedWorkspace[] {
     const sessionPeers = peers.get(sessionId)
-    if (!sessionPeers) return []
-    return Array.from(sessionPeers.agents.entries()).map(([workspaceId, socket]) => ({
-      id: workspaceId,
-      name: socket.workspaceName || workspaceId,
-      path: socket.workspacePath,
-      active: sessionPeers.activeWorkspaceId === workspaceId,
-    }))
+    const connected = sessionPeers
+      ? Array.from(sessionPeers.agents.entries()).map(([workspaceId, socket]) => ({
+          id: workspaceId,
+          name: socket.workspaceName || workspaceId,
+          path: socket.workspacePath,
+          active: sessionPeers.activeWorkspaceId === workspaceId,
+        }))
+      : []
+    const byId = new Map(connected.map(workspace => [workspace.id, workspace]))
+    for (const workspace of store.listWorkspaces(sessionId)) {
+      if (byId.has(workspace.id)) continue
+      byId.set(workspace.id, {
+        id: workspace.id,
+        name: workspace.name,
+        path: workspace.path,
+        active: false,
+      })
+    }
+    return Array.from(byId.values())
   }
 
-  function listWorkspaceSnapshots(sessionId: string): WorkspaceSnapshot[] {
-    return Array.from(getSessionSnapshots(sessionId).values())
+  function listWorkspaceSnapshots(sessionId: string) {
+    return store.listWorkspaceSnapshots(sessionId)
   }
 
   function updateWorkspaceSnapshot(
@@ -268,21 +271,7 @@ export function createRelayServer(options: RelayServerOptions) {
     workspaceId: string,
     payload: Record<string, unknown>,
   ) {
-    const snapshots = getSessionSnapshots(sessionId)
-    const previous = snapshots.get(workspaceId)
-    snapshots.set(workspaceId, {
-      workspaceId,
-      ideState: payload.ideState ?? previous?.ideState,
-      previewUrl: typeof payload.previewUrl === 'string' || payload.previewUrl === null
-        ? payload.previewUrl as string | null
-        : previous?.previewUrl ?? null,
-      fileTree: payload.fileTree ?? previous?.fileTree,
-      adapters: payload.adapters ?? previous?.adapters,
-      activeAdapter: typeof payload.activeAdapter === 'string' || payload.activeAdapter === null
-        ? payload.activeAdapter as string | null
-        : previous?.activeAdapter ?? null,
-      timestamp: typeof payload.timestamp === 'number' ? payload.timestamp : Date.now(),
-    })
+    store.upsertWorkspaceSnapshot(sessionId, workspaceId, payload)
   }
 
   async function requestAgentPayload(
@@ -355,6 +344,11 @@ export function createRelayServer(options: RelayServerOptions) {
     sessionPeers.agents.delete(normalizedWorkspaceId)
     sessionPeers.agents.set(normalizedWorkspaceId, ws)
     sessionPeers.activeWorkspaceId = normalizedWorkspaceId
+    store.upsertWorkspace(ws.claims.sessionId, {
+      id: normalizedWorkspaceId,
+      name: ws.workspaceName,
+      path: ws.workspacePath,
+    })
 
     sendWorkspaceEvent(ws.claims.sessionId, {
       type: 'workspace_connected',
@@ -494,7 +488,6 @@ export function createRelayServer(options: RelayServerOptions) {
         if (sessionPeers.mobile === ws) sessionPeers.mobile = null
       } else if (ws.workspaceId) {
         sessionPeers.agents.delete(ws.workspaceId)
-        getSessionSnapshots(ws.claims.sessionId).delete(ws.workspaceId)
         sendWorkspaceEvent(ws.claims.sessionId, {
           type: 'workspace_disconnected',
           workspace_id: ws.workspaceId,
@@ -505,7 +498,6 @@ export function createRelayServer(options: RelayServerOptions) {
       }
       if (!sessionPeers.mobile && sessionPeers.agents.size === 0) {
         peers.delete(ws.claims.sessionId)
-        workspaceSnapshots.delete(ws.claims.sessionId)
       } else {
         broadcastPeerStatus(ws.claims.sessionId)
       }
