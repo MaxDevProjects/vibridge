@@ -44,7 +44,7 @@
         <button
           v-for="target in chatTargets"
           :key="target.id"
-          :disabled="target.state === 'starting'"
+          :disabled="target.state === 'new' && creatingTerminal"
           class="shrink-0 text-[10px] uppercase tracking-[0.14em] px-3 py-1.5 font-mono transition-colors disabled:pointer-events-none"
           :style="targetButtonStyle(target)"
           @click="selectChatTarget(target)"
@@ -148,53 +148,63 @@ function selectWorkspaceOrSession(id: string) {
   bridge.setActiveWorkspace(id)
 }
 
-// CLI state — synced from WS broadcast
-interface CliItem { id: string; name: string; command: string; detected: boolean; isDefault: boolean }
-const cliList = ref<CliItem[]>([])
-const cliLaunching = ref<Record<string, boolean>>({})
-
-type ChatTargetState = 'idle' | 'starting' | 'active'
+type ChatTargetState = 'active' | 'open' | 'new'
 
 interface ChatTarget {
   id: string
   label: string
+  target?: string
   terminalName?: string
   state: ChatTargetState
+  selected: boolean
 }
 
 // Target (synced with index.vue via localStorage)
 const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
+  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? '__new__') : '__new__'
 )
+const creatingTerminal = ref(false)
 
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
 const terminals = computed(() =>
   Array.isArray(ideState.value?.terminals) ? ideState.value!.terminals! : []
 )
+const activeTerminalName = computed(() => String(ideState.value?.activeTerminal ?? '').trim())
 
 const chatTargets = computed<ChatTarget[]>(() => {
-  const list: ChatTarget[] = [
-    { id: 'bash', label: 'BASH', terminalName: 'bash', state: replyTarget.value === 'bash' ? 'active' : 'idle' },
-  ]
-  for (const cli of cliList.value) {
-    const terminalName = `DevBridge ${cli.name}`
-    const isLaunched = terminals.value.some(t => String((t as { name?: string }).name ?? '') === terminalName)
-    const isStarting = Boolean(cliLaunching.value[cli.id])
+  const list: ChatTarget[] = []
+  const seen = new Set<string>()
+
+  for (const terminal of terminals.value) {
+    const terminalName = String((terminal as { name?: string }).name ?? '').trim()
+    if (!terminalName || seen.has(terminalName)) continue
+    seen.add(terminalName)
+    const target = `terminal:${terminalName}`
     list.push({
-      id: cli.id,
-      label: cliButtonName(cli),
+      id: target,
+      label: terminalName,
+      target,
       terminalName,
-      state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
+      state: terminalName === activeTerminalName.value ? 'active' : 'open',
+      selected: replyTarget.value === target,
     })
   }
+
+  list.push({
+    id: '__new__',
+    label: '+',
+    state: 'new',
+    selected: replyTarget.value === '__new__',
+  })
+
   return list
 })
 
-function launchCli(cliId: string) {
-  if (cliLaunching.value[cliId]) return
-  cliLaunching.value[cliId] = true
-  bridge.send({ type: 'start_cli', cliId })
-  setTimeout(() => { cliLaunching.value[cliId] = false }, 5_000)
+function nextTerminalName(): string {
+  const existing = new Set(terminals.value.map(t => String((t as { name?: string }).name ?? '').trim()).filter(Boolean))
+  let idx = 1
+  while (existing.has(`DevBridge ${idx}`)) idx += 1
+  return `DevBridge ${idx}`
 }
 
 function setTarget(id: string) {
@@ -203,18 +213,15 @@ function setTarget(id: string) {
 }
 
 function selectChatTarget(target: ChatTarget) {
-  if (target.id === 'bash') {
-    setTarget('bash')
+  if (target.state === 'new') {
+    const terminalName = nextTerminalName()
+    creatingTerminal.value = true
+    bridge.send({ type: 'create_terminal', terminalName })
+    setTarget(`terminal:${terminalName}`)
+    setTimeout(() => { creatingTerminal.value = false }, 3_000)
     return
   }
-  if (target.state === 'starting') return
-  setTarget(target.id)
-  const cli = cliList.value.find(item => item.id === target.id)
-  const isLaunched = target.terminalName
-    ? terminals.value.some(t => String((t as { name?: string }).name ?? '') === target.terminalName)
-    : false
-  if (!cli || isLaunched) return
-  launchCli(target.id)
+  if (target.target) setTarget(target.target)
 }
 
 const messages = ref<ChatMessage[]>([])
@@ -316,19 +323,9 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'ai_typing') {
     aiTyping.value = true
     currentTool.value = (msg.tool as string) ?? null
-  } else if (msg.type === 'clis_update' && Array.isArray(msg.clis)) {
-    cliList.value = msg.clis as CliItem[]
-  } else if (msg.type === 'cli_started') {
-    const termName = String(msg.terminalName ?? '')
-    cliLaunching.value[String(msg.cliId ?? '')] = false
-    if (msg.cliId) setTarget(String(msg.cliId))
-    // Refresh IDE state so the terminal appears in the list
-    void bridge.fetchAgentStatus()
   } else if (msg.type === 'terminal_closed') {
     const terminalName = String(msg.terminalName ?? '')
-    const closedCli = cliList.value.find(cli => `DevBridge ${cli.name}` === terminalName)
-    if (closedCli && replyTarget.value === closedCli.id) setTarget('bash')
-    if (terminalName === 'bash' && replyTarget.value === 'bash') setTarget('bash')
+    if (replyTarget.value === `terminal:${terminalName}`) setTarget('__new__')
   } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
     loadingProjects.value = false
     projects.value = msg.projects as ProjectItem[]
@@ -339,18 +336,9 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   }
 })
 
-// Fetch CLI list on connect
 watch(() => bridge.status.value, (status) => {
-  if (status === 'connected') {
-    if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
-    const token = bridge.token.value ?? ''
-    const base = bridge.activeUrl.value ?? ''
-    if (base) {
-      fetch(`${base}/clis`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
-        .then(d => { if (d.clis) cliList.value = d.clis })
-        .catch(() => {})
-    }
+  if (status === 'connected' && bridge.mode.value === 'relay') {
+    void bridge.fetchRelaySessions()
   }
 }, { immediate: true })
 
@@ -359,16 +347,16 @@ onUnmounted(offMessage)
 useHead({ title: 'Chat — VibeBridge' })
 
 const selectedTargetReady = computed(() => {
-  if (replyTarget.value === 'bash') return true
+  if (!replyTarget.value.startsWith('terminal:')) return false
   const selected = chatTargets.value.find(target => target.id === replyTarget.value)
-  return Boolean(selected && selected.state !== 'starting' && selected.terminalName && terminals.value.some(
+  return Boolean(selected && selected.state !== 'new' && selected.terminalName && terminals.value.some(
     t => String((t as { name?: string }).name ?? '') === selected.terminalName
   ))
 })
 
 watch(chatTargets, (targets) => {
   if (!targets.some(target => target.id === replyTarget.value)) {
-    setTarget('bash')
+    setTarget('__new__')
   }
 }, { immediate: true })
 
@@ -379,27 +367,20 @@ watch(activeWorkspaceKey, (workspaceId) => {
   scrollToBottom()
 }, { immediate: true })
 
-function cliButtonName(cli: CliItem) {
-  if (cli.id === 'claude-code') return 'CLAUDE'
-  if (cli.id === 'copilot') return 'COPILOT'
-  if (cli.id === 'codex') return 'CODEX'
-  if (cli.id === 'aider') return 'AIDER'
-  const firstToken = String(cli.command ?? '').trim().split(/\s+/)[0] ?? ''
-  return (firstToken || cli.name).replace(/[^a-z0-9]+/gi, '').toUpperCase()
-}
-
 function targetButtonLabel(target: ChatTarget) {
-  if (target.state === 'starting') return `▶ ${target.label}`
-  if (target.state === 'active') return `${target.label} ●`
-  return target.label
+  if (target.state === 'new') return '+'
+  return `${target.state === 'active' ? '●' : '○'} ${target.label}`
 }
 
 function targetButtonStyle(target: ChatTarget) {
-  if (target.state === 'active') {
+  if (target.selected) {
     return 'border:1px solid var(--text);color:var(--text);background:var(--surface)'
   }
-  if (target.state === 'starting') {
-    return 'border:1px solid var(--border);color:var(--muted);background:none;opacity:0.45'
+  if (target.state === 'active') {
+    return 'border:1px solid var(--border);color:var(--text);background:none'
+  }
+  if (target.state === 'new') {
+    return 'border:1px dashed var(--border);color:var(--muted);background:none'
   }
   return 'border:1px solid var(--border);color:var(--muted);background:none'
 }

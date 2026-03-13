@@ -306,9 +306,25 @@ export function createServer(deps: ServerDeps) {
     res.json({ ok: true });
   });
 
+  /** Public VAPID key for browser PushManager subscription */
+  app.get('/push/public-key', requireAuth, (_req, res) => {
+    res.json({ publicKey: push.getPublicKey() });
+  });
+
   /** Subscribe to Web Push — store endpoint/keys */
   app.post('/push/subscribe', requireAuth, (req, res) => {
     push.subscribe(req.body as PushSubscription);
+    res.json({ ok: true });
+  });
+
+  /** Unsubscribe from Web Push */
+  app.post('/push/unsubscribe', requireAuth, (req, res) => {
+    const endpoint = String((req.body as { endpoint?: string })?.endpoint ?? '').trim();
+    if (!endpoint) {
+      res.status(400).json({ error: 'endpoint required' });
+      return;
+    }
+    push.unsubscribe(endpoint);
     res.json({ ok: true });
   });
 
@@ -425,6 +441,16 @@ export function createServer(deps: ServerDeps) {
           command: cli.command,
           args: cli.args,
           terminalName: `DevBridge ${cli.name}`,
+        });
+        return;
+      }
+
+      // PWA requests to create a plain terminal in VS Code
+      if (msg.type === 'create_terminal') {
+        const terminalName = String(msg.terminalName ?? '').trim() || 'DevBridge 1';
+        deps.ipc.sendToExtension({
+          type: 'create_terminal',
+          terminalName,
         });
         return;
       }

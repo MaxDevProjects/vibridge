@@ -178,6 +178,40 @@
         </div>
       </section>
 
+
+      <!-- ── Notifications push ───────────────────── -->
+      <section style="border:1px solid var(--border)">
+        <div class="px-5 py-3" style="border-bottom:1px solid var(--border)">
+          <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Notifications push</p>
+        </div>
+        <div class="px-5 py-4 space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-[10px] uppercase tracking-[0.12em]" style="color:var(--muted)">État</span>
+            <span class="text-[10px] uppercase tracking-[0.12em]" :style="pushStatusStyle">{{ pushStatusLabel }}</span>
+          </div>
+
+          <p v-if="push.permission.value === 'denied'" class="text-[10px]" style="color:var(--dot-red)">
+            Les notifications sont bloquées par le navigateur. Activez-les dans les paramètres du site.
+          </p>
+          <p v-else-if="push.error.value" class="text-[10px]" style="color:var(--dot-red)">
+            {{ push.error.value }}
+          </p>
+
+          <button
+            :disabled="push.isLoading.value || !bridge.token.value"
+            class="text-[10px] uppercase tracking-widest px-4 py-2 transition-colors disabled:opacity-40"
+            style="border:1px solid var(--border);color:var(--text);background:none"
+            @click="togglePush"
+          >
+            {{ push.isLoading.value
+              ? 'Traitement…'
+              : push.isSubscribed.value
+                ? 'Désactiver les notifications'
+                : 'Activer les notifications' }}
+          </button>
+        </div>
+      </section>
+
       <!-- ── Outils CLI ──────────────────────────────── -->
       <section style="border:1px solid var(--border)">
         <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border)">
@@ -305,6 +339,29 @@
 <script setup lang="ts">
 const bridge = useDevBridge()
 const { config: netConfig, getCandidates, testUrl, isHttpsContext } = useNetworkConfig()
+const push = usePushNotifications()
+
+const pushStatusLabel = computed(() => {
+  if (!push.isSupported.value) return 'NON SUPPORTÉ'
+  if (push.permission.value === 'denied') return 'REFUSÉ'
+  if (push.isSubscribed.value) return 'ACTIF'
+  return 'INACTIF'
+})
+
+const pushStatusStyle = computed(() => {
+  if (!push.isSupported.value || push.permission.value === 'denied') return 'color:var(--dot-red)'
+  if (push.isSubscribed.value) return 'color:var(--dot-green)'
+  return 'color:var(--muted)'
+})
+
+async function togglePush() {
+  if (push.isLoading.value) return
+  if (push.isSubscribed.value) {
+    await push.unsubscribe()
+    return
+  }
+  await push.subscribe()
+}
 
 const httpsContext = import.meta.client ? isHttpsContext() : false
 

@@ -28,7 +28,7 @@ async function main() {
 
   const queue = new MessageQueue();
   const auth = new AuthService();
-  const push = new PushService();
+  const push = new PushService(DATA_DIR);
   const files = new FileService(PROJECT_ROOT);
   const adapters = new AdapterManager(queue);
   const cliRegistry = new CliRegistry(DATA_DIR);
