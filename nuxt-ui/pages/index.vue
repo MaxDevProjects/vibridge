@@ -378,6 +378,15 @@
                 </div>
                 <div class="mt-1 text-[9px]" style="color:var(--muted)">{{ target.caption }}</div>
               </button>
+              <button
+                :disabled="creatingTerminal"
+                class="shrink-0 w-10 flex items-center justify-center text-lg disabled:opacity-30"
+                style="border:1px dashed var(--border);color:var(--muted);background:none"
+                title="Nouveau terminal"
+                @click="createNewTerminal"
+              >
+                +
+              </button>
             </div>
             <div class="flex gap-2 items-end">
             <button class="w-10 h-10 flex items-center justify-center text-base shrink-0" style="border:1px solid var(--border);color:var(--muted)">🎤</button>
@@ -423,7 +432,9 @@
                   {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? '…' : projectOpening[proj.path] === 'done' ? '✓' : '→' }}
                 </button>
               </div>
-              <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">— Non connecté —</p>
+              <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">
+                {{ bridge.status.value !== 'connected' ? '— Non connecté —' : projectsTimedOut ? '— Aucun projet détecté —' : '— Chargement… —' }}
+              </p>
             </div>
           </div>
           <div class="flex shrink-0 mx-4 mt-4" style="border:1px solid var(--border)">
@@ -442,7 +453,9 @@
           <div class="min-h-0 flex-1 flex flex-col">
             <div class="basis-[42%] min-h-0 overflow-y-auto text-[11px]">
               <FileTree v-if="filteredFileTree.length" :nodes="filteredFileTree" @select="openCodeFile" />
-              <p v-else class="px-5 py-4" style="color:var(--muted)">— Aucun fichier —</p>
+              <p v-else class="px-5 py-4" style="color:var(--muted)">
+                {{ bridge.status.value !== 'connected' ? '— Non connecté —' : fileTreeTimedOut ? '— Aucun fichier —' : '— Chargement… —' }}
+              </p>
             </div>
             <div class="shrink-0 mx-4" style="border-top:1px solid var(--border)"></div>
             <div class="basis-[58%] min-h-0 overflow-y-auto px-4 py-3">
@@ -639,7 +652,7 @@ const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
     ?? bridge.activeWorkspace.value?.name
     ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
   : 'Workspace local')
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.relaySessionId.value || 'default') : 'local')
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relaySessions.value.length
       ? bridge.relaySessions.value.map(session => ({
@@ -764,6 +777,8 @@ interface ProjectItem { name: string; path: string; isActive: boolean }
 const projectsList = ref<ProjectItem[]>([])
 const projectsLoading = ref(false)
 const projectOpening = ref<Record<string, string>>({})
+const projectsTimedOut = ref(false)
+const fileTreeTimedOut = ref(false)
 
 async function loadProjects() {
   projectsLoading.value = true
@@ -1338,6 +1353,7 @@ interface ChatTarget {
 const chatMessages = ref<ChatMsg[]>([])
 const chatDraft  = ref('')
 const aiTyping   = ref(false)
+const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const outputBuffer = new Map<string, string>()
 const outputTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1462,6 +1478,21 @@ function setReplyTarget(nextTarget: string, pinned = false) {
   replyTarget.value = nextTarget
   if (import.meta.client) localStorage.setItem(REPLY_TARGET_KEY, nextTarget)
   if (pinned) replyTargetPinned.value = true
+}
+
+function createNewTerminal() {
+  const existing = new Set(
+    (Array.isArray(ideState.value?.terminals) ? ideState.value!.terminals! : [])
+      .map(t => String((t as { name?: string }).name ?? '').trim())
+      .filter(Boolean),
+  )
+  let idx = 1
+  while (existing.has(`DevBridge ${idx}`)) idx += 1
+  const terminalName = `DevBridge ${idx}`
+  creatingTerminal.value = true
+  bridge.send({ type: 'create_terminal', terminalName })
+  setReplyTarget(`terminal:${terminalName}`, true)
+  setTimeout(() => { creatingTerminal.value = false }, 3_000)
 }
 
 function selectChatTarget(target: ChatTarget) {
@@ -1638,6 +1669,18 @@ watch(activeWorkspaceKey, (workspaceId) => {
   selectedFileContent.value = ''
   selectedFileError.value = ''
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
+}, { immediate: true })
+
+watch(() => bridge.status.value, (status) => {
+  if (status === 'connected') {
+    projectsTimedOut.value = false
+    fileTreeTimedOut.value = false
+    setTimeout(() => { if (!projectsList.value.length) projectsTimedOut.value = true }, 3_000)
+    setTimeout(() => { if (!fileTree.value.length) fileTreeTimedOut.value = true }, 3_000)
+  } else {
+    projectsTimedOut.value = false
+    fileTreeTimedOut.value = false
+  }
 }, { immediate: true })
 
 onMounted(() => {
