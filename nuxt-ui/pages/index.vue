@@ -1372,6 +1372,7 @@ const chatDraft  = ref('')
 const aiTyping   = ref(false)
 let aiTypingTimeout: ReturnType<typeof setTimeout> | null = null
 let aiTypingDeadline = 0
+let chatHistorySaveTimer: ReturnType<typeof setTimeout> | null = null
 
 function setAiTyping(value: boolean) {
   aiTyping.value = value
@@ -1400,9 +1401,6 @@ function setAiTyping(value: boolean) {
 
 const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
-const outputBuffer = new Map<string, string>()
-const outputTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const STREAM_FLUSH_DELAY_MS = 75
 const REPLY_TARGET_KEY = 'vb:chatTarget'
 const replyTarget = ref(
   import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
@@ -1515,7 +1513,7 @@ function sendChat() {
 
 function appendUserChatMessage(text: string) {
   chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, target: replyTarget.value, ts: Date.now() })
-  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+  scheduleChatHistorySave()
 }
 
 function sendQuickReply(value: string) {
@@ -1545,11 +1543,11 @@ function appendAiMessage(text: string, tool?: string, merge = false, target?: st
   if (merge && last && last.direction === 'ai' && last.tool === tool && last.target === msgTarget && Date.now() - last.ts < 1500) {
     last.text = `${last.text}${last.text.endsWith('\n') ? '' : '\n'}${clean}`
     last.ts = Date.now()
-    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+    scheduleChatHistorySave()
     return
   }
   chatMessages.value.push({ id: Date.now().toString(), direction: 'ai', text: clean, tool, target: msgTarget, ts: Date.now() })
-  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+  scheduleChatHistorySave()
 }
 
 function setReplyTarget(nextTarget: string, pinned = false) {
@@ -1589,32 +1587,22 @@ function selectChatTarget(target: ChatTarget) {
   launchCli(target.cliId)
 }
 
-function flushBufferedOutput(tool = 'agent') {
-  const pending = stripAnsi(outputBuffer.get(tool) ?? '').trim()
-  const timer = outputTimers.get(tool)
-  if (timer) {
-    clearTimeout(timer)
-    outputTimers.delete(tool)
-  }
-  if (!pending) return
-  outputBuffer.delete(tool)
-  appendAiMessage(pending, tool, true)
-  pushActivity('info', `${tool} — ${shortText(pending, 70)}`)
+function scheduleChatHistorySave() {
+  if (chatHistorySaveTimer) clearTimeout(chatHistorySaveTimer)
+  chatHistorySaveTimer = setTimeout(() => {
+    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+    chatHistorySaveTimer = null
+  }, 180)
+}
+
+function pushStreamingOutput(text: string, tool?: string) {
+  appendAiMessage(text, tool, true)
   void loadPreviewUrl()
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }
 
 function queueOutputChunk(text: string, tool?: string) {
-  const key = tool ?? 'agent'
-  const previous = outputBuffer.get(key) ?? ''
-  outputBuffer.set(key, `${previous}${text}`)
-  const oldTimer = outputTimers.get(key)
-  if (oldTimer) clearTimeout(oldTimer)
-  if (text.includes('\n')) {
-    flushBufferedOutput(key)
-    return
-  }
-  outputTimers.set(key, setTimeout(() => flushBufferedOutput(key), STREAM_FLUSH_DELAY_MS))
+  pushStreamingOutput(text, tool)
 }
 
 // WS
@@ -1627,20 +1615,17 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     pendingNotifs.value.push({ id: Date.now().toString(), text: msg.text ?? '', tool: (msg.tool as string) ?? '', ts: Date.now() })
     pushActivity('ai', `Validation requise — ${shortText(msg.text ?? '', 70)}`)
   } else if (msg.type === 'chat_response' || msg.type === 'ai_message') {
-    flushBufferedOutput((msg.tool as string) ?? 'agent')
     setAiTyping(false)
     if (!replyTargetPinned.value && isChatTargetId(msg.target)) {
       setReplyTarget(String(msg.target))
     }
     appendAiMessage(msg.text ?? '', msg.tool as string, false, typeof msg.target === 'string' ? msg.target : undefined)
-    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
     pushActivity('ai', shortText(msg.text ?? '', 70))
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
   } else if (msg.type === 'output' && msg.text) {
     setAiTyping(false)
     queueOutputChunk(msg.text, msg.tool as string)
   } else if (msg.type === 'adapter_exit') {
-    flushBufferedOutput((msg.tool as string) ?? 'agent')
     setAiTyping(false)
     pushActivity('err', `${String(msg.tool ?? 'adapter')} exited`)
     void bridge.fetchAgentStatus()
@@ -1805,9 +1790,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  outputTimers.forEach((timer) => clearTimeout(timer))
-  outputTimers.clear()
-  outputBuffer.clear()
+  if (chatHistorySaveTimer) clearTimeout(chatHistorySaveTimer)
   offMsg()
 })
 useHead({ title: 'DevBridge — Dashboard' })
