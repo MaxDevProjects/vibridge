@@ -23,13 +23,15 @@ export function useQuickReplies(message: string): QuickReplyResult {
 
   const lines = text.split('\n')
   const numberedChoices: QuickReplyChoice[] = []
+  const seenKeys = new Set<string>()
 
   for (const line of lines) {
     const match = line.match(NUMBERED_LINE_RE)
     if (!match) continue
     const key = match[1] ?? match[2] ?? ''
     const label = normalizeChoiceLabel(match[3] ?? '')
-    if (!key || !label) continue
+    if (!key || !label || seenKeys.has(key)) continue
+    seenKeys.add(key)
     numberedChoices.push({
       key,
       label,

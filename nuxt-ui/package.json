@@ -6,7 +6,8 @@
     "dev": "nuxt dev",
     "build": "nuxt build",
     "preview": "nuxt preview",
-    "generate": "nuxt generate"
+    "generate": "nuxt generate",
+    "test:unit": "jiti tests/unit/run.ts"
   },
   "dependencies": {
     "@nuxtjs/color-mode": "^3.5.2",
