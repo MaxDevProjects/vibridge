@@ -1353,6 +1353,19 @@ interface ChatTarget {
 const chatMessages = ref<ChatMsg[]>([])
 const chatDraft  = ref('')
 const aiTyping   = ref(false)
+let aiTypingTimeout: ReturnType<typeof setTimeout> | null = null
+
+function setAiTyping(value: boolean) {
+  aiTyping.value = value
+  if (aiTypingTimeout) { clearTimeout(aiTypingTimeout); aiTypingTimeout = null }
+  if (value) {
+    aiTypingTimeout = setTimeout(() => {
+      aiTyping.value = false
+      appendAiMessage('Pas de réponse', 'timeout')
+    }, 30_000)
+  }
+}
+
 const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const outputBuffer = new Map<string, string>()
@@ -1450,7 +1463,7 @@ function sendChat() {
     sendEnter: true,
   })
   chatDraft.value = ''
-  aiTyping.value = true
+  setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }
 
@@ -1498,6 +1511,10 @@ function createNewTerminal() {
 function selectChatTarget(target: ChatTarget) {
   if (target.state === 'starting') return
   setReplyTarget(target.id, true)
+  if (target.kind === 'terminal' && target.terminalName) {
+    bridge.send({ type: 'focus_terminal', terminalName: target.terminalName })
+    return
+  }
   if (target.kind !== 'launcher') return
   const isLaunched = Boolean(target.terminalName && Array.isArray(ideState.value?.terminals) && ideState.value?.terminals?.some(
     terminal => String(terminal?.name ?? '').trim() === target.terminalName
@@ -1541,7 +1558,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     pushActivity('ai', `Validation requise — ${shortText(msg.text ?? '', 70)}`)
   } else if (msg.type === 'chat_response' || msg.type === 'ai_message') {
     flushBufferedOutput((msg.tool as string) ?? 'agent')
-    aiTyping.value = false
+    setAiTyping(false)
     if (!replyTargetPinned.value && isChatTargetId(msg.target)) {
       setReplyTarget(String(msg.target))
     }
@@ -1550,14 +1567,14 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     pushActivity('ai', shortText(msg.text ?? '', 70))
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
   } else if (msg.type === 'output' && msg.text) {
-    aiTyping.value = false
+    setAiTyping(false)
     queueOutputChunk(msg.text, msg.tool as string)
   } else if (msg.type === 'adapter_exit') {
     flushBufferedOutput((msg.tool as string) ?? 'agent')
     pushActivity('err', `${String(msg.tool ?? 'adapter')} exited`)
     void bridge.fetchAgentStatus()
   } else if (msg.type === 'ai_typing') {
-    aiTyping.value = true
+    setAiTyping(true)
   } else if (msg.type === 'event') {
     pushActivity('sys', (msg.event as string) ?? msg.type)
     if (String(msg.event ?? '').startsWith('active_adapter:')) {
@@ -1664,7 +1681,7 @@ watch(chatTargets, (targets) => {
 
 watch(activeWorkspaceKey, (workspaceId) => {
   chatMessages.value = loadWorkspaceChatHistory(workspaceId)
-  aiTyping.value = false
+  setAiTyping(false)
   selectedFile.value = null
   selectedFileContent.value = ''
   selectedFileError.value = ''
