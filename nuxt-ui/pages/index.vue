@@ -1354,15 +1354,30 @@ const chatMessages = ref<ChatMsg[]>([])
 const chatDraft  = ref('')
 const aiTyping   = ref(false)
 let aiTypingTimeout: ReturnType<typeof setTimeout> | null = null
+let aiTypingDeadline = 0
 
 function setAiTyping(value: boolean) {
   aiTyping.value = value
   if (aiTypingTimeout) { clearTimeout(aiTypingTimeout); aiTypingTimeout = null }
   if (value) {
+    const now = Date.now()
+    // First activation sets a hard 30s deadline; subsequent ai_typing events
+    // only refresh the timer up to that deadline so it can't spin forever.
+    if (!aiTypingDeadline) aiTypingDeadline = now + 30_000
+    const remaining = Math.max(aiTypingDeadline - now, 0)
+    if (remaining === 0) {
+      aiTyping.value = false
+      aiTypingDeadline = 0
+      appendAiMessage('Pas de réponse', 'timeout')
+      return
+    }
     aiTypingTimeout = setTimeout(() => {
       aiTyping.value = false
+      aiTypingDeadline = 0
       appendAiMessage('Pas de réponse', 'timeout')
-    }, 30_000)
+    }, remaining)
+  } else {
+    aiTypingDeadline = 0
   }
 }
 
@@ -1571,6 +1586,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     queueOutputChunk(msg.text, msg.tool as string)
   } else if (msg.type === 'adapter_exit') {
     flushBufferedOutput((msg.tool as string) ?? 'agent')
+    setAiTyping(false)
     pushActivity('err', `${String(msg.tool ?? 'adapter')} exited`)
     void bridge.fetchAgentStatus()
   } else if (msg.type === 'ai_typing') {
@@ -1649,6 +1665,9 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
 })
 
 watch(() => bridge.status.value, (next) => {
+  if (next === 'disconnected' && aiTyping.value) {
+    setAiTyping(false)
+  }
   if (next === 'connected') {
     void loadFileTree()
     void bridge.fetchAgentStatus()
