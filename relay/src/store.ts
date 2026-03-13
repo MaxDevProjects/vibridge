@@ -17,7 +17,7 @@ function parseJson<T>(raw: string | null, fallback: T): T {
 }
 
 export class RelayStore {
-  private db: Database.Database
+  private db: InstanceType<typeof Database>
 
   constructor(private dbPath = process.env.RELAY_DB_PATH ?? '/data/relay.db') {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
