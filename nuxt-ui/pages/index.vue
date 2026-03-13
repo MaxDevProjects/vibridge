@@ -356,7 +356,16 @@
             />
           </div>
           <div ref="chatScroll" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-            <ChatBubble v-for="m in filteredChatMessages" :key="m.id" :text="m.text" :direction="m.direction" :tool="m.tool" :ts="m.ts" />
+            <ChatBubble
+              v-for="m in filteredChatMessages"
+              :key="m.id"
+              :text="m.text"
+              :direction="m.direction"
+              :tool="m.tool"
+              :ts="m.ts"
+              :show-quick-replies="m.direction === 'ai' && m.id === lastFilteredAiMessageId"
+              @quick-reply="sendQuickReply"
+            />
             <TypingIndicator v-if="aiTyping" />
           </div>
           <div class="shrink-0 p-3" style="border-top:1px solid var(--border);background:var(--bg)">
@@ -1477,11 +1486,17 @@ const filteredChatMessages = computed(() => {
   return chatMessages.value.filter(m => !m.target || m.target === target)
 })
 
+const lastFilteredAiMessageId = computed(() => {
+  for (let idx = filteredChatMessages.value.length - 1; idx >= 0; idx -= 1) {
+    if (filteredChatMessages.value[idx]?.direction === 'ai') return filteredChatMessages.value[idx]!.id
+  }
+  return ''
+})
+
 function sendChat() {
   const text = chatDraft.value.trim()
   if (!text || !selectedChatTargetReady.value) return
-  chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, target: replyTarget.value, ts: Date.now() })
-  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+  appendUserChatMessage(text)
   pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
   bridge.send({
     type: 'message',
@@ -1490,6 +1505,25 @@ function sendChat() {
     sendEnter: true,
   })
   chatDraft.value = ''
+  setAiTyping(true)
+  nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
+}
+
+function appendUserChatMessage(text: string) {
+  chatMessages.value.push({ id: Date.now().toString(), direction: 'user', text, target: replyTarget.value, ts: Date.now() })
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+}
+
+function sendQuickReply(value: string) {
+  if (!value || !selectedChatTargetReady.value) return
+  appendUserChatMessage(value)
+  pushActivity('user', `Réponse rapide — ${value}`)
+  bridge.send({
+    type: 'message',
+    text: value,
+    target: replyTarget.value,
+    sendEnter: true,
+  })
   setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }

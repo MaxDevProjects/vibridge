@@ -64,6 +64,8 @@
           :direction="m.direction"
           :tool="m.tool"
           :ts="m.ts"
+          :show-quick-replies="m.direction === 'ai' && m.id === lastAiMessageId"
+          @quick-reply="sendQuickReply"
         />
       </template>
       <p v-else class="text-dimmed text-xs text-center mt-8 uppercase tracking-widest">
@@ -246,12 +248,24 @@ function scrollToBottom() {
 function sendMessage() {
   const text = draft.value.trim()
   if (!text || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
-  messages.value.push({ id: Date.now().toString(), text, direction: 'user', ts: nowTs() })
-  saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
+  appendUserMessage(text)
   bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: true })
   draft.value = ''
   aiTyping.value = true
   if (inputEl.value) { inputEl.value.style.height = 'auto' }
+  scrollToBottom()
+}
+
+function appendUserMessage(text: string) {
+  messages.value.push({ id: Date.now().toString(), text, direction: 'user', ts: nowTs() })
+  saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value)
+}
+
+function sendQuickReply(value: string) {
+  if (!value || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
+  appendUserMessage(value)
+  bridge.send({ type: 'message', text: value, target: replyTarget.value, sendEnter: true })
+  aiTyping.value = true
   scrollToBottom()
 }
 
@@ -352,6 +366,13 @@ const selectedTargetReady = computed(() => {
   return Boolean(selected && selected.state !== 'new' && selected.terminalName && terminals.value.some(
     t => String((t as { name?: string }).name ?? '') === selected.terminalName
   ))
+})
+
+const lastAiMessageId = computed(() => {
+  for (let idx = messages.value.length - 1; idx >= 0; idx -= 1) {
+    if (messages.value[idx]?.direction === 'ai') return messages.value[idx]!.id
+  }
+  return ''
 })
 
 watch(chatTargets, (targets) => {
