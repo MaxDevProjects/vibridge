@@ -1402,6 +1402,7 @@ const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const outputBuffer = new Map<string, string>()
 const outputTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const STREAM_FLUSH_DELAY_MS = 75
 const REPLY_TARGET_KEY = 'vb:chatTarget'
 const replyTarget = ref(
   import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
@@ -1609,7 +1610,11 @@ function queueOutputChunk(text: string, tool?: string) {
   outputBuffer.set(key, `${previous}${text}`)
   const oldTimer = outputTimers.get(key)
   if (oldTimer) clearTimeout(oldTimer)
-  outputTimers.set(key, setTimeout(() => flushBufferedOutput(key), 350))
+  if (text.includes('\n')) {
+    flushBufferedOutput(key)
+    return
+  }
+  outputTimers.set(key, setTimeout(() => flushBufferedOutput(key), STREAM_FLUSH_DELAY_MS))
 }
 
 // WS
