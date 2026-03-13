@@ -354,6 +354,10 @@ watch(() => bridge.status.value, (status) => {
   if (status === 'connected' && bridge.mode.value === 'relay') {
     void bridge.fetchRelaySessions()
   }
+  if (status === 'connected') {
+    loadingProjects.value = true
+    bridge.send({ type: 'list_projects' })
+  }
 }, { immediate: true })
 
 onUnmounted(offMessage)

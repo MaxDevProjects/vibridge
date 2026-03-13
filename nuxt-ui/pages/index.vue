@@ -413,36 +413,37 @@
 
         <!-- CODE tab -->
         <div v-show="activeTab === 'code'" class="absolute inset-0 flex flex-col">
-          <!-- Projects list -->
+          <!-- Codebase root list -->
           <div class="shrink-0" style="border-bottom:1px solid var(--border)">
             <div class="px-4 py-2 flex items-center justify-between" style="border-bottom:1px solid var(--border)">
-              <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Projets disponibles</p>
+              <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Racine du projet</p>
             </div>
             <div class="overflow-y-auto" style="max-height:160px">
               <div
-                v-for="(proj, i) in projectsList" :key="proj.path"
+                v-for="(entry, i) in codebaseRootEntries" :key="entry.path"
                 class="flex items-center justify-between px-4 py-2 text-[11px]"
-                :style="i < projectsList.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
+                :style="i < codebaseRootEntries.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
               >
                 <span class="flex items-center gap-1.5 truncate">
-                  <span v-if="proj.isActive" style="color:var(--dot-amber)">★</span>
-                  <span class="truncate">{{ proj.name }}</span>
+                  <span :style="entry.type === 'dir' ? 'color:var(--dot-amber)' : 'color:var(--muted)'">
+                    {{ entry.type === 'dir' ? '▣' : '·' }}
+                  </span>
+                  <span class="truncate">{{ entry.name }}</span>
                 </span>
-                <span v-if="proj.isActive" class="text-[9px] shrink-0 ml-2" style="color:var(--muted)">actif</span>
                 <button
-                  v-else
-                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
+                  v-if="entry.type === 'file'"
                   class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
-                  :style="projectOpening[proj.path] === 'done'
-                    ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
+                  :style="selectedFile === entry.path
+                    ? 'border:1px solid var(--text);color:var(--text);background:none'
                     : 'border:1px solid var(--border);color:var(--text);background:none'"
-                  @click="openProject(proj.path, proj.name)"
+                  @click="openCodeFile(entry.path)"
                 >
-                  {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? '…' : projectOpening[proj.path] === 'done' ? '✓' : '→' }}
+                  {{ selectedFile === entry.path ? 'actif' : 'ouvrir' }}
                 </button>
+                <span v-else class="text-[9px] shrink-0 ml-2" style="color:var(--muted)">dossier</span>
               </div>
-              <p v-if="!projectsList.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">
-                {{ bridge.status.value !== 'connected' ? '— Non connecté —' : projectsTimedOut ? '— Aucun projet détecté —' : '— Chargement… —' }}
+              <p v-if="!codebaseRootEntries.length" class="px-4 py-3 text-[10px]" style="color:var(--muted)">
+                {{ bridge.status.value !== 'connected' ? '— Non connecté —' : fileTreeTimedOut ? '— Aucun fichier —' : '— Chargement… —' }}
               </p>
             </div>
           </div>
@@ -1485,6 +1486,8 @@ const filteredChatMessages = computed(() => {
   const target = replyTarget.value
   return chatMessages.value.filter(m => !m.target || m.target === target)
 })
+
+const codebaseRootEntries = computed(() => fileTree.value)
 
 const lastFilteredAiMessageId = computed(() => {
   for (let idx = filteredChatMessages.value.length - 1; idx >= 0; idx -= 1) {
