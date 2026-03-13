@@ -654,13 +654,13 @@ const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
   : 'Workspace local')
 const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
-  ? (bridge.relaySessions.value.length
-      ? bridge.relaySessions.value.map(session => ({
+  ? (bridge.relayWorkspaces.value.length
+      ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: w.name, active: w.id === bridge.activeWorkspaceId.value }))
+      : bridge.relaySessions.value.map(session => ({
           id: session.id,
           name: session.label,
           active: session.id === bridge.relaySessionId.value,
-        }))
-      : bridge.relayWorkspaces.value)
+        })))
   : [{ id: 'local', name: 'Workspace local', active: true }])
 const activeProjectLabel = computed(() => {
   const workspace = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
@@ -692,7 +692,7 @@ function toggleTool(id: string, val: boolean) {
 }
 
 function selectWorkspaceOrSession(id: string) {
-  if (bridge.mode.value === 'relay' && bridge.relaySessions.value.length) {
+  if (bridge.mode.value === 'relay' && !bridge.relayWorkspaces.value.length && bridge.relaySessions.value.length) {
     void bridge.switchRelaySession(id)
     return
   }
@@ -798,6 +798,13 @@ async function loadProjects() {
 
 async function openProject(projPath: string, projName: string, newWindow = true) {
   projectOpening.value[projPath] = newWindow ? 'parallel' : 'replace'
+  if (bridge.mode.value === 'relay') {
+    bridge.send({ type: 'open_project', path: projPath, newWindow, payload: { projectPath: projPath, newWindow } })
+    projectOpening.value[projPath] = 'done'
+    pushActivity('sys', `${projName} ouvert dans VS Code`)
+    setTimeout(() => { delete projectOpening.value[projPath] }, 4_000)
+    return
+  }
   try {
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? currentAgentBaseUrl()

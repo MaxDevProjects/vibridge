@@ -131,17 +131,17 @@ interface ProjectItem {
 const bridge = useDevBridge()
 const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
-  ? (bridge.relaySessions.value.length
-      ? bridge.relaySessions.value.map(session => ({
+  ? (bridge.relayWorkspaces.value.length
+      ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: w.name, active: w.id === bridge.activeWorkspaceId.value }))
+      : bridge.relaySessions.value.map(session => ({
           id: session.id,
           name: session.label,
           active: session.id === bridge.relaySessionId.value,
-        }))
-      : bridge.relayWorkspaces.value)
+        })))
   : [{ id: 'local', name: 'Workspace local', active: true }])
 
 function selectWorkspaceOrSession(id: string) {
-  if (bridge.mode.value === 'relay' && bridge.relaySessions.value.length) {
+  if (bridge.mode.value === 'relay' && !bridge.relayWorkspaces.value.length && bridge.relaySessions.value.length) {
     void bridge.switchRelaySession(id)
     return
   }

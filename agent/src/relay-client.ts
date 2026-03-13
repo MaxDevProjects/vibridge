@@ -432,10 +432,11 @@ export class RelayClient {
     }
 
     if (type === 'open_project') {
+      const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as Record<string, unknown> : {};
       this.options.ipc.sendToExtension({
         type: 'open_project',
-        projectPath: typeof msg.path === 'string' ? msg.path : undefined,
-        newWindow: msg.newWindow === true,
+        projectPath: typeof msg.path === 'string' ? msg.path : typeof payload.projectPath === 'string' ? payload.projectPath : undefined,
+        newWindow: msg.newWindow === true || payload.newWindow === true,
       });
       return;
     }
