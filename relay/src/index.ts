@@ -11,7 +11,8 @@ const uiBaseUrl = process.env.RELAY_UI_URL || publicBaseUrl
 const sessionTtlMs = Number(process.env.RELAY_SESSION_TTL_MS ?? 1000 * 60 * 60 * 12)
 
 const auth = new RelayAuth(jwtSecret)
-const store = new RelayStore()
+const relayDbPath = process.env.RELAY_DB_PATH || '/data/relay.db'
+const store = new RelayStore(relayDbPath)
 const { httpServer } = createRelayServer({
   port,
   publicBaseUrl,

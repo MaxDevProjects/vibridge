@@ -149,6 +149,15 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Handle create_terminal from agent: open (or focus) a plain terminal without running a command
+  ipc.on('create_terminal', (msg: Record<string, unknown>) => {
+    const terminalName = String(msg.terminalName ?? 'DevBridge 1');
+    const cwd = resolveWorkspaceCwd();
+    const existing = vscode.window.terminals.find(t => t.name === terminalName);
+    const terminal = existing ?? vscode.window.createTerminal({ name: terminalName, cwd });
+    terminal.show(true);
+  });
+
   // Handle kill_cli from agent: close the named terminal
   ipc.on('kill_cli', (msg: Record<string, unknown>) => {
     const terminalName = String(msg.terminalName ?? '');
