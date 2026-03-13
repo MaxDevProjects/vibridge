@@ -5,3 +5,5 @@ dist/
 *.vsix
 *.tsbuildinfo
 .DS_Store
+nuxt-ui/.nuxt/
+nuxt-ui/.output/
