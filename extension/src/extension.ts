@@ -158,6 +158,13 @@ export function activate(context: vscode.ExtensionContext): void {
     terminal.show(true);
   });
 
+  // Handle focus_terminal from agent: focus an existing terminal by name
+  ipc.on('focus_terminal', (msg: Record<string, unknown>) => {
+    const terminalName = String(msg.terminalName ?? '');
+    const terminal = vscode.window.terminals.find(t => t.name === terminalName);
+    if (terminal) terminal.show(true);
+  });
+
   // Handle kill_cli from agent: close the named terminal
   ipc.on('kill_cli', (msg: Record<string, unknown>) => {
     const terminalName = String(msg.terminalName ?? '');

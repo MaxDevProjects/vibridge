@@ -5,6 +5,7 @@ import type { FileService } from './files';
 import type { IpcServer } from './ipc';
 import type { MessageQueue, OutputPayload } from './queue';
 import type { WorkspaceIdentity } from './workspace';
+import type { CliRegistry } from './cliRegistry';
 import { listProjects } from './projects';
 
 interface RelaySessionState {
@@ -59,6 +60,7 @@ interface RelayClientOptions {
   files: FileService;
   ipc: IpcServer;
   queue: MessageQueue;
+  cliRegistry?: CliRegistry;
 }
 
 export class RelayClient {
@@ -468,6 +470,44 @@ export class RelayClient {
         path: filePath,
         ...(content === null ? { error: 'not found' } : { content }),
       });
+      return;
+    }
+
+    if (type === 'focus_terminal') {
+      this.options.ipc.sendToExtension({
+        type: 'focus_terminal',
+        terminalName: String(msg.terminalName ?? ''),
+      });
+      return;
+    }
+
+    if (type === 'create_terminal') {
+      const terminalName = String(msg.terminalName ?? '').trim() || 'DevBridge 1';
+      this.options.ipc.sendToExtension({ type: 'create_terminal', terminalName });
+      return;
+    }
+
+    if (type === 'start_cli') {
+      const cliId = String(msg.cliId ?? '');
+      const cli = this.options.cliRegistry?.getById(cliId);
+      if (cli) {
+        this.options.ipc.sendToExtension({
+          type: 'start_cli',
+          cliId: cli.id,
+          command: cli.command,
+          args: cli.args,
+          terminalName: `DevBridge ${cli.name}`,
+        });
+      }
+      return;
+    }
+
+    if (type === 'kill_cli') {
+      this.options.ipc.sendToExtension({
+        type: 'kill_cli',
+        terminalName: String(msg.terminalName ?? ''),
+      });
+      return;
     }
   }
 

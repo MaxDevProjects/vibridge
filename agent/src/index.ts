@@ -45,6 +45,7 @@ async function main() {
         files,
         ipc,
         queue,
+        cliRegistry,
       })
     : null;
 

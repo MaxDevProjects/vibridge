@@ -455,6 +455,15 @@ export function createServer(deps: ServerDeps) {
         return;
       }
 
+      // PWA requests to focus an existing terminal in VS Code
+      if (msg.type === 'focus_terminal') {
+        deps.ipc.sendToExtension({
+          type: 'focus_terminal',
+          terminalName: String(msg.terminalName ?? ''),
+        });
+        return;
+      }
+
       // PWA requests to kill a CLI terminal
       if (msg.type === 'kill_cli') {
         deps.ipc.sendToExtension({
