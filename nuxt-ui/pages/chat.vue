@@ -129,7 +129,7 @@ interface ProjectItem {
 }
 
 const bridge = useDevBridge()
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.relaySessionId.value || 'default') : 'local')
+const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relaySessions.value.length
       ? bridge.relaySessions.value.map(session => ({
