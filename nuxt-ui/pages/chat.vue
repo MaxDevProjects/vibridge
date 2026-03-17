@@ -218,7 +218,7 @@ function selectChatTarget(target: ChatTarget) {
   if (target.state === 'new') {
     const terminalName = nextTerminalName()
     creatingTerminal.value = true
-    bridge.send({ type: 'create_terminal', terminalName })
+    bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })
     setTarget(`terminal:${terminalName}`)
     setTimeout(() => { creatingTerminal.value = false }, 3_000)
     return
