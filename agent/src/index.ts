@@ -33,20 +33,30 @@ async function main() {
   const adapters = new AdapterManager(queue);
   const cliRegistry = new CliRegistry(DATA_DIR);
   cliRegistry.load();
-  const ipc = new IpcServer(IPC_SOCK, adapters, queue, push, auth, cliRegistry);
-  const relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
-      ? new RelayClient({
-        internalUrl: RELAY_INTERNAL_URL,
-        publicUrl: RELAY_PUBLIC_URL,
-        sessionLabel: workspace.id,
-        workspaceFolders: [PROJECT_ROOT],
-        workspace,
-        adapters,
-        files,
-        ipc,
-        queue,
-        cliRegistry,
-      })
+  let relay: RelayClient | null = null;
+  const ipc = new IpcServer(
+    IPC_SOCK,
+    adapters,
+    queue,
+    push,
+    auth,
+    workspace.id,
+    () => relay?.getState()?.sessionId ?? null,
+    cliRegistry,
+  );
+  relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
+    ? new RelayClient({
+      internalUrl: RELAY_INTERNAL_URL,
+      publicUrl: RELAY_PUBLIC_URL,
+      sessionLabel: workspace.id,
+      workspaceFolders: [PROJECT_ROOT],
+      workspace,
+      adapters,
+      files,
+      ipc,
+      queue,
+      cliRegistry,
+    })
     : null;
 
   const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry, workspace });

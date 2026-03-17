@@ -22,19 +22,39 @@ self.addEventListener('push', (event) => {
     }),
   )
 })
-
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
 
   event.waitUntil((async () => {
+    const notificationData = event.notification?.data && typeof event.notification.data === 'object'
+      ? event.notification.data
+      : {}
+    const sessionId = typeof notificationData.sessionId === 'string' ? notificationData.sessionId.trim() : ''
+    const workspaceId = typeof notificationData.workspaceId === 'string' ? notificationData.workspaceId.trim() : ''
+    const targetUrl = new URL('https://vibridge.clowerstudio.com/')
+
+    if (sessionId) targetUrl.searchParams.set('session', sessionId)
+    if (workspaceId) targetUrl.searchParams.set('workspace', workspaceId)
+
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-    const existing = clients.find((client) => client.url.includes('vibridge.clowerstudio.com'))
+    const targetHref = targetUrl.toString()
+    const existing = clients.find((client) => {
+      try {
+        const currentUrl = new URL(client.url)
+        return currentUrl.origin === targetUrl.origin
+      } catch {
+        return false
+      }
+    })
 
     if (existing) {
       await existing.focus()
+      if ('navigate' in existing) {
+        await existing.navigate(targetHref)
+      }
       return
     }
 
-    await self.clients.openWindow('https://vibridge.clowerstudio.com')
+    await self.clients.openWindow(targetHref)
   })())
 })
