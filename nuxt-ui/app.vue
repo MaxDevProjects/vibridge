@@ -43,6 +43,18 @@ onMounted(() => {
     return
   }
 
+  // Notification click: ?session=xxx&workspace=yyy — pre-select workspace
+  const notifSession = typeof route.query.session === 'string' ? route.query.session.trim() : ''
+  const notifWorkspace = typeof route.query.workspace === 'string' ? route.query.workspace.trim() : ''
+  if (notifWorkspace && localStorage.getItem('vb:token')) {
+    const sessionKey = notifSession || localStorage.getItem('vb:relaySessionId') || ''
+    if (sessionKey) {
+      localStorage.setItem(`vb:relayWorkspace:${sessionKey}`, notifWorkspace)
+    }
+    void router.replace({ path: '/', query: {} })
+    return
+  }
+
   // First launch: no stored session + not scanning a QR → redirect to onboarding
   const hasToken = Boolean(localStorage.getItem('vb:token'))
   const isSetup = route.path.startsWith('/setup') || route.path.startsWith('/settings')
