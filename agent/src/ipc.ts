@@ -32,6 +32,8 @@ export class IpcServer {
     private queue: MessageQueue,
     private push: PushService,
     private auth: AuthService,
+    private workspaceId = 'workspace',
+    private getRelaySessionId: () => string | null = () => null,
     private cliRegistry?: CliRegistry,
   ) {
     this.server = net.createServer((socket) => this.handleClient(socket));
@@ -188,7 +190,12 @@ export class IpcServer {
           void this.push.send({
             title: 'DevBridge — Copilot asks',
             body: text.slice(0, 120),
-            data: { type: 'question', text },
+            data: {
+              type: 'question',
+              text,
+              sessionId: this.getRelaySessionId(),
+              workspaceId: this.workspaceId,
+            },
           });
         }
         break;
