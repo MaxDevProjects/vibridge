@@ -528,6 +528,39 @@ export class RelayClient {
       return;
     }
 
+    if (type === 'relay_clis_request' && typeof msg.request_id === 'string') {
+      const action = String(msg.action ?? '');
+      const registry = this.options.cliRegistry;
+      const respond = (payload: Record<string, unknown>) => {
+        this.send('relay_clis_response', { request_id: msg.request_id, ...payload });
+      };
+      if (!registry) {
+        respond({ error: 'no registry', clis: [] });
+        return;
+      }
+      if (action === 'list') {
+        respond({ clis: registry.getAll() });
+      } else if (action === 'detect') {
+        void registry.detectAll().then(() => respond({ clis: registry.getAll() }));
+      } else if (action === 'set_default') {
+        const ok = registry.setDefault(String(msg.id ?? ''));
+        respond({ ok, clis: registry.getAll() });
+      } else if (action === 'add_custom') {
+        const cli = registry.addCustom({
+          name: String(msg.name ?? ''),
+          command: String(msg.command ?? ''),
+          args: Array.isArray(msg.args) ? msg.args.map(String) : undefined,
+        });
+        respond({ ok: true, cli, clis: registry.getAll() });
+      } else if (action === 'remove_custom') {
+        const ok = registry.removeCustom(String(msg.id ?? ''));
+        respond({ ok });
+      } else {
+        respond({ error: 'unknown action' });
+      }
+      return;
+    }
+
     if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
       const filePath = typeof msg.path === 'string' ? msg.path : '';
       const ideState = this.options.ipc.getIdeState();
