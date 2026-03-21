@@ -23,9 +23,11 @@ export class FileService {
     console.log(`[Files] Workspace root: ${root}`);
   }
 
-  tree(dir = this.root, depth = 0): FileNode {
+  tree(dir = this.root, depth = 0, relRoot?: string): FileNode {
+    const effectiveRoot = relRoot ?? dir;
     const name = path.basename(dir);
-    const node: FileNode = { name, path: this.relativize(dir), type: 'dir', children: [] };
+    const relPath = dir === effectiveRoot ? '' : dir.startsWith(effectiveRoot) ? dir.slice(effectiveRoot.length).replace(/^\//, '') : this.relativize(dir);
+    const node: FileNode = { name, path: relPath, type: 'dir', children: [] };
 
     if (depth > 8) return node;
 
@@ -40,11 +42,12 @@ export class FileService {
       if (IGNORED.has(entry.name) || entry.name.startsWith('.')) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        node.children!.push(this.tree(full, depth + 1));
+        node.children!.push(this.tree(full, depth + 1, effectiveRoot));
       } else if (entry.isFile()) {
+        const fileRelPath = full.startsWith(effectiveRoot) ? full.slice(effectiveRoot.length).replace(/^\//, '') : this.relativize(full);
         node.children!.push({
           name: entry.name,
-          path: this.relativize(full),
+          path: fileRelPath,
           type: 'file',
         });
       }
@@ -53,8 +56,13 @@ export class FileService {
     return node;
   }
 
-  read(relPath: string): string | null {
-    const abs = this.safeResolve(relPath);
+  /** Build a tree from an arbitrary directory, with paths relative to that directory */
+  treeFrom(dir: string): FileNode {
+    return this.tree(dir, 0, dir);
+  }
+
+  read(relPath: string, fromRoot?: string): string | null {
+    const abs = this.safeResolve(relPath, fromRoot);
     if (!abs) return null;
     try {
       const stat = fs.statSync(abs);
@@ -67,10 +75,11 @@ export class FileService {
     }
   }
 
-  private safeResolve(relPath: string): string | null {
-    const abs = path.resolve(this.root, relPath.replace(/^\//, ''));
+  private safeResolve(relPath: string, fromRoot?: string): string | null {
+    const root = fromRoot ?? this.root;
+    const abs = path.resolve(root, relPath.replace(/^\//, ''));
     // Prevent path traversal
-    if (!abs.startsWith(this.root)) return null;
+    if (!abs.startsWith(root)) return null;
     return abs;
   }
 

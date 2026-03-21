@@ -199,7 +199,10 @@ export function createServer(deps: ServerDeps) {
   });
 
   app.get('/files', requireAuth, (_req, res) => {
-    res.json(files.tree());
+    const ideState = deps.ipc.getIdeState();
+    const workspaceFolders = Array.isArray(ideState?.workspaceFolders) ? ideState.workspaceFolders as string[] : [];
+    const firstFolder = workspaceFolders.length ? String(workspaceFolders[0] ?? '') : '';
+    res.json(firstFolder ? files.treeFrom(firstFolder) : files.tree());
   });
 
   app.get('/files/*', requireAuth, (req, res) => {
