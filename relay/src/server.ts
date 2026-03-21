@@ -52,15 +52,33 @@ export function createRelayServer(options: RelayServerOptions) {
   })
   app.use(express.json())
 
-  const requireSessionAuth = (req: Request, res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? ''
-    const claims = auth.verify(token)
-    if (!claims) {
-      res.status(401).json({ error: 'unauthorized' })
-      return
+  function buildQrUrl(sessionId: string, pairingCode: string): string {
+    const url = new URL('/', uiBaseUrl.replace(/\/$/, '') || publicBaseUrl)
+    url.searchParams.set('relay', '1')
+    url.searchParams.set('relayUrl', publicBaseUrl)
+    url.searchParams.set('sessionId', sessionId)
+    url.searchParams.set('code', pairingCode)
+    return url.toString()
+  }
+
+  const requireSessionAuth = (allowedRoles: RelayRole[] = ['mobile', 'agent']) =>
+    (req: Request, res: Response, next: NextFunction) => {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? ''
+      const claims = auth.verify(token)
+      if (!claims || !allowedRoles.includes(claims.role)) {
+        res.status(401).json({ error: 'unauthorized' })
+        return
+      }
+      ;(req as Request & { claims?: SessionClaims }).claims = claims
+      next()
     }
-    ;(req as Request & { claims?: SessionClaims }).claims = claims
-    next()
+
+  function resolveSetupClaims(req: Request): SessionClaims | null {
+    const queryToken = String(req.query.token ?? '').trim()
+    const authToken = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? ''
+    const claims = auth.verify(queryToken || authToken)
+    if (!claims || claims.role !== 'setup') return null
+    return claims
   }
 
   app.get('/health', (_req, res) => {
@@ -135,7 +153,98 @@ export function createRelayServer(options: RelayServerOptions) {
       agentToken: finalAgentToken,
       expiresAt: session.expiresAt,
       relayUrl: publicBaseUrl,
-      qrUrl: `${uiBaseUrl.replace(/\/$/, '')}/?relay=1&sessionId=${encodeURIComponent(session.id)}&code=${encodeURIComponent(session.pairingCode)}`,
+      qrUrl: buildQrUrl(session.id, session.pairingCode),
+    })
+  })
+
+  app.post('/api/onboarding/session', (req, res) => {
+    const { label, workspaceId, workspaceFolders } = req.body as { label?: string; workspaceId?: string; workspaceFolders?: string[] }
+    const expiresAt = Date.now() + sessionTtlMs
+    const seedSessionId = `seed_${Date.now()}`
+    const seedAgentToken = auth.issueSessionToken(seedSessionId, 'agent')
+    const session = store.createSession({
+      label,
+      workspaceId,
+      workspaceFolders,
+      agentToken: seedAgentToken,
+      expiresAt,
+    })
+    const finalAgentToken = auth.issueSessionToken(session.id, 'agent')
+    store.updateSessionTokens(session.id, { agentToken: finalAgentToken })
+    const setupToken = auth.issueSessionToken(session.id, 'setup')
+    const vscodeUri = `vscode://devbridge.devbridge/onboarding?setupToken=${encodeURIComponent(setupToken)}`
+
+    res.json({
+      sessionId: session.id,
+      setupToken,
+      pairingCode: session.pairingCode,
+      expiresAt: session.expiresAt,
+      relayUrl: publicBaseUrl,
+      qrUrl: buildQrUrl(session.id, session.pairingCode),
+      vscodeUri,
+    })
+  })
+
+  app.get('/api/onboarding/agent-status', (req, res) => {
+    const claims = resolveSetupClaims(req)
+    if (!claims) {
+      res.status(401).json({ error: 'unauthorized' })
+      return
+    }
+    const session = store.getSession(claims.sessionId)
+    if (!session) {
+      res.status(404).json({ error: 'not found' })
+      return
+    }
+    const sessionPeers = peers.get(session.id)
+    res.json({
+      sessionId: session.id,
+      status: session.status,
+      pairingCode: session.pairingCode,
+      expiresAt: session.expiresAt,
+      relayUrl: publicBaseUrl,
+      qrUrl: buildQrUrl(session.id, session.pairingCode),
+      agentConnected: Boolean(sessionPeers?.agents.size),
+      mobileConnected: Boolean(sessionPeers?.mobile),
+    })
+  })
+
+  app.post('/api/onboarding/claim', (req, res) => {
+    const { setupToken, label, workspaceId, workspaceFolders } = req.body as {
+      setupToken?: string
+      label?: string
+      workspaceId?: string
+      workspaceFolders?: string[]
+    }
+    const claims = auth.verify(String(setupToken ?? '').trim())
+    if (!claims || claims.role !== 'setup') {
+      res.status(401).json({ error: 'unauthorized' })
+      return
+    }
+    const session = store.getSession(claims.sessionId)
+    if (!session || session.expiresAt <= Date.now()) {
+      res.status(404).json({ error: 'not found' })
+      return
+    }
+    const nextAgentToken = auth.issueSessionToken(session.id, 'agent')
+    const updated = store.updateSession(session.id, {
+      label: label?.trim() || session.label,
+      workspaceId: workspaceId?.trim() || session.workspaceId,
+      workspaceFolders: Array.isArray(workspaceFolders) && workspaceFolders.length ? workspaceFolders : session.workspaceFolders,
+    })
+    store.updateSessionTokens(session.id, { agentToken: nextAgentToken })
+    const claimed = store.getSession(session.id)
+    if (!updated || !claimed) {
+      res.status(500).json({ error: 'claim failed' })
+      return
+    }
+    res.json({
+      sessionId: claimed.id,
+      pairingCode: claimed.pairingCode,
+      agentToken: nextAgentToken,
+      expiresAt: claimed.expiresAt,
+      relayUrl: publicBaseUrl,
+      qrUrl: buildQrUrl(claimed.id, claimed.pairingCode),
     })
   })
 
@@ -159,7 +268,7 @@ export function createRelayServer(options: RelayServerOptions) {
     })
   })
 
-  app.get('/api/relay/sessions/:sessionId', requireSessionAuth, (req, res) => {
+  app.get('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
     const sessionId = req.params.sessionId
     const claims = (req as Request & { claims?: SessionClaims }).claims!
     if (claims.sessionId !== sessionId) {
@@ -188,7 +297,7 @@ export function createRelayServer(options: RelayServerOptions) {
     })
   })
 
-  app.get('/api/relay/sessions/:sessionId/files', requireSessionAuth, async (req, res) => {
+  app.get('/api/relay/sessions/:sessionId/files', requireSessionAuth(['mobile']), async (req, res) => {
     const sessionId = req.params.sessionId
     const claims = (req as Request & { claims?: SessionClaims }).claims!
     if (claims.sessionId !== sessionId) {

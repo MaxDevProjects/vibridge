@@ -169,6 +169,24 @@ export class RelayStore {
     return this.getSession(sessionId)
   }
 
+  updateSession(sessionId: string, updates: { label?: string; workspaceId?: string; workspaceFolders?: string[] }) {
+    const existing = this.getSession(sessionId)
+    if (!existing) return null
+    this.db.prepare(`
+      UPDATE sessions
+      SET label = @label,
+          workspace_id = @workspaceId,
+          workspace_folders_json = @workspaceFoldersJson
+      WHERE id = @sessionId
+    `).run({
+      sessionId,
+      label: updates.label ?? existing.label ?? null,
+      workspaceId: updates.workspaceId ?? existing.workspaceId ?? null,
+      workspaceFoldersJson: JSON.stringify(updates.workspaceFolders ?? existing.workspaceFolders),
+    })
+    return this.getSession(sessionId)
+  }
+
   getSession(sessionId: string) {
     const row = this.db.prepare(`
       SELECT id, workspace_id, pairing_code, status, created_at, expires_at, label, workspace_folders_json, agent_token, mobile_token

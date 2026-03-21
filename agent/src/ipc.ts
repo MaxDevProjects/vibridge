@@ -35,6 +35,7 @@ export class IpcServer {
     private workspaceId = 'workspace',
     private getRelaySessionId: () => string | null = () => null,
     private cliRegistry?: CliRegistry,
+    private applyRelaySetup?: (setupToken: string) => void | Promise<void>,
   ) {
     this.server = net.createServer((socket) => this.handleClient(socket));
   }
@@ -288,6 +289,15 @@ export class IpcServer {
       case 'inject_message': {
         // phone → AI (already routed via HTTP /message, but can also arrive via IPC)
         this.adapters.send({ text: msg.text as string, target: msg.target as string | undefined });
+        break;
+      }
+      case 'relay_setup_link': {
+        const setupToken = String(msg.setupToken ?? '').trim();
+        if (!setupToken) break;
+        void this.applyRelaySetup?.(setupToken);
+        if (!socket.destroyed) {
+          socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
+        }
         break;
       }
     }
