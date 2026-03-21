@@ -593,6 +593,18 @@ const config    = useRuntimeConfig()
 const route     = useRoute()
 const router    = useRouter()
 const clientReady = ref(false)
+
+// ── Debounce helpers ─────────────────────────────────────
+function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  return ((...args: unknown[]) => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { timer = null; fn(...args) }, ms)
+  }) as unknown as T
+}
+const debouncedLoadFileTree = debounce(() => void loadFileTree(), 800)
+const debouncedFetchAgentStatus = debounce(() => void bridge.fetchAgentStatus(), 500)
+const debouncedLoadPreviewUrl = debounce(() => void loadPreviewUrl(), 2000)
 const resolvedAgentHost = ref(String(config.public.agentHost))
 const publicUiHost = ref(String(config.public.agentHost))
 
@@ -663,9 +675,17 @@ const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
     ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
   : 'Workspace local')
 const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
+function resolveWorkspaceName(workspace: { id: string; name: string }): string {
+  // When the agent falls back to "project" (Docker default), prefer the VS Code workspace folder name
+  const genericNames = new Set(['project', 'workspace', 'app', 'local'])
+  if (!genericNames.has(workspace.name.toLowerCase()) || workspace.id !== bridge.activeWorkspaceId.value) return workspace.name
+  const folder = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
+  if (folder) return lastPathSegment(String(folder))
+  return workspace.name
+}
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relayWorkspaces.value.length
-      ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: w.name, active: w.id === bridge.activeWorkspaceId.value }))
+      ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: resolveWorkspaceName(w), active: w.id === bridge.activeWorkspaceId.value }))
       : bridge.relaySessions.value.map(session => ({
           id: session.id,
           name: session.label,
@@ -1597,7 +1617,7 @@ function scheduleChatHistorySave() {
 
 function pushStreamingOutput(text: string, tool?: string) {
   appendAiMessage(text, tool, true)
-  void loadPreviewUrl()
+  debouncedLoadPreviewUrl()
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }
 
@@ -1628,20 +1648,20 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'adapter_exit') {
     setAiTyping(false)
     pushActivity('err', `${String(msg.tool ?? 'adapter')} exited`)
-    void bridge.fetchAgentStatus()
+    debouncedFetchAgentStatus()
   } else if (msg.type === 'ai_typing') {
     setAiTyping(true)
   } else if (msg.type === 'event') {
     pushActivity('sys', (msg.event as string) ?? msg.type)
     if (String(msg.event ?? '').startsWith('active_adapter:')) {
-      void bridge.fetchAgentStatus()
+      debouncedFetchAgentStatus()
     }
   } else if (msg.type === 'ide_snapshot') {
     const state = (msg.state as Record<string, unknown> | undefined) ?? {}
     const activeFile = String(state.activeFile ?? '')
     const activeTerminal = String(state.activeTerminal ?? '')
     pushActivity('sys', `IDE synchronisé — ${shortText(activeFile || activeTerminal || 'snapshot reçu', 70)}`)
-    void bridge.fetchAgentStatus()
+    debouncedFetchAgentStatus()
   } else if (msg.type === 'status_snapshot') {
     const payload = typeof msg.payload === 'object' && msg.payload ? msg.payload as Record<string, unknown> : msg
     previewUrl.value = String(payload.previewUrl ?? previewUrl.value ?? '')
@@ -1672,7 +1692,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     if (previewUrl.value) pushActivity('sys', `Preview détectée — ${shortText(previewUrl.value, 70)}`)
   } else if (msg.type === 'file_changed') {
     pushActivity('sys', `Fichier changé — ${String(msg.path ?? '')}`)
-    void loadFileTree()
+    debouncedLoadFileTree()
     if (selectedFile.value && String(msg.path ?? '') === selectedFile.value) {
       void loadSelectedFileContent(selectedFile.value)
     }
@@ -1715,21 +1735,24 @@ watch(() => bridge.status.value, (next) => {
     setAiTyping(false)
   }
   if (next === 'connected') {
-    void loadFileTree()
+    // Stagger network requests to avoid overwhelming the connection
     void bridge.fetchAgentStatus()
-    if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
-    void loadPreviewUrl()
     bridge.send({ type: 'get_preview_url' })
     if (bridge.mode.value === 'local') bridge.send({ type: 'get_pairing_code' })
-    // Fetch CLI list and project list on connect
+    // Defer heavier fetches
+    setTimeout(() => { void loadFileTree() }, 100)
+    setTimeout(() => { void loadPreviewUrl() }, 200)
+    if (bridge.mode.value === 'relay') setTimeout(() => { void bridge.fetchRelaySessions() }, 300)
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
     if (base) {
-      fetch(`${base}/clis`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
-        .then(d => { if (d.clis) cliList.value = d.clis })
-        .catch(() => {})
-      void requestProjects()
+      setTimeout(() => {
+        fetch(`${base}/clis`, { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.json() as Promise<{ clis?: CliItem[] }>)
+          .then(d => { if (d.clis) cliList.value = d.clis })
+          .catch(() => {})
+      }, 400)
+      setTimeout(() => { void requestProjects() }, 500)
     }
   }
 }, { immediate: true })

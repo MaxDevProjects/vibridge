@@ -56,6 +56,7 @@ function getProjectsList(): ProjectInfo | null {
 }
 
 let ipc: IpcClient | undefined;
+const PENDING_SETUP_TOKEN_KEY = 'devbridge.pendingSetupToken';
 
 function resolveWorkspaceCwd(): string | undefined {
   const activeEditor = vscode.window.activeTextEditor;
@@ -93,6 +94,14 @@ export function activate(context: vscode.ExtensionContext): void {
   ipc = new IpcClient(target);
   ipc.connect();
 
+  const flushPendingSetupToken = () => {
+    const setupToken = context.globalState.get<string>(PENDING_SETUP_TOKEN_KEY);
+    if (!setupToken || !ipc?.isConnected()) return;
+    ipc.send({ type: 'relay_setup_link', setupToken });
+    void context.globalState.update(PENDING_SETUP_TOKEN_KEY, undefined);
+    void vscode.window.showInformationMessage('DevBridge onboarding linked to the local agent.');
+  };
+
   // Detect installed CLIs and report projects on each connection
   ipc.on('connected', () => {
     detectInstalledClis().then((detected) => {
@@ -100,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }).catch(() => {});
     const info = getProjectsList();
     if (info) ipc!.send({ type: 'projects_report', ...info });
+    flushPendingSetupToken();
   });
 
   // Re-send projects when workspace changes
@@ -197,6 +207,24 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(mirror.start());
 
   // Commands
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri: async (uri: vscode.Uri) => {
+        const params = new URLSearchParams(uri.query);
+        const setupToken = params.get('setupToken')?.trim() ?? '';
+        if (!setupToken) {
+          void vscode.window.showWarningMessage('DevBridge: setup token missing in onboarding link.');
+          return;
+        }
+        await context.globalState.update(PENDING_SETUP_TOKEN_KEY, setupToken);
+        flushPendingSetupToken();
+        if (!ipc?.isConnected()) {
+          void vscode.window.showInformationMessage('DevBridge onboarding link saved. It will be applied when the agent reconnects.');
+        }
+      },
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('devbridge.showPairingCode', async () => {
       const result = await ipc!.requestPairingCode();

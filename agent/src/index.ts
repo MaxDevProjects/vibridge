@@ -43,6 +43,7 @@ async function main() {
     workspace.id,
     () => relay?.getState()?.sessionId ?? null,
     cliRegistry,
+    (setupToken) => relay?.applyOnboardingSetup(setupToken),
   );
   relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
     ? new RelayClient({

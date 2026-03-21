@@ -32,6 +32,8 @@ interface CreateSessionResponse {
   qrUrl: string;
 }
 
+interface ClaimOnboardingSessionResponse extends CreateSessionResponse {}
+
 interface SessionStatusResponse {
   id: string;
   status: 'waiting' | 'paired' | 'closed';
@@ -69,6 +71,7 @@ export class RelayClient {
   private sessionRotationTimer: ReturnType<typeof setTimeout> | null = null;
   private session: RelaySessionState | null = null;
   private outputOff: (() => void) | null = null;
+  private pendingSetupToken: string | null = null;
 
   constructor(private options: RelayClientOptions) {}
 
@@ -93,6 +96,18 @@ export class RelayClient {
 
   getState(): RelaySessionState | null {
     return this.session ? { ...this.session } : null;
+  }
+
+  async applyOnboardingSetup(setupToken: string): Promise<void> {
+    const normalized = setupToken.trim();
+    if (!normalized) return;
+    this.pendingSetupToken = normalized;
+    if (this.session) {
+      await this.rotateSession('onboarding setup applied');
+      return;
+    }
+    await this.ensureSession();
+    if (this.session) this.connect();
   }
 
   async refreshSessionState(): Promise<void> {
@@ -130,14 +145,21 @@ export class RelayClient {
   async sendStatusSnapshot(): Promise<void> {
     if (!this.session) return;
     await this.refreshSessionState();
+    const ideState = this.options.ipc.getIdeState();
+    const workspaceFolders = Array.isArray(ideState?.workspaceFolders) ? ideState.workspaceFolders as string[] : [];
+    const firstFolder = workspaceFolders.length ? String(workspaceFolders[0] ?? '') : '';
+    // Use the VS Code workspace folder as tree root when available
+    const fileTreeNode = firstFolder
+      ? this.options.files.treeFrom(firstFolder)
+      : this.options.files.tree();
     this.send('status_snapshot', {
       payload: {
         ok: true,
         adapters: this.options.adapters.list(),
         activeAdapter: this.options.adapters.active(),
-        ideState: this.options.ipc.getIdeState(),
+        ideState,
         previewUrl: this.options.adapters.getPreviewUrl(),
-        fileTree: this.options.files.tree().children ?? [],
+        fileTree: fileTreeNode.children ?? [],
         relay: this.getState(),
         timestamp: Date.now(),
       },
@@ -154,6 +176,49 @@ export class RelayClient {
       console.log(`[Relay] Restored session: ${restored.sessionId}`);
       return;
     }
+
+    if (this.pendingSetupToken) {
+      try {
+        const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/onboarding/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            setupToken: this.pendingSetupToken,
+            label: this.options.sessionLabel,
+            workspaceId: this.options.workspace.id,
+            workspaceFolders: this.options.workspaceFolders,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json() as ClaimOnboardingSessionResponse;
+          this.session = {
+            enabled: true,
+            relayUrl: data.relayUrl,
+            sessionId: data.sessionId,
+            pairingCode: data.pairingCode,
+            qrUrl: data.qrUrl,
+            agentToken: data.agentToken,
+            expiresAt: data.expiresAt,
+            status: 'waiting',
+            agentConnected: false,
+            mobileConnected: false,
+            connected: false,
+            lastError: null,
+          };
+          this.pendingSetupToken = null;
+          this.options.ipc.setRelayQrUrl?.(this.session.qrUrl ?? null);
+          this.persistSession(this.session);
+          this.scheduleSessionRotation();
+          console.log(`[Relay] Claimed onboarding session: ${this.session.sessionId}`);
+          return;
+        }
+        const body = await res.text().catch(() => '');
+        console.warn(`[Relay] Onboarding claim failed (${res.status}) — falling back to new session. ${body}`);
+      } catch (err) {
+        console.warn('[Relay] Onboarding claim error — falling back to new session:', err);
+      }
+    }
+
     try {
       const res = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/sessions`, {
         method: 'POST',
@@ -465,7 +530,10 @@ export class RelayClient {
 
     if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
       const filePath = typeof msg.path === 'string' ? msg.path : '';
-      const content = this.options.files.read(filePath);
+      const ideState = this.options.ipc.getIdeState();
+      const workspaceFolders = Array.isArray(ideState?.workspaceFolders) ? ideState.workspaceFolders as string[] : [];
+      const firstFolder = workspaceFolders.length ? String(workspaceFolders[0] ?? '') : '';
+      const content = this.options.files.read(filePath, firstFolder || undefined);
       this.send('relay_file_response', {
         request_id: msg.request_id,
         path: filePath,

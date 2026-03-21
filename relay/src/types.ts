@@ -1,4 +1,4 @@
-export type RelayRole = 'agent' | 'mobile'
+export type RelayRole = 'agent' | 'mobile' | 'setup'
 
 export interface RelayEnvelope {
   id: string
