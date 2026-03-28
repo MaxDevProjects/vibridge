@@ -4,14 +4,23 @@ import { RelayStore } from './store'
 
 const port = Number(process.env.RELAY_PORT ?? 4444)
 const dbPath = process.env.RELAY_DB_PATH || '/data/relay.db'
-const jwtSecret = process.env.RELAY_JWT_SECRET || process.env.JWT_SECRET || 'devbridge-relay-dev-secret'
+const jwtSecret = process.env.RELAY_JWT_SECRET || process.env.JWT_SECRET
+if (!jwtSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[Relay] FATAL: JWT_SECRET or RELAY_JWT_SECRET must be set in production. Exiting.')
+    process.exit(1)
+  } else {
+    console.warn('[Relay] WARNING: No JWT secret configured — using insecure default. Set JWT_SECRET before deploying.')
+  }
+}
+const resolvedJwtSecret = jwtSecret || 'devbridge-relay-dev-secret'
 const publicBaseUrl = process.env.RELAY_PUBLIC_URL || `http://localhost:${port}`
 // RELAY_UI_URL is the URL of the Nuxt UI where QR codes should point.
 // Defaults to RELAY_PUBLIC_URL for single-domain setups.
 const uiBaseUrl = process.env.RELAY_UI_URL || publicBaseUrl
 const sessionTtlMs = Number(process.env.RELAY_SESSION_TTL_MS ?? 1000 * 60 * 60 * 12)
 
-const auth = new RelayAuth(jwtSecret)
+const auth = new RelayAuth(resolvedJwtSecret)
 const store = new RelayStore(dbPath)
 store.pruneExpired()
 const { httpServer } = createRelayServer({

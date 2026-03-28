@@ -94,8 +94,12 @@ export class IpcServer {
 
     // Forward AI output back to the extension
     const off = this.queue.onOutput((payload: OutputPayload) => {
-      if (!socket.destroyed) {
-        socket.write(JSON.stringify({ type: 'output', payload }) + '\n');
+      if (!socket.destroyed && socket.writable) {
+        try {
+          socket.write(JSON.stringify({ type: 'output', payload }) + '\n');
+        } catch (err) {
+          console.warn('[IPC] Failed to write output to socket:', err);
+        }
       }
     });
 
@@ -128,8 +132,12 @@ export class IpcServer {
     const registerAdapter = (id: string, label: string) => {
       registeredAdapterId = id;
       this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
-        if (!socket.destroyed) {
-          socket.write(JSON.stringify(data) + '\n');
+        if (!socket.destroyed && socket.writable) {
+          try {
+            socket.write(JSON.stringify(data) + '\n');
+          } catch (err) {
+            console.warn('[IPC] Failed to write adapter data to socket:', err);
+          }
         }
       });
     };
@@ -150,7 +158,7 @@ export class IpcServer {
         break;
       }
       case 'get_pairing_code': {
-        if (!socket.destroyed) {
+        if (!socket.destroyed && socket.writable) {
           const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
           const agentPort = process.env.AGENT_PORT ?? '3333';
           const uiPort = process.env.NUXT_UI_PORT ?? process.env.UI_PORT ?? '8080';
@@ -295,8 +303,12 @@ export class IpcServer {
         const setupToken = String(msg.setupToken ?? '').trim();
         if (!setupToken) break;
         void this.applyRelaySetup?.(setupToken);
-        if (!socket.destroyed) {
-          socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
+        if (!socket.destroyed && socket.writable) {
+          try {
+            socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
+          } catch (err) {
+            console.warn('[IPC] Failed to send relay_setup_ack:', err);
+          }
         }
         break;
       }
@@ -307,7 +319,13 @@ export class IpcServer {
   sendToExtension(data: unknown): void {
     const line = JSON.stringify(data) + '\n';
     this.clients.forEach((c) => {
-      if (!c.destroyed) c.write(line);
+      if (!c.destroyed && c.writable) {
+        try {
+          c.write(line);
+        } catch (err) {
+          console.warn('[IPC] Failed to write to extension socket:', err);
+        }
+      }
     });
   }
 

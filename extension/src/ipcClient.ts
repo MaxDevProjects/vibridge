@@ -21,6 +21,7 @@ export class IpcClient extends EventEmitter {
   private reconnectDelay = 1_000;
   private shouldConnect = false;
   private _connected = false;
+  private _connecting = false;
 
   constructor(private target: IpcTarget) {
     super();
@@ -32,7 +33,8 @@ export class IpcClient extends EventEmitter {
   }
 
   private _tryConnect(): void {
-    if (!this.shouldConnect) return;
+    if (!this.shouldConnect || this._connecting) return;
+    this._connecting = true;
     const sock =
       this.target.kind === 'tcp'
         ? net.createConnection({ host: this.target.host, port: this.target.port })
@@ -40,6 +42,7 @@ export class IpcClient extends EventEmitter {
 
     sock.setEncoding('utf8');
     sock.once('connect', () => {
+      this._connecting = false;
       this._connected = true;
       this.reconnectDelay = 1_000;
       this.socket = sock;
@@ -66,6 +69,7 @@ export class IpcClient extends EventEmitter {
     });
 
     sock.on('close', () => {
+      this._connecting = false;
       this._connected = false;
       this.socket = null;
       this.emit('disconnected');
@@ -102,7 +106,13 @@ export class IpcClient extends EventEmitter {
   }
 
   private _send(data: unknown): void {
-    this.socket?.write(JSON.stringify(data) + '\n');
+    const socket = this.socket;
+    if (!socket || socket.destroyed || !socket.writable) return;
+    try {
+      socket.write(JSON.stringify(data) + '\n');
+    } catch (err) {
+      console.warn('[IPC] Failed to send message:', err);
+    }
   }
 
   async requestPairingCode(): Promise<{ code: string; qrUrl?: string; localQrUrl?: string } | null> {
@@ -111,15 +121,24 @@ export class IpcClient extends EventEmitter {
         resolve(null);
         return;
       }
-      const timeout = setTimeout(() => resolve(null), 3_000);
-      this.once('pairing_code', (msg: AgentMessage) => {
+      let settled = false;
+      const handler = (msg: AgentMessage) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         resolve({
           code: msg.code as string,
           qrUrl: msg.qrUrl as string | undefined,
           localQrUrl: msg.localQrUrl as string | undefined,
         });
-      });
+      };
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.removeListener('pairing_code', handler);
+        resolve(null);
+      }, 3_000);
+      this.once('pairing_code', handler);
       this._send({ type: 'get_pairing_code' });
     });
   }

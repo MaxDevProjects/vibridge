@@ -106,7 +106,9 @@ export function activate(context: vscode.ExtensionContext): void {
   ipc.on('connected', () => {
     detectInstalledClis().then((detected) => {
       ipc!.send({ type: 'cli_report', detected });
-    }).catch(() => {});
+    }).catch((err: unknown) => {
+      console.error('[DevBridge] Failed to detect CLIs:', err);
+    });
     const info = getProjectsList();
     if (info) ipc!.send({ type: 'projects_report', ...info });
     flushPendingSetupToken();

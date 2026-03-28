@@ -411,7 +411,10 @@ export class RelayClient {
 
     this.ws.on('message', (raw) => {
       try {
-        this.handleMessage(JSON.parse(raw.toString()) as Record<string, unknown>);
+        const parsed = JSON.parse(raw.toString()) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          this.handleMessage(parsed as Record<string, unknown>);
+        }
       } catch {
         // ignore malformed relay frames
       }
@@ -438,7 +441,8 @@ export class RelayClient {
     }, 2_000);
   }
 
-  private handleMessage(msg: Record<string, unknown>): void {
+  private handleMessage(msg: Record<string, unknown> | null | undefined): void {
+    if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'auth_ok') {
       if (!this.session) return;
       this.session = { ...this.session, connected: true, agentConnected: true, lastError: null };

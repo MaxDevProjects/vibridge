@@ -4,7 +4,16 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
-const SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[Auth] FATAL: JWT_SECRET must be set in production. Exiting.');
+    process.exit(1);
+  } else {
+    console.warn('[Auth] WARNING: No JWT_SECRET configured — using insecure default. Set JWT_SECRET before deploying.');
+  }
+}
+const SECRET = jwtSecret || 'dev-secret-change-me';
 const TTL_SECONDS = 3600;
 
 export class AuthService {
