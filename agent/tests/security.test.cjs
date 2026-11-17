@@ -29,11 +29,19 @@ test('workspace files stay within the configured root and skip hidden assets', t
   assert.equal(files.read('linked-secret'), null)
   assert.equal(files.read('outside.txt', sibling), null)
   assert.deepEqual(files.treeFrom(sibling).children, [])
+  const mounted = new FileService(root, '/host/projects')
+  assert.equal(mounted.read('source.ts', '/host/projects'), 'visible')
+  assert.equal(mounted.read('source.ts', '/host/projects-unrelated'), null)
+  assert.deepEqual(mounted.treeFrom('/host/projects').children.map(file => file.path), ['source.ts'])
 })
 
 test('local pairing requires an existing credential or access to the desktop, and QR tokens expire', async t => {
   const auth = new AuthService()
-  assert.equal(auth.verify(auth.issueShortLivedToken(0)), false)
+  assert.equal(auth.consumeQrToken(auth.issueShortLivedToken(0)), false)
+  const qr = auth.issueShortLivedToken()
+  assert.equal(auth.verify(qr), false)
+  assert.equal(auth.consumeQrToken(qr), true)
+  assert.equal(auth.consumeQrToken(qr), false)
   const ipc = {}
   const queue = { onOutput: () => () => {} }
   const { httpServer, wss } = createServer({ auth, queue, ipc, PORT: 0 })

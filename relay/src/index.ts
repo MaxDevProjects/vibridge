@@ -16,6 +16,10 @@ const publicBaseUrl = process.env.RELAY_PUBLIC_URL || `http://localhost:${port}`
 const uiBaseUrl = process.env.RELAY_UI_URL || publicBaseUrl
 const sessionTtlMs = Number(process.env.RELAY_SESSION_TTL_MS ?? 1000 * 60 * 60 * 12)
 
+if (!Number.isSafeInteger(sessionTtlMs) || sessionTtlMs < 1_000 || sessionTtlMs > 2_147_483_647) {
+  throw new Error('RELAY_SESSION_TTL_MS must be between 1 second and 24.8 days')
+}
+
 const auth = new RelayAuth(resolvedJwtSecret)
 const store = new RelayStore(dbPath)
 store.pruneExpired()

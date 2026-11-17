@@ -1,42 +1,7 @@
 const assert = require('node:assert/strict')
 const { once } = require('node:events')
 const { test } = require('node:test')
-const WebSocket = require('ws')
-const { RelayAuth } = require('../dist/auth')
-const { RelayStore } = require('../dist/store')
-const { createRelayServer } = require('../dist/server')
-
-async function fixture(t, sessionTtlMs = 60_000) {
-  const auth = new RelayAuth('integration-tests-only')
-  const store = new RelayStore(':memory:')
-  const { httpServer, wss } = createRelayServer({
-    port: 0, publicBaseUrl: 'http://localhost', uiBaseUrl: 'http://localhost',
-    store, auth, sessionTtlMs,
-  })
-  httpServer.listen(0, '127.0.0.1')
-  await once(httpServer, 'listening')
-  t.after(async () => {
-    for (const socket of wss.clients) socket.terminate()
-    await Promise.all([new Promise(resolve => wss.close(resolve)), new Promise(resolve => httpServer.close(resolve))])
-    store.close()
-  })
-  const base = `http://127.0.0.1:${httpServer.address().port}`
-  const api = (path, { token, body } = {}) => fetch(base + path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const create = async () => (await api('/api/relay/sessions', { body: {} })).json()
-  const pair = (session, code = session.pairingCode) => api('/api/relay/pair', {
-    body: { sessionId: session.sessionId, pairingCode: code },
-  })
-  const dial = async () => {
-    const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws')
-    await once(ws, 'open')
-    return ws
-  }
-  return { auth, store, api, create, pair, dial }
-}
+const { fixture } = require('./fixture.cjs')
 
 test('a mobile credential exposes only its own session and no bearer tokens', async t => {
   const { create, pair, api } = await fixture(t)

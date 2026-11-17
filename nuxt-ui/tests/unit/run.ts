@@ -1,3 +1,4 @@
+import { resolveChatHistoryKey } from '../../composables/useWorkspaceChatHistory'
 import assert from 'node:assert/strict'
 
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
@@ -84,5 +85,14 @@ test('useQuickReplies detects yes-no shorthand', () => {
 if (failures > 0) {
   process.exitCode = 1
 } else {
+  const first = resolveChatHistoryKey('relay', 'https://relay.example', 'session-a', 'editor')
+  const second = resolveChatHistoryKey('relay', 'https://relay.example', 'session-b', 'editor')
+  if (!first || first === second || resolveChatHistoryKey('relay', '', 'session-a', '') !== '') {
+    throw new Error('Workspace chat storage needs a distinct session and workspace')
+  }
+  if (resolveChatHistoryKey('local', 'http://first', '', '') === resolveChatHistoryKey('local', 'http://second', '', '')) {
+    throw new Error('Local chat storage needs a distinct agent origin')
+  }
+  console.log('PASS chat history is isolated by relay session, workspace and local agent')
   console.log('All unit tests passed.')
 }

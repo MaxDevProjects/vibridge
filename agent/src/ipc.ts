@@ -17,6 +17,8 @@ const DEV_SERVER_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?(?:\/[^\s
 
 export class IpcServer {
   private server: net.Server;
+  private activeExtension: net.Socket | null = null;
+  private adapterOwners = new Map<string, net.Socket>();
   private tcpServer: net.Server | null = null;
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
@@ -42,34 +44,37 @@ export class IpcServer {
     this.server = net.createServer((socket) => this.handleClient(socket));
   }
 
-  async listen(tcpPort?: number): Promise<void> {
+  async listen(tcpPort?: number, unixSocket = true): Promise<void> {
     // Remove stale socket file if it exists
     const dir = path.dirname(this.socketPath);
     const tcpCredential = process.env.IPC_SHARED_SECRET;
     if (tcpPort && (!tcpCredential || tcpCredential.length < 32)) {
       throw new Error('IPC_SHARED_SECRET must contain at least 32 characters when TCP IPC is enabled');
     }
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (fs.existsSync(this.socketPath)) fs.unlinkSync(this.socketPath);
+    if (!unixSocket && !tcpPort) throw new Error('an IPC transport is required');
+    if (unixSocket) {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (fs.existsSync(this.socketPath)) fs.unlinkSync(this.socketPath);
 
-    await new Promise<void>((resolve, reject) => {
-      this.server.listen(this.socketPath, () => {
-        try {
-          fs.chmodSync(this.socketPath, 0o600);
-          if (process.getuid?.() === 0) {
-            const owner = fs.statSync(dir);
-            fs.chownSync(this.socketPath, owner.uid, owner.gid);
+      await new Promise<void>((resolve, reject) => {
+        this.server.listen(this.socketPath, () => {
+          try {
+            fs.chmodSync(this.socketPath, 0o600);
+            if (process.getuid?.() === 0) {
+              const owner = fs.statSync(dir);
+              fs.chownSync(this.socketPath, owner.uid, owner.gid);
+            }
+          } catch (error) {
+            this.server.close();
+            reject(error);
+            return;
           }
-        } catch (error) {
-          this.server.close();
-          reject(error);
-          return;
-        }
-        console.log(`[IPC] Unix socket listening on ${this.socketPath}`);
-        resolve();
+          console.log(`[IPC] Unix socket listening on ${this.socketPath}`);
+          resolve();
+        });
+        this.server.once('error', reject);
       });
-      this.server.once('error', reject);
-    });
+    }
 
     if (tcpPort) {
       this.tcpServer = net.createServer((socket) => this.handleClient(socket, tcpCredential));
@@ -147,7 +152,10 @@ export class IpcServer {
             socket.write('{"type":"auth_ok"}\n');
             continue;
           }
-          this.handleMessage(socket, message);
+          const control = ['register', 'get_pairing_code', 'relay_setup_link', 'ping'];
+          if (socket === this.activeExtension || control.includes(String(message?.type))) {
+            this.handleMessage(socket, message);
+          }
         } catch {
           // ignore malformed
         }
@@ -156,25 +164,26 @@ export class IpcServer {
 
     socket.on('close', () => {
       if (deadline) clearTimeout(deadline);
-      if (registeredAdapterId) this.adapters.unregister(registeredAdapterId);
+      if (this.activeExtension === socket) {
+        this.activeExtension = null;
+        this.ideState = null;
+      }
+      if (registeredAdapterId && this.adapterOwners.get(registeredAdapterId) === socket) {
+        this.adapterOwners.delete(registeredAdapterId);
+        this.adapters.unregister(registeredAdapterId);
+      }
       this.clients.delete(socket);
       off();
     });
-    socket.on('error', () => {
-      if (registeredAdapterId) this.adapters.unregister(registeredAdapterId);
-      this.clients.delete(socket);
-      off();
-    });
+    socket.on('error', () => socket.destroy());
 
     const registerAdapter = (id: string, label: string) => {
       registeredAdapterId = id;
+      this.activeExtension = socket;
+      this.adapterOwners.set(id, socket);
       this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
-        if (!socket.destroyed && socket.writable) {
-          try {
-            socket.write(JSON.stringify(data) + '\n');
-          } catch (err) {
-            console.warn('[IPC] Failed to write adapter data to socket:', err);
-          }
+        if (this.activeExtension !== socket || !this.writeToExtension(socket, data)) {
+          throw new Error('VS Code extension unavailable');
         }
       });
     };
@@ -285,6 +294,12 @@ export class IpcServer {
         this.forward?.('cli_started', payload);
         break;
       }
+      case 'terminal_unavailable': {
+        const payload = { type: 'terminal_unavailable', terminalName: msg.terminalName };
+        this.broadcast?.(payload);
+        this.forward?.('terminal_unavailable', payload);
+        break;
+      }
       case 'terminal_created': {
         const payload = { type: 'terminal_created', terminalName: msg.terminalName };
         this.broadcast?.(payload);
@@ -320,14 +335,15 @@ export class IpcServer {
       case 'relay_setup_link': {
         const setupToken = String(msg.setupToken ?? '').trim();
         if (!setupToken) break;
-        void this.applyRelaySetup?.(setupToken);
-        if (!socket.destroyed && socket.writable) {
-          try {
-            socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
-          } catch (err) {
-            console.warn('[IPC] Failed to send relay_setup_ack:', err);
-          }
+        const acknowledge = (ok: boolean) => this.writeToExtension(socket, { type: 'relay_setup_ack', ok });
+        if (!this.applyRelaySetup) {
+          acknowledge(false);
+          break;
         }
+        void Promise.resolve(this.applyRelaySetup(setupToken)).then(
+          () => acknowledge(true),
+          () => acknowledge(false),
+        );
         break;
       }
     }
@@ -363,18 +379,19 @@ export class IpcServer {
     }) + '\n');
   }
 
-  /** Send a message to connected VS Code extension instances. */
-  sendToExtension(data: unknown): void {
-    const line = JSON.stringify(data) + '\n';
-    this.clients.forEach((c) => {
-      if (!c.destroyed && c.writable) {
-        try {
-          c.write(line);
-        } catch (err) {
-          console.warn('[IPC] Failed to write to extension socket:', err);
-        }
-      }
-    });
+  sendToExtension(data: unknown): boolean {
+    return this.activeExtension ? this.writeToExtension(this.activeExtension, data) : false;
+  }
+
+  private writeToExtension(socket: net.Socket, data: unknown): boolean {
+    if (socket.destroyed || !socket.writable || socket.writableLength > 4 * 1024 * 1024) return false;
+    try {
+      socket.write(JSON.stringify(data) + '\n');
+      return true;
+    } catch (error) {
+      console.warn('[IPC] Failed to write to extension socket:', error);
+      return false;
+    }
   }
 
   setRelayQrUrl(url: string | null): void {
