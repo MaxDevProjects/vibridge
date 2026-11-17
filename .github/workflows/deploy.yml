@@ -48,11 +48,9 @@ jobs:
             deploy_service() {
               service=$1
               compose build "$service"
-              if [ "$compose_version" -eq 1 ]; then
-                # Compose v1 can fail while reading the old container's image metadata.
-                # Remove only this service's containers and preserve their data mounts.
-                compose rm --stop --force "$service"
-              fi
+              # A failed recreation can leave a renamed container under either Compose version.
+              # Remove only this service's containers and preserve their data mounts.
+              compose rm --stop --force "$service"
               compose up -d --no-build --no-deps "$service"
             }
 
