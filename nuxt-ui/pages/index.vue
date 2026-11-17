@@ -229,7 +229,7 @@
           <div class="px-4 mb-4">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
-              :active-workspace-id="activeWorkspaceKey"
+              :active-workspace-id="bridge.activeWorkspaceId.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -345,7 +345,7 @@
           <div class="shrink-0 px-4 py-3" style="border-bottom:1px solid var(--border)">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
-              :active-workspace-id="activeWorkspaceKey"
+              :active-workspace-id="bridge.activeWorkspaceId.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -674,7 +674,7 @@ const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
     ?? bridge.activeWorkspace.value?.name
     ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
   : 'Workspace local')
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
+const activeWorkspaceKey = bridge.chatHistoryKey
 function resolveWorkspaceName(workspace: { id: string; name: string }): string {
   // When the agent falls back to "project" (Docker default), prefer the VS Code workspace folder name
   const genericNames = new Set(['project', 'workspace', 'app', 'local'])
@@ -1611,8 +1611,10 @@ function selectChatTarget(target: ChatTarget) {
 
 function scheduleChatHistorySave() {
   if (chatHistorySaveTimer) clearTimeout(chatHistorySaveTimer)
+  const workspaceKey = activeWorkspaceKey.value
+  const messages = chatMessages.value
   chatHistorySaveTimer = setTimeout(() => {
-    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+    saveWorkspaceChatHistory(workspaceKey, messages)
     chatHistorySaveTimer = null
   }, 180)
 }
@@ -1769,14 +1771,19 @@ watch(chatTargets, (targets) => {
   }
 }, { immediate: true })
 
-watch(activeWorkspaceKey, (workspaceId) => {
+watch(activeWorkspaceKey, (workspaceId, previous) => {
+  if (chatHistorySaveTimer) {
+    clearTimeout(chatHistorySaveTimer)
+    chatHistorySaveTimer = null
+    if (previous) saveWorkspaceChatHistory(previous, chatMessages.value)
+  }
   chatMessages.value = loadWorkspaceChatHistory(workspaceId)
   setAiTyping(false)
   selectedFile.value = null
   selectedFileContent.value = ''
   selectedFileError.value = ''
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 
 watch(() => bridge.status.value, (status) => {
   if (status === 'connected') {

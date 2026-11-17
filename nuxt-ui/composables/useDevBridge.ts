@@ -326,20 +326,19 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
 function emit(msg: WsMessage) {
   const normalized = normalizeIncoming(msg)
   if (mode.value === 'relay' && normalized.sessionId && normalized.sessionId !== relaySessionId.value) return
+  if (normalized.workspaceId && normalized.workspaceId !== activeWorkspaceId.value && mode.value === 'relay') return
   if (mode.value === 'relay' && typeof normalized.id === 'string' && normalized.source === 'agent' && isReplayable(normalized)) {
     if (seenRelayEvents.has(normalized.id)) return
     seenRelayEvents.add(normalized.id)
     if (seenRelayEvents.size > 256) seenRelayEvents.delete(seenRelayEvents.values().next().value!)
   }
-  const forActiveWorkspace = !normalized.workspaceId || !activeWorkspaceId.value
-    || normalized.workspaceId === activeWorkspaceId.value
 
-  if (normalized.type === 'terminal_unavailable' && forActiveWorkspace) {
+  if (normalized.type === 'terminal_unavailable') {
     latestDeliveryId = ''
     deliveryNotice.value = { status: 'error', text: 'Le terminal sélectionné a été fermé dans VS Code.' }
   }
 
-  if (normalized.type === 'status_snapshot' && forActiveWorkspace) {
+  if (normalized.type === 'status_snapshot') {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as Partial<AgentStatus> : normalized as Partial<AgentStatus>
     applyStatusSnapshot(payload)
   }
@@ -383,16 +382,14 @@ function emit(msg: WsMessage) {
     removeRelayWorkspace(normalized.workspace_id)
   }
 
-  if (normalized.type === 'relay_session' && forActiveWorkspace) {
+  if (normalized.type === 'relay_session') {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as RelayState : null
     if (payload) {
       applyStatusSnapshot({ relay: payload, timestamp: Date.now() })
     }
   }
 
-  if (forActiveWorkspace || isReplayable(normalized)) {
-    listeners.forEach((fn) => fn(normalized))
-  }
+  listeners.forEach((fn) => fn(normalized))
 }
 
 function handleWsMessage(ev: MessageEvent) {
@@ -860,6 +857,9 @@ export function useDevBridge() {
     relayWorkspaces: readonly(relayWorkspaces),
     relaySessions: readonly(relaySessions),
     activeWorkspaceId: readonly(activeWorkspaceId),
+    chatHistoryKey: computed(() => token.value
+      ? resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value)
+      : ''),
     activeWorkspace: computed(() => relayWorkspaces.value.find(workspace => workspace.id === activeWorkspaceId.value) ?? null),
 
     authError: readonly(authError),

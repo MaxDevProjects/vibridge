@@ -9,19 +9,15 @@ export interface WorkspaceChatMessage {
 
 const STORAGE_PREFIX = 'vb:chatHistory:'
 
-function normalizeWorkspaceKey(workspaceId: string): string {
-  const trimmed = workspaceId.trim()
-  return trimmed || 'default'
-}
-
-function storageKey(workspaceId: string): string {
-  return `${STORAGE_PREFIX}${normalizeWorkspaceKey(workspaceId)}`
+export function resolveChatHistoryKey(mode: 'relay' | 'local', base: string, sessionId: string, workspaceId: string): string {
+  if (mode === 'relay') return sessionId && workspaceId ? JSON.stringify(['relay', base, sessionId, workspaceId]) : ''
+  return base ? JSON.stringify(['local', base]) : ''
 }
 
 export function loadWorkspaceChatHistory(workspaceId: string): WorkspaceChatMessage[] {
-  if (import.meta.server) return []
+  if (import.meta.server || !workspaceId) return []
   try {
-    const raw = localStorage.getItem(storageKey(workspaceId))
+    const raw = localStorage.getItem(STORAGE_PREFIX + workspaceId)
     if (!raw) return []
     const parsed = JSON.parse(raw) as WorkspaceChatMessage[]
     return Array.isArray(parsed) ? parsed : []
@@ -31,9 +27,9 @@ export function loadWorkspaceChatHistory(workspaceId: string): WorkspaceChatMess
 }
 
 export function saveWorkspaceChatHistory(workspaceId: string, messages: WorkspaceChatMessage[]): void {
-  if (import.meta.server) return
+  if (import.meta.server || !workspaceId) return
   try {
-    localStorage.setItem(storageKey(workspaceId), JSON.stringify(messages.slice(-150)))
+    localStorage.setItem(STORAGE_PREFIX + workspaceId, JSON.stringify(messages.slice(-150)))
   } catch {
     // ignore storage quota errors
   }
