@@ -32,7 +32,6 @@ export interface RelaySessionListItem {
   createdAt: number
   expiresAt: number
   status: 'waiting' | 'paired' | 'closed'
-  mobileToken?: string | null
   agentConnected: boolean
   mobileConnected: boolean
   workspaces?: ConnectedWorkspace[]
@@ -54,7 +53,6 @@ export interface RelayState {
   sessionId: string
   pairingCode: string
   qrUrl: string
-  agentToken: string
   expiresAt: number
   status: 'waiting' | 'paired' | 'closed'
   agentConnected: boolean
@@ -175,10 +173,14 @@ function storageSet(nextMode: BridgeMode, nextBaseUrl: string, nextToken: string
   }
 }
 
-function readRelaySessionTokenMap(): Record<string, string> {
+function relayCredentialKey(baseUrl: string): string {
+  return `${RELAY_SESSION_TOKEN_STORAGE_KEY}:${normalizeBaseUrl(baseUrl)}`
+}
+
+function readRelaySessionTokenMap(baseUrl = inferRelayUrl()): Record<string, string> {
   if (import.meta.server) return {}
   try {
-    const raw = localStorage.getItem(RELAY_SESSION_TOKEN_STORAGE_KEY)
+    const raw = localStorage.getItem(relayCredentialKey(baseUrl))
     if (!raw) return {}
     const parsed = JSON.parse(raw) as Record<string, unknown>
     return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
@@ -187,18 +189,16 @@ function readRelaySessionTokenMap(): Record<string, string> {
   }
 }
 
-function persistRelaySessionToken(sessionId: string, sessionToken: string) {
+function persistRelaySessionToken(sessionId: string, sessionToken: string, baseUrl = inferRelayUrl()) {
   if (import.meta.server || !sessionId || !sessionToken) return
-  const tokens = readRelaySessionTokenMap()
+  const tokens = readRelaySessionTokenMap(baseUrl)
   tokens[sessionId] = sessionToken
-  localStorage.setItem(RELAY_SESSION_TOKEN_STORAGE_KEY, JSON.stringify(tokens))
+  localStorage.setItem(relayCredentialKey(baseUrl), JSON.stringify(tokens))
 }
 
 function resolveRelaySessionToken(sessionId: string): string {
   if (!sessionId) return ''
   if (relaySessionId.value === sessionId && token.value) return token.value
-  const session = relaySessions.value.find(item => item.id === sessionId)
-  if (typeof session?.mobileToken === 'string' && session.mobileToken) return session.mobileToken
   const stored = readRelaySessionTokenMap()
   return stored[sessionId] ?? ''
 }
@@ -333,7 +333,6 @@ function emit(msg: WsMessage) {
           sessionId: relaySessionId.value,
           pairingCode: '',
           qrUrl: '',
-          agentToken: '',
           expiresAt: 0,
           status: 'waiting',
           connected: true,
@@ -536,7 +535,6 @@ async function fetchRelayStatus() {
           sessionId: data.id,
           pairingCode: '',
           qrUrl: '',
-          agentToken: '',
           expiresAt: data.expiresAt,
           connected: status.value === 'connected',
           lastError: null,
@@ -583,17 +581,27 @@ async function fetchRelaySessions() {
   const baseUrl = inferRelayUrl()
   if (!baseUrl) return
   try {
-    const res = await fetch(`${baseUrl}/api/relay/sessions?token=${encodeURIComponent(token.value)}`)
-    if (!res.ok) return
-    const data = await res.json() as { sessions?: RelaySessionListItem[] }
-    const sessions = Array.isArray(data.sessions) ? data.sessions.map(session => ({
+    const requestedToken = token.value
+    const credentials = { ...readRelaySessionTokenMap(baseUrl), [relaySessionId.value]: requestedToken }
+    const responses = await Promise.allSettled(Object.values(credentials).filter(Boolean).map(async sessionToken => {
+      const res = await fetch(`${baseUrl}/api/relay/sessions`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+      if (!res.ok) return []
+      const data = await res.json() as { sessions?: RelaySessionListItem[] }
+      return Array.isArray(data.sessions) ? data.sessions : []
+    }))
+    if (token.value !== requestedToken || inferRelayUrl() !== baseUrl) return
+    const unique = new Map<string, RelaySessionListItem>()
+    for (const result of responses) {
+      if (result.status !== 'fulfilled') continue
+      for (const session of result.value) unique.set(session.id, session)
+    }
+    const sessions = [...unique.values()].map(session => ({
       id: String(session.id),
       workspaceId: String(session.workspaceId ?? session.label ?? session.id),
       label: String(session.label ?? session.workspaceId ?? session.id),
       createdAt: Number(session.createdAt ?? 0),
       expiresAt: Number(session.expiresAt ?? 0),
       status: String(session.status ?? 'waiting') as RelaySessionListItem['status'],
-      mobileToken: typeof session.mobileToken === 'string' ? session.mobileToken : null,
       agentConnected: Boolean(session.agentConnected),
       mobileConnected: Boolean(session.mobileConnected),
       workspaces: Array.isArray(session.workspaces) ? session.workspaces.map(workspace => ({
@@ -602,11 +610,8 @@ async function fetchRelaySessions() {
         path: typeof workspace.path === 'string' ? workspace.path : undefined,
         active: Boolean(workspace.active),
       })) : [],
-    })) : []
+    }))
     relaySessions.value = sessions
-    for (const session of sessions) {
-      if (session.mobileToken) persistRelaySessionToken(session.id, session.mobileToken)
-    }
   } catch {
     // ignore transient relay fetch errors
   }
@@ -675,7 +680,7 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     relaySessions.value = []
     activeWorkspaceId.value = ''
     storageSet('relay', normalizedBaseUrl, mobileToken, sessionId)
-    persistRelaySessionToken(sessionId, mobileToken)
+    persistRelaySessionToken(sessionId, mobileToken, normalizedBaseUrl)
     token.value = mobileToken
     _baseUrl = normalizedBaseUrl
     void connect()

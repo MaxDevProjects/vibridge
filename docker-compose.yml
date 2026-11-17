@@ -24,7 +24,7 @@ services:
       RELAY_DB_PATH: /data/relay.sqlite
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-http://localhost:4444}
       RELAY_UI_URL: ${RELAY_UI_URL:-${UI_PUBLIC_URL:-}}
-      RELAY_JWT_SECRET: ${RELAY_JWT_SECRET:-${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}}
+      RELAY_JWT_SECRET: ${RELAY_JWT_SECRET:?Run scripts/check-ports.sh to generate a separate relay secret}
       RELAY_SESSION_TTL_MS: ${RELAY_SESSION_TTL_MS:-43200000}
     volumes:
       - relay-data:/data

@@ -94,8 +94,30 @@ export class RelayClient {
     return Boolean(this.options.internalUrl && this.options.publicUrl);
   }
 
-  getState(): RelaySessionState | null {
-    return this.session ? { ...this.session } : null;
+  getState(): Omit<RelaySessionState, 'agentToken' | 'pairingCode' | 'qrUrl'> | null {
+    if (!this.session) return null;
+    const { agentToken, pairingCode, qrUrl, ...state } = this.session;
+    return state;
+  }
+
+  getQrUrl(): string | null {
+    return this.session?.qrUrl ?? null;
+  }
+
+  async renewPairingQr(): Promise<string | null> {
+    const session = this.session;
+    if (!session) return null;
+    const response = await fetch(`${this.options.internalUrl.replace(/\/$/, '')}/api/relay/pairing-code`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.agentToken}` },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok || this.session?.sessionId !== session.sessionId) return null;
+    const { pairingCode, qrUrl } = await response.json() as { pairingCode: string; qrUrl: string };
+    if (this.session?.sessionId !== session.sessionId) return null;
+    this.session = { ...this.session, pairingCode, qrUrl };
+    this.persistSession(this.session);
+    return qrUrl;
   }
 
   async applyOnboardingSetup(setupToken: string): Promise<void> {
@@ -375,7 +397,9 @@ export class RelayClient {
 
   private persistSession(session: RelaySessionState): void {
     try {
-      fs.writeFileSync(this.options.workspace.sessionFilePath, JSON.stringify({
+      const sessionFile = this.options.workspace.sessionFilePath;
+      const temporaryFile = `${sessionFile}.${process.pid}.tmp`;
+      fs.writeFileSync(temporaryFile, JSON.stringify({
         workspaceId: this.options.workspace.id,
         relayUrl: session.relayUrl,
         sessionId: session.sessionId,
@@ -383,7 +407,9 @@ export class RelayClient {
         qrUrl: session.qrUrl,
         agentToken: session.agentToken,
         expiresAt: session.expiresAt,
-      } satisfies PersistedRelaySession, null, 2));
+      } satisfies PersistedRelaySession, null, 2), { mode: 0o600 });
+      fs.chmodSync(temporaryFile, 0o600);
+      fs.renameSync(temporaryFile, sessionFile);
     } catch (err) {
       console.warn('[Relay] Failed to persist session:', err);
     }
@@ -411,7 +437,10 @@ export class RelayClient {
 
     this.ws.on('message', (raw) => {
       try {
-        this.handleMessage(JSON.parse(raw.toString()) as Record<string, unknown>);
+        const parsed = JSON.parse(raw.toString()) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          this.handleMessage(parsed as Record<string, unknown>);
+        }
       } catch {
         // ignore malformed relay frames
       }
@@ -438,13 +467,13 @@ export class RelayClient {
     }, 2_000);
   }
 
-  private handleMessage(msg: Record<string, unknown>): void {
+  private handleMessage(msg: Record<string, unknown> | null | undefined): void {
+    if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'auth_ok') {
       if (!this.session) return;
       this.session = { ...this.session, connected: true, agentConnected: true, lastError: null };
       this.persistSession(this.session);
       this.send('agent_hello', {
-        token: this.session.agentToken,
         workspace_id: this.options.workspace.id,
         workspace_name: this.options.workspace.name,
         workspace_path: this.options.workspace.path,
@@ -525,6 +554,39 @@ export class RelayClient {
     if (type === 'get_pairing_code') {
       if (!this.session) return;
       this.send('relay_session', { payload: this.getState() });
+      return;
+    }
+
+    if (type === 'relay_clis_request' && typeof msg.request_id === 'string') {
+      const action = String(msg.action ?? '');
+      const registry = this.options.cliRegistry;
+      const respond = (payload: Record<string, unknown>) => {
+        this.send('relay_clis_response', { request_id: msg.request_id, ...payload });
+      };
+      if (!registry) {
+        respond({ error: 'no registry', clis: [] });
+        return;
+      }
+      if (action === 'list') {
+        respond({ clis: registry.getAll() });
+      } else if (action === 'detect') {
+        void registry.detectAll().then(() => respond({ clis: registry.getAll() }));
+      } else if (action === 'set_default') {
+        const ok = registry.setDefault(String(msg.id ?? ''));
+        respond({ ok, clis: registry.getAll() });
+      } else if (action === 'add_custom') {
+        const cli = registry.addCustom({
+          name: String(msg.name ?? ''),
+          command: String(msg.command ?? ''),
+          args: Array.isArray(msg.args) ? msg.args.map(String) : undefined,
+        });
+        respond({ ok: true, cli, clis: registry.getAll() });
+      } else if (action === 'remove_custom') {
+        const ok = registry.removeCustom(String(msg.id ?? ''));
+        respond({ ok });
+      } else {
+        respond({ error: 'unknown action' });
+      }
       return;
     }
 

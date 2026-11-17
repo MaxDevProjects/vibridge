@@ -20,12 +20,14 @@ const MAX_FILE_SIZE = 1024 * 1024; // 1 MB cap for inline reads
 
 export class FileService {
   constructor(private root: string) {
+    this.root = path.resolve(root);
     console.log(`[Files] Workspace root: ${root}`);
   }
 
   tree(dir = this.root, depth = 0, relRoot?: string): FileNode {
     const effectiveRoot = relRoot ?? dir;
     const name = path.basename(dir);
+    if (depth === 0 && !this.resolveRoot(dir)) return { name, path: '', type: 'dir', children: [] };
     const relPath = dir === effectiveRoot ? '' : dir.startsWith(effectiveRoot) ? dir.slice(effectiveRoot.length).replace(/^\//, '') : this.relativize(dir);
     const node: FileNode = { name, path: relPath, type: 'dir', children: [] };
 
@@ -66,6 +68,7 @@ export class FileService {
     if (!abs) return null;
     try {
       const stat = fs.statSync(abs);
+      if (!stat.isFile()) return null;
       if (stat.size > MAX_FILE_SIZE) {
         return `[File too large: ${stat.size} bytes — max ${MAX_FILE_SIZE}]`;
       }
@@ -75,12 +78,35 @@ export class FileService {
     }
   }
 
+  private inside(root: string, target: string): boolean {
+    const relative = path.relative(root, target);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  }
+
+  private resolveRoot(dir: string): string | null {
+    try {
+      const root = fs.realpathSync(this.root);
+      const candidate = fs.realpathSync(dir);
+      return this.inside(root, candidate) ? candidate : null;
+    } catch {
+      return null;
+    }
+  }
+
   private safeResolve(relPath: string, fromRoot?: string): string | null {
-    const root = fromRoot ?? this.root;
-    const abs = path.resolve(root, relPath.replace(/^\//, ''));
-    // Prevent path traversal
-    if (!abs.startsWith(root)) return null;
-    return abs;
+    const root = this.resolveRoot(fromRoot ?? this.root);
+    if (!root) return null;
+    const requested = path.resolve(root, relPath.replace(/^\//, ''));
+    if (!this.inside(root, requested)) return null;
+    const visible = (file: string) => path.relative(root, file).split(path.sep)
+      .every(part => !part.startsWith('.') && !IGNORED.has(part));
+    if (!visible(requested)) return null;
+    try {
+      const resolved = fs.realpathSync(requested);
+      return this.inside(root, resolved) && visible(resolved) ? resolved : null;
+    } catch {
+      return null;
+    }
   }
 
   private relativize(abs: string): string {

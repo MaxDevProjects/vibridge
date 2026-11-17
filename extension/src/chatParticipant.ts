@@ -34,7 +34,7 @@ export class ChatParticipant {
         const fullCommand = command ? (args.length ? `${command} ${args.join(' ')}` : command) : '';
         const terminal = this.ensureTerminal(resolved.terminalName, fullCommand);
         terminal.show(true);
-        const injectDelay = resolved.needsBootDelay || (fullCommand && !resolved.existed) ? 1200 : 0;
+        const injectDelay = (resolved.needsBootDelay || (fullCommand && !resolved.existed)) ? 1200 : 0;
         setTimeout(() => {
           terminal.show(true);
           this.sendToTerminal(terminal, text);

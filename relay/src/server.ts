@@ -4,7 +4,7 @@ import express, { Request, Response, NextFunction } from 'express'
 import { WebSocketServer, WebSocket, RawData } from 'ws'
 import { RelayAuth } from './auth'
 import { RelayStore } from './store'
-import type { ConnectedWorkspace, RelayRole, SessionClaims } from './types'
+import type { ConnectedWorkspace, RelayRole, RelaySession, SessionClaims } from './types'
 
 interface RelayServerOptions {
   port: number
@@ -17,6 +17,8 @@ interface RelayServerOptions {
 
 interface AuthenticatedSocket extends WebSocket {
   claims?: SessionClaims
+  token?: string
+  expiryTimer?: NodeJS.Timeout
   workspaceId?: string
   workspaceName?: string
   workspacePath?: string
@@ -42,7 +44,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
   app.use((_req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     if (_req.method === 'OPTIONS') {
       res.status(204).end()
@@ -51,6 +53,38 @@ export function createRelayServer(options: RelayServerOptions) {
     next()
   })
   app.use(express.json())
+  app.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
+    next()
+  })
+
+  function bearer(req: Request): string {
+    return /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1] ?? ''
+  }
+
+  function liveSession(sessionId: string): RelaySession | null {
+    const session = store.getSession(sessionId, false)
+    return session && session.status !== 'closed' && session.expiresAt > Date.now() ? session : null
+  }
+
+  function sessionCredential(token: string, claims = auth.verify(token)): SessionClaims | null {
+    if (!claims || claims.role === 'setup' || claims.exp * 1000 <= Date.now()) return null
+    const session = liveSession(claims.sessionId)
+    const expected = claims.role === 'mobile' ? session?.mobileToken : session?.agentToken
+    return expected && expected === token ? claims : null
+  }
+
+  function sessionMetadata(body: unknown) {
+    const fields = body && typeof body === 'object' ? body as Record<string, unknown> : {}
+    const optionalString = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 512) || undefined : undefined
+    return {
+      label: optionalString(fields.label),
+      workspaceId: optionalString(fields.workspaceId),
+      workspaceFolders: Array.isArray(fields.workspaceFolders)
+        ? fields.workspaceFolders.slice(0, 32).flatMap(folder => optionalString(folder) ?? [])
+        : undefined,
+    }
+  }
 
   function buildQrUrl(sessionId: string, pairingCode: string): string {
     const url = new URL('/', uiBaseUrl.replace(/\/$/, '') || publicBaseUrl)
@@ -63,8 +97,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
   const requireSessionAuth = (allowedRoles: RelayRole[] = ['mobile', 'agent']) =>
     (req: Request, res: Response, next: NextFunction) => {
-      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? ''
-      const claims = auth.verify(token)
+      const claims = sessionCredential(bearer(req))
       if (!claims || !allowedRoles.includes(claims.role)) {
         res.status(401).json({ error: 'unauthorized' })
         return
@@ -74,9 +107,7 @@ export function createRelayServer(options: RelayServerOptions) {
     }
 
   function resolveSetupClaims(req: Request): SessionClaims | null {
-    const queryToken = String(req.query.token ?? '').trim()
-    const authToken = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? ''
-    const claims = auth.verify(queryToken || authToken)
+    const claims = auth.verify(bearer(req))
     if (!claims || claims.role !== 'setup') return null
     return claims
   }
@@ -85,65 +116,39 @@ export function createRelayServer(options: RelayServerOptions) {
     res.json({ status: 'ok' })
   })
 
-  app.get('/workspaces', (req, res) => {
-    const token = String(req.query.token ?? '').trim()
-    const claims = auth.verify(token)
-    if (!claims) {
-      res.status(401).json({ error: 'unauthorized' })
-      return
-    }
-    res.json(listConnectedWorkspaces(claims.sessionId))
+  app.get('/workspaces', requireSessionAuth(), (req, res) => {
+    const { sessionId } = (req as Request & { claims: SessionClaims }).claims
+    res.json(listConnectedWorkspaces(sessionId))
   })
 
-  app.get('/api/relay/sessions', (req, res) => {
-    const token = String(req.query.token ?? '').trim()
-    const claims = auth.verify(token)
-    if (!claims) {
-      res.status(401).json({ error: 'unauthorized' })
-      return
-    }
-
-    const sessions = store.listSessions()
-      .filter(session => session.expiresAt > Date.now())
-      .map(session => {
-        const sessionPeers = peers.get(session.id)
-        return {
-          id: session.id,
-          workspaceId: session.workspaceId ?? session.label ?? session.id,
-          label: session.label ?? session.workspaceId ?? session.id,
-          createdAt: session.createdAt,
-          expiresAt: session.expiresAt,
-          status: session.status,
-          mobileToken: session.mobileToken,
-          agentConnected: Boolean(sessionPeers?.agents.size),
-          mobileConnected: Boolean(sessionPeers?.mobile),
-          workspaces: listConnectedWorkspaces(session.id),
-        }
-      })
-
-    const activeSessionId = claims.sessionId
-    const ordered = sessions.sort((a, b) => {
-      if (a.id === activeSessionId) return -1
-      if (b.id === activeSessionId) return 1
-      return a.label.localeCompare(b.label)
-    })
-
-    res.json({ sessions: ordered })
+  app.get('/api/relay/sessions', requireSessionAuth(), (req, res) => {
+    const { sessionId } = (req as Request & { claims: SessionClaims }).claims
+    const session = liveSession(sessionId)!
+    const sessionPeers = peers.get(sessionId)
+    res.json({ sessions: [{
+      id: session.id,
+      workspaceId: session.workspaceId ?? session.label ?? session.id,
+      label: session.label ?? session.workspaceId ?? session.id,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+      status: session.status,
+      agentConnected: Boolean(sessionPeers?.agents.size),
+      mobileConnected: Boolean(sessionPeers?.mobile),
+      workspaces: listConnectedWorkspaces(session.id),
+    }] })
   })
 
   app.post('/api/relay/sessions', (req, res) => {
-    const { label, workspaceId, workspaceFolders } = req.body as { label?: string; workspaceId?: string; workspaceFolders?: string[] }
+    const { label, workspaceId, workspaceFolders } = sessionMetadata(req.body)
     const expiresAt = Date.now() + sessionTtlMs
-    const seedSessionId = `seed_${Date.now()}`
-    const agentToken = auth.issueSessionToken(seedSessionId, 'agent')
     const session = store.createSession({
       label,
       workspaceId,
       workspaceFolders,
-      agentToken,
+      agentToken: '',
       expiresAt,
     })
-    const finalAgentToken = auth.issueSessionToken(session.id, 'agent')
+    const finalAgentToken = auth.issueSessionToken(session.id, 'agent', session.expiresAt)
     store.updateSessionTokens(session.id, { agentToken: finalAgentToken })
 
     res.json({
@@ -158,20 +163,16 @@ export function createRelayServer(options: RelayServerOptions) {
   })
 
   app.post('/api/onboarding/session', (req, res) => {
-    const { label, workspaceId, workspaceFolders } = req.body as { label?: string; workspaceId?: string; workspaceFolders?: string[] }
+    const { label, workspaceId, workspaceFolders } = sessionMetadata(req.body)
     const expiresAt = Date.now() + sessionTtlMs
-    const seedSessionId = `seed_${Date.now()}`
-    const seedAgentToken = auth.issueSessionToken(seedSessionId, 'agent')
     const session = store.createSession({
       label,
       workspaceId,
       workspaceFolders,
-      agentToken: seedAgentToken,
+      agentToken: '',
       expiresAt,
     })
-    const finalAgentToken = auth.issueSessionToken(session.id, 'agent')
-    store.updateSessionTokens(session.id, { agentToken: finalAgentToken })
-    const setupToken = auth.issueSessionToken(session.id, 'setup')
+    const setupToken = auth.issueSessionToken(session.id, 'setup', Math.min(session.expiresAt, Date.now() + 600_000))
     const vscodeUri = `vscode://devbridge.devbridge/onboarding?setupToken=${encodeURIComponent(setupToken)}`
 
     res.json({
@@ -191,7 +192,7 @@ export function createRelayServer(options: RelayServerOptions) {
       res.status(401).json({ error: 'unauthorized' })
       return
     }
-    const session = store.getSession(claims.sessionId)
+    const session = liveSession(claims.sessionId)
     if (!session) {
       res.status(404).json({ error: 'not found' })
       return
@@ -200,42 +201,31 @@ export function createRelayServer(options: RelayServerOptions) {
     res.json({
       sessionId: session.id,
       status: session.status,
-      pairingCode: session.pairingCode,
+      pairingCode: session.status === 'waiting' ? session.pairingCode : null,
       expiresAt: session.expiresAt,
       relayUrl: publicBaseUrl,
-      qrUrl: buildQrUrl(session.id, session.pairingCode),
+      qrUrl: session.status === 'waiting' ? buildQrUrl(session.id, session.pairingCode) : null,
       agentConnected: Boolean(sessionPeers?.agents.size),
       mobileConnected: Boolean(sessionPeers?.mobile),
     })
   })
 
   app.post('/api/onboarding/claim', (req, res) => {
-    const { setupToken, label, workspaceId, workspaceFolders } = req.body as {
-      setupToken?: string
-      label?: string
-      workspaceId?: string
-      workspaceFolders?: string[]
-    }
-    const claims = auth.verify(String(setupToken ?? '').trim())
+    const setupToken = req.body?.setupToken
+    const claims = typeof setupToken === 'string' ? auth.verify(setupToken) : null
     if (!claims || claims.role !== 'setup') {
       res.status(401).json({ error: 'unauthorized' })
       return
     }
-    const session = store.getSession(claims.sessionId)
-    if (!session || session.expiresAt <= Date.now()) {
+    const session = liveSession(claims.sessionId)
+    if (!session) {
       res.status(404).json({ error: 'not found' })
       return
     }
-    const nextAgentToken = auth.issueSessionToken(session.id, 'agent')
-    const updated = store.updateSession(session.id, {
-      label: label?.trim() || session.label,
-      workspaceId: workspaceId?.trim() || session.workspaceId,
-      workspaceFolders: Array.isArray(workspaceFolders) && workspaceFolders.length ? workspaceFolders : session.workspaceFolders,
-    })
-    store.updateSessionTokens(session.id, { agentToken: nextAgentToken })
-    const claimed = store.getSession(session.id)
-    if (!updated || !claimed) {
-      res.status(500).json({ error: 'claim failed' })
+    const nextAgentToken = auth.issueSessionToken(session.id, 'agent', session.expiresAt)
+    const claimed = store.claimSetup(session.id, nextAgentToken, sessionMetadata(req.body))
+    if (!claimed) {
+      res.status(409).json({ error: 'setup already claimed' })
       return
     }
     res.json({
@@ -248,24 +238,60 @@ export function createRelayServer(options: RelayServerOptions) {
     })
   })
 
+  const pairingAttempts = new Map<string, { count: number; until: number }>()
+  const sweepAttempts = setInterval(() => {
+    for (const [id, limit] of pairingAttempts) {
+      if (limit.until <= Date.now()) pairingAttempts.delete(id)
+    }
+  }, 60_000).unref()
+
   app.post('/api/relay/pair', (req, res) => {
     const { sessionId, pairingCode } = req.body as { sessionId?: string; pairingCode?: string }
-    if (!sessionId || !pairingCode) {
+    if (typeof sessionId !== 'string' || typeof pairingCode !== 'string' || !/^\d{6}$/.test(pairingCode)) {
       res.status(400).json({ error: 'missing sessionId or pairingCode' })
       return
     }
-    const mobileToken = auth.issueSessionToken(sessionId, 'mobile')
+    const waiting = liveSession(sessionId)
+    if (!waiting || !waiting.agentToken) {
+      res.status(403).json({ error: 'invalid or expired pairing' })
+      return
+    }
+    const now = Date.now()
+    let limit = pairingAttempts.get(sessionId)
+    if (!limit || limit.until <= now) {
+      limit = { count: 0, until: now + 60_000 }
+      pairingAttempts.set(sessionId, limit)
+    }
+    if (limit.count >= 10) {
+      res.status(429).json({ error: 'too many pairing attempts' })
+      return
+    }
+    limit.count++
+    const mobileToken = auth.issueSessionToken(sessionId, 'mobile', waiting.expiresAt)
     const session = store.pair(sessionId, pairingCode, mobileToken)
     if (!session) {
       res.status(403).json({ error: 'invalid or expired pairing' })
       return
     }
+    pairingAttempts.delete(sessionId)
+    peers.get(sessionId)?.mobile?.close(4401, 'mobile credential replaced')
     res.json({
       sessionId: session.id,
       mobileToken,
       expiresAt: session.expiresAt,
       relayUrl: publicBaseUrl,
     })
+  })
+
+  app.post('/api/relay/pairing-code', requireSessionAuth(['agent']), (req, res) => {
+    const { sessionId } = (req as Request & { claims: SessionClaims }).claims
+    const pairingCode = store.renewPairingCode(sessionId)
+    if (!pairingCode) {
+      res.status(404).json({ error: 'not found' })
+      return
+    }
+    pairingAttempts.delete(sessionId)
+    res.json({ pairingCode, qrUrl: buildQrUrl(sessionId, pairingCode) })
   })
 
   app.get('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
@@ -333,8 +359,63 @@ export function createRelayServer(options: RelayServerOptions) {
     }
   })
 
+  // ── CLI Registry proxy (forwarded to agent via WebSocket) ──────────
+  app.get('/clis', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims?: SessionClaims }).claims!
+    try {
+      const response = await requestAgentPayload(claims.sessionId, undefined, 'relay_clis_request', { action: 'list' })
+      res.json({ clis: response.clis ?? [] })
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
+    }
+  })
+
+  app.post('/clis/detect', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims?: SessionClaims }).claims!
+    try {
+      const response = await requestAgentPayload(claims.sessionId, undefined, 'relay_clis_request', { action: 'detect' })
+      res.json({ clis: response.clis ?? [] })
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
+    }
+  })
+
+  app.post('/clis/default', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims?: SessionClaims }).claims!
+    const { id } = req.body as { id: string }
+    try {
+      const response = await requestAgentPayload(claims.sessionId, undefined, 'relay_clis_request', { action: 'set_default', id })
+      res.json({ ok: response.ok ?? false, clis: response.clis ?? [] })
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
+    }
+  })
+
+  app.post('/clis/custom', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims?: SessionClaims }).claims!
+    const { name, command, args } = req.body as { name: string; command: string; args?: string[] }
+    try {
+      const response = await requestAgentPayload(claims.sessionId, undefined, 'relay_clis_request', { action: 'add_custom', name, command, args })
+      res.json({ ok: response.ok ?? false, cli: response.cli, clis: response.clis ?? [] })
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
+    }
+  })
+
+  app.delete('/clis/:id', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims?: SessionClaims }).claims!
+    const { id } = req.params
+    try {
+      const response = await requestAgentPayload(claims.sessionId, undefined, 'relay_clis_request', { action: 'remove_custom', id })
+      res.json({ ok: response.ok ?? false })
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
+    }
+  })
+
   const httpServer = http.createServer(app)
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 4 * 1024 * 1024 })
+  wss.on('close', () => clearInterval(sweepAttempts))
 
   function getSessionPeers(sessionId: string): SessionPeers {
     const sessionPeers = peers.get(sessionId)
@@ -482,6 +563,8 @@ export function createRelayServer(options: RelayServerOptions) {
   }
 
   wss.on('connection', (ws: AuthenticatedSocket) => {
+    const authenticationDeadline = setTimeout(() => ws.close(4401, 'authentication timeout'), 5_000)
+    ws.on('error', () => ws.terminate())
     ws.on('message', (raw: RawData) => {
       let msg: Record<string, unknown>
       try {
@@ -491,12 +574,17 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.type !== 'string') {
+        ws.close(1008, 'invalid message')
+        return
+      }
+
       if (!ws.claims) {
         if (msg.type !== 'auth' || typeof msg.token !== 'string') {
           ws.close(4401, 'unauthorized')
           return
         }
-        const claims = auth.verify(msg.token)
+        const claims = sessionCredential(msg.token)
         if (!claims) {
           ws.close(4401, 'unauthorized')
           return
@@ -506,7 +594,15 @@ export function createRelayServer(options: RelayServerOptions) {
           ws.close(4404, 'session not found')
           return
         }
+        clearTimeout(authenticationDeadline)
+        ws.token = msg.token
         ws.claims = claims
+        const closeOnExpiry = () => {
+          const remaining = Math.min(session.expiresAt, claims.exp * 1000) - Date.now()
+          if (remaining <= 0) ws.close(4401, 'session expired')
+          else ws.expiryTimer = setTimeout(closeOnExpiry, Math.min(remaining, 2_147_483_647))
+        }
+        closeOnExpiry()
         const sessionPeers = getSessionPeers(claims.sessionId)
         if (claims.role === 'mobile') {
           sessionPeers.mobile = ws
@@ -522,6 +618,10 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
+      if (!sessionCredential(ws.token!, ws.claims)) {
+        ws.close(4401, 'session expired or revoked')
+        return
+      }
       const { sessionId, role } = ws.claims
       if (role === 'agent' && msg.type === 'agent_hello') {
         const workspaceId = typeof msg.workspace_id === 'string' ? msg.workspace_id : ''
@@ -535,11 +635,10 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      if (role === 'agent' && msg.type === 'relay_file_response' && typeof msg.request_id === 'string') {
-        const pending = pendingAgentRequests.get(msg.request_id)
-        if (!pending) return
+      if (role === 'agent' && typeof msg.request_id === 'string' && pendingAgentRequests.has(msg.request_id as string)) {
+        const pending = pendingAgentRequests.get(msg.request_id as string)!
         clearTimeout(pending.timer)
-        pendingAgentRequests.delete(msg.request_id)
+        pendingAgentRequests.delete(msg.request_id as string)
         pending.resolve(msg)
         return
       }
@@ -590,6 +689,8 @@ export function createRelayServer(options: RelayServerOptions) {
     })
 
     ws.on('close', () => {
+      clearTimeout(authenticationDeadline)
+      if (ws.expiryTimer) clearTimeout(ws.expiryTimer)
       if (!ws.claims) return
       const sessionPeers = peers.get(ws.claims.sessionId)
       if (!sessionPeers) return

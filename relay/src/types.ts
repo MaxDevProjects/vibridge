@@ -32,6 +32,7 @@ export interface RelaySession {
 export interface SessionClaims {
   sessionId: string
   role: RelayRole
+  exp: number
 }
 
 export interface ConnectedWorkspace {

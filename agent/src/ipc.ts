@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 /**
  * DevBridge Agent — IPC server
  * Listens on a Unix socket (local/Docker) and optionally on a TCP port (remote/WSL).
@@ -36,6 +37,7 @@ export class IpcServer {
     private getRelaySessionId: () => string | null = () => null,
     private cliRegistry?: CliRegistry,
     private applyRelaySetup?: (setupToken: string) => void | Promise<void>,
+    private renewRelayQr?: () => Promise<string | null>,
   ) {
     this.server = net.createServer((socket) => this.handleClient(socket));
   }
@@ -43,12 +45,26 @@ export class IpcServer {
   async listen(tcpPort?: number): Promise<void> {
     // Remove stale socket file if it exists
     const dir = path.dirname(this.socketPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tcpCredential = process.env.IPC_SHARED_SECRET;
+    if (tcpPort && (!tcpCredential || tcpCredential.length < 32)) {
+      throw new Error('IPC_SHARED_SECRET must contain at least 32 characters when TCP IPC is enabled');
+    }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (fs.existsSync(this.socketPath)) fs.unlinkSync(this.socketPath);
 
     await new Promise<void>((resolve, reject) => {
       this.server.listen(this.socketPath, () => {
-        fs.chmodSync(this.socketPath, 0o666);
+        try {
+          fs.chmodSync(this.socketPath, 0o600);
+          if (process.getuid?.() === 0) {
+            const owner = fs.statSync(dir);
+            fs.chownSync(this.socketPath, owner.uid, owner.gid);
+          }
+        } catch (error) {
+          this.server.close();
+          reject(error);
+          return;
+        }
         console.log(`[IPC] Unix socket listening on ${this.socketPath}`);
         resolve();
       });
@@ -56,7 +72,7 @@ export class IpcServer {
     });
 
     if (tcpPort) {
-      this.tcpServer = net.createServer((socket) => this.handleClient(socket));
+      this.tcpServer = net.createServer((socket) => this.handleClient(socket, tcpCredential));
       await new Promise<void>((resolve, reject) => {
         this.tcpServer!.listen(tcpPort, '127.0.0.1', () => {
           console.log(`[IPC] TCP socket listening on 127.0.0.1:${tcpPort}`);
@@ -87,27 +103,51 @@ export class IpcServer {
     this.tcpServer?.close();
   }
 
-  private handleClient(socket: net.Socket): void {
-    this.clients.add(socket);
+  private handleClient(socket: net.Socket, credential?: string): void {
+    let authenticated = !credential;
+    const deadline = credential ? setTimeout(() => socket.destroy(), 5_000) : null;
+    if (authenticated) this.clients.add(socket);
     let buf = '';
     let registeredAdapterId: string | null = null;
 
     // Forward AI output back to the extension
     const off = this.queue.onOutput((payload: OutputPayload) => {
-      if (!socket.destroyed) {
-        socket.write(JSON.stringify({ type: 'output', payload }) + '\n');
+      if (authenticated && !socket.destroyed && socket.writable) {
+        try {
+          socket.write(JSON.stringify({ type: 'output', payload }) + '\n');
+        } catch (err) {
+          console.warn('[IPC] Failed to write output to socket:', err);
+        }
       }
     });
 
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
       buf += chunk;
+      if (buf.length > 4 * 1024 * 1024) {
+        socket.destroy();
+        return;
+      }
       const lines = buf.split('\n');
       buf = lines.pop() ?? '';
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          this.handleMessage(socket, JSON.parse(line) as Record<string, unknown>);
+          const message = JSON.parse(line) as Record<string, unknown>;
+          if (!authenticated) {
+            const expected = Buffer.from(credential!);
+            const supplied = Buffer.from(typeof message?.token === 'string' ? message.token : '');
+            if (message?.type !== 'auth' || supplied.length !== expected.length || !timingSafeEqual(expected, supplied)) {
+              socket.destroy();
+              return;
+            }
+            if (deadline) clearTimeout(deadline);
+            authenticated = true;
+            this.clients.add(socket);
+            socket.write('{"type":"auth_ok"}\n');
+            continue;
+          }
+          this.handleMessage(socket, message);
         } catch {
           // ignore malformed
         }
@@ -115,6 +155,7 @@ export class IpcServer {
     });
 
     socket.on('close', () => {
+      if (deadline) clearTimeout(deadline);
       if (registeredAdapterId) this.adapters.unregister(registeredAdapterId);
       this.clients.delete(socket);
       off();
@@ -128,8 +169,12 @@ export class IpcServer {
     const registerAdapter = (id: string, label: string) => {
       registeredAdapterId = id;
       this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
-        if (!socket.destroyed) {
-          socket.write(JSON.stringify(data) + '\n');
+        if (!socket.destroyed && socket.writable) {
+          try {
+            socket.write(JSON.stringify(data) + '\n');
+          } catch (err) {
+            console.warn('[IPC] Failed to write adapter data to socket:', err);
+          }
         }
       });
     };
@@ -150,29 +195,10 @@ export class IpcServer {
         break;
       }
       case 'get_pairing_code': {
-        if (!socket.destroyed) {
-          const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
-          const agentPort = process.env.AGENT_PORT ?? '3333';
-          const uiPort = process.env.NUXT_UI_PORT ?? process.env.UI_PORT ?? '8080';
-          const publicUiUrl = (process.env.UI_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
-          const workspaceId = String(process.env.WORKSPACE_ID ?? process.env.PROJECT_ROOT ?? 'workspace').trim().split(/[\\/]/).filter(Boolean).pop() ?? 'workspace';
-          const shortToken = this.auth.issueShortLivedToken(600);
-          const agentUrl = `http://${agentHost}:${agentPort}`;
-          const localQrBase = publicUiUrl || `http://${agentHost}:${uiPort}`;
-          const localQrUrl = publicUiUrl && this.relayQrUrl
-            ? undefined
-            : publicUiUrl
-              ? `${localQrBase}/?token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`
-              : `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`;
-          socket.write(JSON.stringify({
-            type: 'pairing_code',
-            code: this.auth.getPairCode(),
-            qrUrl: this.relayQrUrl ?? undefined,
-            localQrUrl,
-          }) + '\n');
-        }
+        void this.sendPairingCode(socket).catch((error) => console.warn('[IPC] Could not send pairing code:', error));
         break;
       }
+
       case 'chat_message': {
         // AI → phone: relay to WS clients and trigger push
         const text = msg.text as string;
@@ -295,19 +321,59 @@ export class IpcServer {
         const setupToken = String(msg.setupToken ?? '').trim();
         if (!setupToken) break;
         void this.applyRelaySetup?.(setupToken);
-        if (!socket.destroyed) {
-          socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
+        if (!socket.destroyed && socket.writable) {
+          try {
+            socket.write(JSON.stringify({ type: 'relay_setup_ack', ok: true }) + '\n');
+          } catch (err) {
+            console.warn('[IPC] Failed to send relay_setup_ack:', err);
+          }
         }
         break;
       }
     }
   }
 
-  /** Send a message to all connected VS Code extension instances */
+  private async sendPairingCode(socket: net.Socket): Promise<void> {
+    if (this.renewRelayQr) {
+      try {
+        this.relayQrUrl = await this.renewRelayQr();
+      } catch {
+        this.relayQrUrl = null;
+      }
+    }
+    if (socket.destroyed || !socket.writable) return;
+    const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
+    const agentPort = process.env.AGENT_PORT ?? '3333';
+    const uiPort = process.env.NUXT_UI_PORT ?? process.env.UI_PORT ?? '8080';
+    const publicUiUrl = (process.env.UI_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
+    const workspaceId = String(process.env.WORKSPACE_ID ?? process.env.PROJECT_ROOT ?? 'workspace').trim().split(/[\\/]/).filter(Boolean).pop() ?? 'workspace';
+    const shortToken = this.auth.issueShortLivedToken(600);
+    const agentUrl = `http://${agentHost}:${agentPort}`;
+    const localQrBase = publicUiUrl || `http://${agentHost}:${uiPort}`;
+    const localQrUrl = publicUiUrl && this.relayQrUrl
+      ? undefined
+      : publicUiUrl
+        ? `${localQrBase}/?token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`
+        : `${localQrBase}/?view=mobile&agentUrl=${encodeURIComponent(agentUrl)}&token=${encodeURIComponent(shortToken)}&workspace=${encodeURIComponent(workspaceId)}`;
+    socket.write(JSON.stringify({
+      type: 'pairing_code',
+      code: this.auth.getPairCode(),
+      qrUrl: this.relayQrUrl ?? undefined,
+      localQrUrl,
+    }) + '\n');
+  }
+
+  /** Send a message to connected VS Code extension instances. */
   sendToExtension(data: unknown): void {
     const line = JSON.stringify(data) + '\n';
     this.clients.forEach((c) => {
-      if (!c.destroyed) c.write(line);
+      if (!c.destroyed && c.writable) {
+        try {
+          c.write(line);
+        } catch (err) {
+          console.warn('[IPC] Failed to write to extension socket:', err);
+        }
+      }
     });
   }
 

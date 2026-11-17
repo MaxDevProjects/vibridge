@@ -28,6 +28,10 @@ export class RelayStore {
     this.migrate()
   }
 
+  close() {
+    this.db.close()
+  }
+
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -82,6 +86,10 @@ export class RelayStore {
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      DELETE FROM message_history
+      WHERE type IN ('status_snapshot', 'relay_session')
+        AND (instr(payload_json, '"agentToken"') > 0 OR instr(payload_json, '"pairingCode"') > 0);
+
       CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
       ON sessions(expires_at);
 
@@ -94,6 +102,11 @@ export class RelayStore {
       CREATE INDEX IF NOT EXISTS idx_message_history_session_ts
       ON message_history(session_id, ts DESC);
     `)
+    const columns = this.db.pragma('table_info(sessions)') as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'pairing_expires_at')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN pairing_expires_at INTEGER NOT NULL DEFAULT 0')
+      this.db.exec("UPDATE sessions SET pairing_expires_at = MIN(expires_at, created_at + 600000) WHERE status = 'waiting'")
+    }
   }
 
   private makePairingCode(): string {
@@ -134,9 +147,9 @@ export class RelayStore {
     }
     this.db.prepare(`
       INSERT INTO sessions (
-        id, workspace_id, pairing_code, status, created_at, expires_at, label, workspace_folders_json, agent_token, mobile_token
+        id, workspace_id, pairing_code, status, created_at, expires_at, label, workspace_folders_json, agent_token, mobile_token, pairing_expires_at
       ) VALUES (
-        @id, @workspaceId, @pairingCode, @status, @createdAt, @expiresAt, @label, @workspaceFoldersJson, @agentToken, @mobileToken
+        @id, @workspaceId, @pairingCode, @status, @createdAt, @expiresAt, @label, @workspaceFoldersJson, @agentToken, @mobileToken, @pairingExpiresAt
       )
     `).run({
       id: session.id,
@@ -149,6 +162,7 @@ export class RelayStore {
       workspaceFoldersJson: JSON.stringify(session.workspaceFolders),
       agentToken: session.agentToken,
       mobileToken: session.mobileToken,
+      pairingExpiresAt: Math.min(session.expiresAt, session.createdAt + 600_000),
     })
     return session
   }
@@ -187,13 +201,13 @@ export class RelayStore {
     return this.getSession(sessionId)
   }
 
-  getSession(sessionId: string) {
+  getSession(sessionId: string, includeHistory = true) {
     const row = this.db.prepare(`
       SELECT id, workspace_id, pairing_code, status, created_at, expires_at, label, workspace_folders_json, agent_token, mobile_token
       FROM sessions
       WHERE id = ?
     `).get(sessionId) as Record<string, unknown> | undefined
-    return this.mapSession(row)
+    return this.mapSession(row, includeHistory)
   }
 
   listSessions() {
@@ -216,22 +230,27 @@ export class RelayStore {
     return this.mapSession(row)
   }
 
-  setPairingCode(sessionId: string, pairingCode: string) {
-    this.db.prepare(`
-      UPDATE sessions
-      SET pairing_code = ?
-      WHERE id = ?
-    `).run(pairingCode, sessionId)
+  renewPairingCode(sessionId: string): string | null {
+    const now = Date.now()
+    const code = this.makePairingCode()
+    const result = this.db.prepare(
+      "UPDATE sessions SET pairing_code = ?, pairing_expires_at = MIN(expires_at, ?) WHERE id = ? AND status <> 'closed' AND expires_at > ?",
+    ).run(code, now + 600_000, sessionId, now)
+    return result.changes ? code : null
   }
 
   pair(sessionId: string, code: string, mobileToken: string): RelaySession | null {
     const updated = this.db.prepare(`
       UPDATE sessions
       SET mobile_token = @mobileToken,
-          status = 'paired'
+          status = 'paired',
+          pairing_expires_at = 0
       WHERE id = @sessionId
         AND expires_at > @now
         AND pairing_code = @code
+        AND status <> 'closed'
+        AND agent_token <> ''
+        AND pairing_expires_at > @now
     `).run({
       sessionId,
       mobileToken,
@@ -240,6 +259,15 @@ export class RelayStore {
     })
     if (updated.changes === 0) return null
     return this.getSession(sessionId)
+  }
+
+  claimSetup(sessionId: string, agentToken: string, workspace: { label?: string; workspaceId?: string; workspaceFolders?: string[] }) {
+    return this.db.transaction(() => {
+      const result = this.db.prepare(
+        "UPDATE sessions SET agent_token = ? WHERE id = ? AND agent_token = '' AND status = 'waiting' AND expires_at > ?",
+      ).run(agentToken, sessionId, Date.now())
+      return result.changes ? this.updateSession(sessionId, workspace) : null
+    })()
   }
 
   append(sessionId: string, source: RelayEnvelope['source'], data: Omit<RelayEnvelope, 'id' | 'sessionId' | 'source' | 'ts'>) {

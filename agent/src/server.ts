@@ -37,10 +37,14 @@ export function createServer(deps: ServerDeps) {
   const app = express();
   app.use(cors({ origin: '*' }));
   app.use(express.json());
+  app.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   // ── Auth middleware ─────────────────────────────────────────
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.replace('Bearer ', '') ?? '';
+    const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1] ?? '';
     if (!auth.verify(token)) {
       res.status(401).json({ error: 'unauthorized' });
       return;
@@ -121,11 +125,11 @@ export function createServer(deps: ServerDeps) {
   });
 
   /** Read current pairing code for the local pairing screen / QR generation */
-  app.get('/pairing-code', (_req, res) => {
+  app.get('/pairing-code', requireAuth, (_req, res) => {
     res.json({ code: auth.getPairCode(), relay: relay?.getState() ?? null });
   });
 
-  app.get('/workspace', (_req, res) => {
+  app.get('/workspace', requireAuth, (_req, res) => {
     res.json({
       id: deps.workspace.id,
       name: deps.workspace.name,
@@ -161,7 +165,7 @@ export function createServer(deps: ServerDeps) {
    * In public/HTTPS mode the QR must not embed a local agentUrl because
    * the phone cannot reach it directly from outside the LAN.
    */
-  app.get('/pairing-url', (req: Request, res: Response) => {
+  app.get('/pairing-url', requireAuth, (req: Request, res: Response) => {
     const token = auth.issueShortLivedToken(600);
     const agentHost = process.env.NUXT_PUBLIC_AGENT_HOST ?? process.env.AGENT_HOST ?? 'devbridge.local';
     const agentPort = deps.PORT;
@@ -333,13 +337,16 @@ export function createServer(deps: ServerDeps) {
 
   // ── WebSocket ──────────────────────────────────────────────
   const httpServer = http.createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 4 * 1024 * 1024 });
+  const authenticatedSockets = new Map<WebSocket, string>();
 
   wss.on('connection', (ws: WebSocket, req) => {
     const clientIp = req.socket.remoteAddress ?? 'unknown';
     const ts = () => new Date().toTimeString().slice(0, 8);
     // First message must be { type: 'auth', token }
-    let authenticated = false;
+    let credential: string | null = null;
+    const deadline = setTimeout(() => ws.close(4401, 'authentication timeout'), 5_000);
+    ws.on('error', () => ws.terminate());
 
     ws.on('message', (raw: RawData) => {
       let msg: Record<string, unknown>;
@@ -350,18 +357,30 @@ export function createServer(deps: ServerDeps) {
         return;
       }
 
-      if (!authenticated) {
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.type !== 'string') {
+        ws.close(1008, 'invalid message');
+        return;
+      }
+
+      if (!credential) {
         if (msg.type === 'auth') {
-          if (auth.verify(msg.token as string)) {
-            authenticated = true;
+          if (typeof msg.token === 'string' && auth.verify(msg.token)) {
+            clearTimeout(deadline);
+            credential = msg.token;
+            authenticatedSockets.set(ws, credential);
             ws.send(JSON.stringify({ type: 'auth_ok' }));
             console.log(`[${ts()}] [INFO] [WS] Mobile connected — ${clientIp}`);
           } else {
             console.log(`[${ts()}] [WARN] [WS] Auth rejected — ${clientIp}`);
             ws.send(JSON.stringify({ type: 'auth_fail', reason: 'invalid_token' }));
-            ws.close(1008, 'invalid token');
+            ws.close(4401, 'invalid token');
           }
         }
+        return;
+      }
+
+      if (!auth.verify(credential)) {
+        ws.close(4401, 'token expired');
         return;
       }
 
@@ -479,7 +498,7 @@ export function createServer(deps: ServerDeps) {
 
     // Forward adapter output to this WS client
     const off = queue.onOutput((payload) => {
-      if (authenticated && ws.readyState === WebSocket.OPEN) {
+      if (credential && auth.verify(credential) && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(payload));
       }
     });
@@ -493,7 +512,9 @@ export function createServer(deps: ServerDeps) {
     ws.on('error', off);
     ws.on('close', () => {
       clearInterval(pingInterval);
-      if (authenticated) {
+      clearTimeout(deadline);
+      authenticatedSockets.delete(ws);
+      if (credential) {
         const t = () => new Date().toTimeString().slice(0, 8);
         console.log(`[${t()}] [INFO] [WS] Mobile disconnected — ${clientIp}`);
       }
@@ -503,8 +524,8 @@ export function createServer(deps: ServerDeps) {
   // Broadcast helper used by IPC
   (deps.ipc as unknown as { broadcast?: (d: unknown) => void }).broadcast = (data: unknown) => {
     const msg = JSON.stringify(data);
-    wss.clients.forEach((c) => {
-      if (c.readyState === WebSocket.OPEN) c.send(msg);
+    authenticatedSockets.forEach((token, client) => {
+      if (client.readyState === WebSocket.OPEN && auth.verify(token)) client.send(msg);
     });
   };
 

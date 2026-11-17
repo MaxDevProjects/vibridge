@@ -58,7 +58,7 @@ VAPID_EMAIL=mailto:devbridge@localhost
 RELAY_PORT=4444
 RELAY_PUBLIC_URL=http://localhost:4444
 RELAY_INTERNAL_URL=http://relay:4444
-RELAY_JWT_SECRET=
+RELAY_JWT_SECRET=$(openssl rand -hex 32)
 # Volume mount: path to your project on the host
 PROJECT_ROOT=${HOME}/projects
 EOF

@@ -1016,7 +1016,7 @@ async function loadPairingCode() {
     return
   }
   try {
-    const res = await fetch(`${currentAgentBaseUrl()}/pairing-code`)
+    const res = await fetch(`${currentAgentBaseUrl()}/pairing-code`, { headers: { Authorization: `Bearer ${bridge.token.value}` } })
     if (!res.ok) return
     const data = await res.json() as { code?: string; relay?: { sessionId?: string; pairingCode?: string; relayUrl?: string } | null }
     if (data.code) currentPairingCode.value = data.code
@@ -1030,7 +1030,8 @@ async function loadPairingCode() {
   try {
     const uiPort = window.location.port || '8080'
     const res2 = await fetch(
-      `${currentAgentBaseUrl()}/pairing-url?uiHost=${encodeURIComponent(String(config.public.agentHost))}&uiPort=${uiPort}`
+      `${currentAgentBaseUrl()}/pairing-url?uiHost=${encodeURIComponent(String(config.public.agentHost))}&uiPort=${uiPort}`,
+      { headers: { Authorization: `Bearer ${bridge.token.value}` } },
     )
     if (res2.ok) {
       const d = await res2.json() as { token?: string; workspace?: string }

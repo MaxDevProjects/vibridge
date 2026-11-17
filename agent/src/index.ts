@@ -44,6 +44,7 @@ async function main() {
     () => relay?.getState()?.sessionId ?? null,
     cliRegistry,
     (setupToken) => relay?.applyOnboardingSetup(setupToken),
+    async () => relay?.renewPairingQr() ?? null,
   );
   relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL
     ? new RelayClient({
@@ -87,7 +88,7 @@ async function main() {
     // Non-fatal: if the relay server is unreachable at startup, the agent
     // keeps running locally and the relay client will retry in background.
     relay.start().then(() => {
-      ipc.setRelayQrUrl(relay.getState()?.qrUrl ?? null);
+      ipc.setRelayQrUrl(relay.getQrUrl());
       if (relay.getState()?.sessionId) {
         console.log(`[DevBridge Agent] Relay enabled via ${RELAY_PUBLIC_URL}`);
       } else {
