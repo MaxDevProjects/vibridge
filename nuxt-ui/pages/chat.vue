@@ -17,7 +17,7 @@
     <div class="shrink-0 border-b border-border px-4 py-2">
       <WorkspaceSwitcher
         :workspaces="relayWorkspaceOptions"
-        :active-workspace-id="activeWorkspaceKey"
+        :active-workspace-id="bridge.activeWorkspaceId.value"
         :projects="projects"
         :loading-projects="loadingProjects"
         :project-opening="projectOpening"
@@ -131,7 +131,7 @@ interface ProjectItem {
 }
 
 const bridge = useDevBridge()
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
+const activeWorkspaceKey = bridge.chatHistoryKey
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relayWorkspaces.value.length
       ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: w.name, active: w.id === bridge.activeWorkspaceId.value }))
@@ -390,7 +390,7 @@ watch(activeWorkspaceKey, (workspaceId) => {
   aiTyping.value = false
   currentTool.value = null
   scrollToBottom()
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 
 function targetButtonLabel(target: ChatTarget) {
   if (target.state === 'new') return '+'
