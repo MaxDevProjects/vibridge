@@ -19,25 +19,21 @@ export class ChatParticipant {
       const terminalName = String(msg.terminalName ?? '').trim();
       const command = String(msg.command ?? '').trim();
       const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
-      console.log('[DIAG][Extension][inject_message]', {
-        text,
-        target,
-        terminalName,
-        command,
-        args,
-      });
       if (!text) return;
 
       const resolved = this.resolveTerminalTarget(target, terminalName);
-      console.log('[DIAG][Extension][resolveTerminalTarget]', resolved);
       if (resolved) {
+        if (target.startsWith('terminal:') && !resolved.existed) {
+          this.ipc.send({ type: 'terminal_unavailable', terminalName: resolved.terminalName });
+          return;
+        }
         const fullCommand = command ? (args.length ? `${command} ${args.join(' ')}` : command) : '';
         const terminal = this.ensureTerminal(resolved.terminalName, fullCommand);
         terminal.show(true);
-        const injectDelay = resolved.needsBootDelay || (fullCommand && !resolved.existed) ? 1200 : 0;
+        const injectDelay = (resolved.needsBootDelay || (fullCommand && !resolved.existed)) ? 1200 : 0;
         setTimeout(() => {
           terminal.show(true);
-          this.sendToTerminal(terminal, text);
+          this.sendToTerminal(terminal, text, msg.sendEnter !== false);
         }, injectDelay);
         this.ipc.send({
           type: 'ide_event',
@@ -135,14 +131,13 @@ export class ChatParticipant {
     this.inbox.show(true);
   }
 
-  private sendToTerminal(terminal: vscode.Terminal, text: string): void {
+  private sendToTerminal(terminal: vscode.Terminal, text: string, sendEnter: boolean): void {
+    if (!sendEnter) {
+      terminal.sendText(text, false);
+      return;
+    }
     const config = vscode.workspace.getConfiguration('devbridge');
     const mode = String(config.get('terminalSendMode') ?? 'split');
-    console.log('[DIAG][Extension][sendToTerminal]', {
-      terminal: terminal.name,
-      text,
-      mode,
-    });
     if (mode === 'paste') {
       terminal.sendText(text, true);
       return;

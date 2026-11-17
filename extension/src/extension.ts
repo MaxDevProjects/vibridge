@@ -83,7 +83,12 @@ export function activate(context: vscode.ExtensionContext): void {
   if (mode === 'tcp') {
     const host: string = config.get('agentHost') ?? '127.0.0.1';
     const port: number = config.get('agentPort') ?? 3334;
-    target = { kind: 'tcp', host, port };
+    const token = process.env.IPC_SHARED_SECRET ?? '';
+    if (token.length < 32) {
+      void vscode.window.showErrorMessage('DevBridge TCP requires IPC_SHARED_SECRET in the VS Code extension host environment.');
+      return;
+    }
+    target = { kind: 'tcp', host, port, token };
     console.log(`[DevBridge] TCP mode → ${host}:${port}`);
   } else {
     const path: string = config.get('agentSocketPath') ?? '/tmp/devbridge/ipc.sock';
@@ -94,19 +99,34 @@ export function activate(context: vscode.ExtensionContext): void {
   ipc = new IpcClient(target);
   ipc.connect();
 
+  let pendingSetupInFlight: string | undefined;
   const flushPendingSetupToken = () => {
     const setupToken = context.globalState.get<string>(PENDING_SETUP_TOKEN_KEY);
-    if (!setupToken || !ipc?.isConnected()) return;
+    if (!setupToken || !ipc?.isConnected() || pendingSetupInFlight) return;
+    pendingSetupInFlight = setupToken;
     ipc.send({ type: 'relay_setup_link', setupToken });
-    void context.globalState.update(PENDING_SETUP_TOKEN_KEY, undefined);
-    void vscode.window.showInformationMessage('DevBridge onboarding linked to the local agent.');
   };
+  ipc.on('disconnected', () => { pendingSetupInFlight = undefined; });
+  ipc.on('relay_setup_ack', (message: { ok?: boolean }) => {
+    const completed = pendingSetupInFlight;
+    pendingSetupInFlight = undefined;
+    if (!completed) return;
+    if (context.globalState.get(PENDING_SETUP_TOKEN_KEY) === completed) {
+      void context.globalState.update(PENDING_SETUP_TOKEN_KEY, undefined);
+    } else {
+      flushPendingSetupToken();
+    }
+    if (message.ok) void vscode.window.showInformationMessage('ViBridge a associé cet espace de travail à la session.');
+    else void vscode.window.showWarningMessage('ViBridge n’a pas pu associer cet espace de travail. Relance la configuration depuis le navigateur.');
+  });
 
   // Detect installed CLIs and report projects on each connection
   ipc.on('connected', () => {
     detectInstalledClis().then((detected) => {
       ipc!.send({ type: 'cli_report', detected });
-    }).catch(() => {});
+    }).catch((err: unknown) => {
+      console.error('[DevBridge] Failed to detect CLIs:', err);
+    });
     const info = getProjectsList();
     if (info) ipc!.send({ type: 'projects_report', ...info });
     flushPendingSetupToken();
@@ -216,6 +236,13 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage('DevBridge: setup token missing in onboarding link.');
           return;
         }
+        const confirm = 'Associer ViBridge';
+        const response = await vscode.window.showWarningMessage(
+          'Associer cet espace de travail à la session ouverte dans le navigateur ? Une fois associé, le téléphone appairé pourra piloter VS Code.',
+          { modal: true },
+          confirm,
+        );
+        if (response !== confirm) return;
         await context.globalState.update(PENDING_SETUP_TOKEN_KEY, setupToken);
         flushPendingSetupToken();
         if (!ipc?.isConnected()) {

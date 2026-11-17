@@ -229,7 +229,7 @@
           <div class="px-4 mb-4">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
-              :active-workspace-id="activeWorkspaceKey"
+              :active-workspace-id="bridge.activeWorkspaceId.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -345,7 +345,7 @@
           <div class="shrink-0 px-4 py-3" style="border-bottom:1px solid var(--border)">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
-              :active-workspace-id="activeWorkspaceKey"
+              :active-workspace-id="bridge.activeWorkspaceId.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -674,7 +674,7 @@ const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
     ?? bridge.activeWorkspace.value?.name
     ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
   : 'Workspace local')
-const activeWorkspaceKey = computed(() => bridge.mode.value === 'relay' ? (bridge.activeWorkspaceId.value || bridge.relaySessionId.value || 'default') : 'local')
+const activeWorkspaceKey = bridge.chatHistoryKey
 function resolveWorkspaceName(workspace: { id: string; name: string }): string {
   // When the agent falls back to "project" (Docker default), prefer the VS Code workspace folder name
   const genericNames = new Set(['project', 'workspace', 'app', 'local'])
@@ -1016,7 +1016,7 @@ async function loadPairingCode() {
     return
   }
   try {
-    const res = await fetch(`${currentAgentBaseUrl()}/pairing-code`)
+    const res = await fetch(`${currentAgentBaseUrl()}/pairing-code`, { headers: { Authorization: `Bearer ${bridge.token.value}` } })
     if (!res.ok) return
     const data = await res.json() as { code?: string; relay?: { sessionId?: string; pairingCode?: string; relayUrl?: string } | null }
     if (data.code) currentPairingCode.value = data.code
@@ -1030,7 +1030,8 @@ async function loadPairingCode() {
   try {
     const uiPort = window.location.port || '8080'
     const res2 = await fetch(
-      `${currentAgentBaseUrl()}/pairing-url?uiHost=${encodeURIComponent(String(config.public.agentHost))}&uiPort=${uiPort}`
+      `${currentAgentBaseUrl()}/pairing-url?uiHost=${encodeURIComponent(String(config.public.agentHost))}&uiPort=${uiPort}`,
+      { headers: { Authorization: `Bearer ${bridge.token.value}` } },
     )
     if (res2.ok) {
       const d = await res2.json() as { token?: string; workspace?: string }
@@ -1289,11 +1290,12 @@ async function pairFromRoute() {
     view.value = 'mobile'
   }
 
-  // ── Fast path: QR code contains pre-issued token — no code exchange needed
+  // Local QR invitation exchange
   if (preIssuedToken && (agentUrl || (host && port))) {
     const effectiveAgentUrl = agentUrl || `http://${host}:${port}`
-    bridge.clearStoredSession()
-    bridge.connectWithToken(effectiveAgentUrl, preIssuedToken)
+    if (!await bridge.connectWithToken(effectiveAgentUrl, preIssuedToken)) {
+      pairError.value = 'Ce QR code a expiré ou a déjà été utilisé. Génère un nouveau QR code dans VS Code.'
+    }
     if (agentUrl) pairAgentUrl.value = agentUrl
     if (host) pairHost.value = host
     if (port) pairPort.value = port
@@ -1359,7 +1361,7 @@ const pendingNotifs = ref<NotifItem[]>([])
 function removeNotif(id: string) { pendingNotifs.value = pendingNotifs.value.filter(n => n.id !== id) }
 function handleNotif(id: string, action: 'validate' | 'refuse') {
   const n = pendingNotifs.value.find(x => x.id === id)
-  bridge.send({ type: 'notif_response', id, action })
+  if (!bridge.send({ type: 'notif_response', id, action })) return
   removeNotif(id)
   activity.value.unshift({ id: Date.now().toString(), ts: Date.now(), tag: action === 'validate' ? 'user' : 'sys', text: `${action === 'validate' ? 'Validé' : 'Refusé'} — ${n?.text.slice(0, 60) ?? ''}` })
 }
@@ -1518,14 +1520,14 @@ const lastFilteredAiMessageId = computed(() => {
 function sendChat() {
   const text = chatDraft.value.trim()
   if (!text || !selectedChatTargetReady.value) return
-  appendUserChatMessage(text)
-  pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
-  bridge.send({
+  if (!bridge.send({
     type: 'message',
     text,
     target: replyTarget.value,
     sendEnter: true,
-  })
+  })) return
+  appendUserChatMessage(text)
+  pushActivity('user', `Instruction transmise — ${shortText(text, 70)}`)
   chatDraft.value = ''
   setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
@@ -1538,14 +1540,14 @@ function appendUserChatMessage(text: string) {
 
 function sendQuickReply(value: string) {
   if (!value || !selectedChatTargetReady.value) return
-  appendUserChatMessage(value)
-  pushActivity('user', `Réponse rapide — ${value}`)
-  bridge.send({
+  if (!bridge.send({
     type: 'message',
     text: value,
     target: replyTarget.value,
     sendEnter: true,
-  })
+  })) return
+  appendUserChatMessage(value)
+  pushActivity('user', `Réponse rapide — ${value}`)
   setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }
@@ -1609,8 +1611,10 @@ function selectChatTarget(target: ChatTarget) {
 
 function scheduleChatHistorySave() {
   if (chatHistorySaveTimer) clearTimeout(chatHistorySaveTimer)
+  const workspaceKey = activeWorkspaceKey.value
+  const messages = chatMessages.value
   chatHistorySaveTimer = setTimeout(() => {
-    saveWorkspaceChatHistory(activeWorkspaceKey.value, chatMessages.value)
+    saveWorkspaceChatHistory(workspaceKey, messages)
     chatHistorySaveTimer = null
   }, 180)
 }
@@ -1767,14 +1771,19 @@ watch(chatTargets, (targets) => {
   }
 }, { immediate: true })
 
-watch(activeWorkspaceKey, (workspaceId) => {
+watch(activeWorkspaceKey, (workspaceId, previous) => {
+  if (chatHistorySaveTimer) {
+    clearTimeout(chatHistorySaveTimer)
+    chatHistorySaveTimer = null
+    if (previous) saveWorkspaceChatHistory(previous, chatMessages.value)
+  }
   chatMessages.value = loadWorkspaceChatHistory(workspaceId)
   setAiTyping(false)
   selectedFile.value = null
   selectedFileContent.value = ''
   selectedFileError.value = ''
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 
 watch(() => bridge.status.value, (status) => {
   if (status === 'connected') {

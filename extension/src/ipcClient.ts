@@ -12,11 +12,10 @@ interface AgentMessage {
 
 export type IpcTarget =
   | { kind: 'unix'; path: string }
-  | { kind: 'tcp'; host: string; port: number };
+  | { kind: 'tcp'; host: string; port: number; token: string };
 
 export class IpcClient extends EventEmitter {
   private socket: net.Socket | null = null;
-  private buf = '';
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelay = 1_000;
   private shouldConnect = false;
@@ -32,31 +31,47 @@ export class IpcClient extends EventEmitter {
   }
 
   private _tryConnect(): void {
-    if (!this.shouldConnect) return;
+    if (!this.shouldConnect || this.socket) return;
     const sock =
       this.target.kind === 'tcp'
         ? net.createConnection({ host: this.target.host, port: this.target.port })
         : net.createConnection(this.target.path);
 
+    this.socket = sock;
+    let buffer = '';
+    const deadline = setTimeout(() => sock.destroy(), 5_000);
     sock.setEncoding('utf8');
-    sock.once('connect', () => {
+    const onAuthenticated = () => {
+      if (this.socket !== sock || this._connected) return;
+      clearTimeout(deadline);
       this._connected = true;
       this.reconnectDelay = 1_000;
-      this.socket = sock;
       console.log('[IPC] Connected to agent');
-      this.emit('connected');
-      // Register this extension with the agent
       this._send({ type: 'register', tool: 'vscode', label: 'VS Code Extension' });
+      this.emit('connected');
+    };
+    sock.once('connect', () => {
+      if (this.target.kind === 'tcp') this._send({ type: 'auth', token: this.target.token });
+      else onAuthenticated();
     });
 
     sock.on('data', (chunk: string) => {
-      this.buf += chunk;
-      const lines = this.buf.split('\n');
-      this.buf = lines.pop() ?? '';
+      if (this.socket !== sock) return;
+      buffer += chunk;
+      if (buffer.length > 4 * 1024 * 1024) {
+        sock.destroy();
+        return;
+      }
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
           const msg = JSON.parse(line) as AgentMessage;
+          if (!this._connected) {
+            if (msg?.type === 'auth_ok') onAuthenticated();
+            continue;
+          }
           this.emit('message', msg);
           this.emit(msg.type, msg);
         } catch {
@@ -66,6 +81,8 @@ export class IpcClient extends EventEmitter {
     });
 
     sock.on('close', () => {
+      clearTimeout(deadline);
+      if (this.socket !== sock) return;
       this._connected = false;
       this.socket = null;
       this.emit('disconnected');
@@ -102,7 +119,13 @@ export class IpcClient extends EventEmitter {
   }
 
   private _send(data: unknown): void {
-    this.socket?.write(JSON.stringify(data) + '\n');
+    const socket = this.socket;
+    if (!socket || socket.destroyed || !socket.writable) return;
+    try {
+      socket.write(JSON.stringify(data) + '\n');
+    } catch (err) {
+      console.warn('[IPC] Failed to send message:', err);
+    }
   }
 
   async requestPairingCode(): Promise<{ code: string; qrUrl?: string; localQrUrl?: string } | null> {
@@ -111,15 +134,24 @@ export class IpcClient extends EventEmitter {
         resolve(null);
         return;
       }
-      const timeout = setTimeout(() => resolve(null), 3_000);
-      this.once('pairing_code', (msg: AgentMessage) => {
+      let settled = false;
+      const handler = (msg: AgentMessage) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         resolve({
           code: msg.code as string,
           qrUrl: msg.qrUrl as string | undefined,
           localQrUrl: msg.localQrUrl as string | undefined,
         });
-      });
+      };
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.removeListener('pairing_code', handler);
+        resolve(null);
+      }, 3_000);
+      this.once('pairing_code', handler);
       this._send({ type: 'get_pairing_code' });
     });
   }

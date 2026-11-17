@@ -556,7 +556,9 @@ function clearWaiterTimers() {
 async function fetchOnboardingStatus() {
   if (!onboardingSession.value?.setupToken || !onboardingSession.value.relayUrl) return
   try {
-    const res = await fetch(`${onboardingSession.value.relayUrl}/api/onboarding/agent-status?token=${encodeURIComponent(onboardingSession.value.setupToken)}`)
+    const res = await fetch(`${onboardingSession.value.relayUrl}/api/onboarding/agent-status`, {
+      headers: { Authorization: `Bearer ${onboardingSession.value.setupToken}` },
+    })
     if (!res.ok) return
     const data = await res.json() as Partial<OnboardingSessionState>
     onboardingSession.value = {
