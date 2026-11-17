@@ -6,7 +6,7 @@
     >
       <span
         class="inline-block w-1.5 h-1.5 rounded-full"
-        :style="`background:${activeWorkspace ? 'var(--dot-green)' : 'var(--border)'}`"
+        :style="`background:${activeWorkspace && activeWorkspace.connected !== false ? 'var(--dot-green)' : 'var(--border)'}`"
       />
       <span class="truncate max-w-[12rem]">{{ activeWorkspaceLabel }}</span>
       <span class="ml-auto text-[9px]" style="color:var(--muted)">▾</span>
@@ -26,7 +26,8 @@
           >
             <span>{{ workspace.id === activeWorkspaceId ? '●' : '○' }}</span>
             <span class="truncate flex-1">{{ workspace.name }}</span>
-            <span v-if="workspace.id === activeWorkspaceId" class="text-[9px]">actif</span>
+            <span v-if="workspace.connected === false" class="text-[9px]">hors ligne</span>
+            <span v-else-if="workspace.id === activeWorkspaceId" class="text-[9px]">actif</span>
           </button>
         </template>
         <p v-else class="px-3 py-2 text-[10px] uppercase tracking-[0.16em]" style="color:var(--muted)">
@@ -114,6 +115,7 @@ interface WorkspaceOption {
   id: string
   name: string
   active: boolean
+  connected?: boolean
 }
 
 interface ProjectOption {

@@ -99,13 +99,26 @@ export function activate(context: vscode.ExtensionContext): void {
   ipc = new IpcClient(target);
   ipc.connect();
 
+  let pendingSetupInFlight: string | undefined;
   const flushPendingSetupToken = () => {
     const setupToken = context.globalState.get<string>(PENDING_SETUP_TOKEN_KEY);
-    if (!setupToken || !ipc?.isConnected()) return;
+    if (!setupToken || !ipc?.isConnected() || pendingSetupInFlight) return;
+    pendingSetupInFlight = setupToken;
     ipc.send({ type: 'relay_setup_link', setupToken });
-    void context.globalState.update(PENDING_SETUP_TOKEN_KEY, undefined);
-    void vscode.window.showInformationMessage('DevBridge onboarding linked to the local agent.');
   };
+  ipc.on('disconnected', () => { pendingSetupInFlight = undefined; });
+  ipc.on('relay_setup_ack', (message: { ok?: boolean }) => {
+    const completed = pendingSetupInFlight;
+    pendingSetupInFlight = undefined;
+    if (!completed) return;
+    if (context.globalState.get(PENDING_SETUP_TOKEN_KEY) === completed) {
+      void context.globalState.update(PENDING_SETUP_TOKEN_KEY, undefined);
+    } else {
+      flushPendingSetupToken();
+    }
+    if (message.ok) void vscode.window.showInformationMessage('ViBridge a associé cet espace de travail à la session.');
+    else void vscode.window.showWarningMessage('ViBridge n’a pas pu associer cet espace de travail. Relance la configuration depuis le navigateur.');
+  });
 
   // Detect installed CLIs and report projects on each connection
   ipc.on('connected', () => {

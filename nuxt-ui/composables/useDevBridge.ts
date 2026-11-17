@@ -23,6 +23,7 @@ export interface ConnectedWorkspace {
   name: string
   path?: string
   active: boolean
+  connected?: boolean
 }
 
 export interface RelaySessionListItem {
@@ -106,6 +107,12 @@ const latencyMs = ref<number | null>(null)
 const relayWorkspaces = ref<ConnectedWorkspace[]>([])
 const relaySessions = ref<RelaySessionListItem[]>([])
 const activeWorkspaceId = ref('')
+const deliveryNotice = ref<{ status: 'pending' | 'received' | 'error'; text: string } | null>(null)
+const seenRelayEvents = new Set<string>()
+const pendingDelivery = new Map<string, ReturnType<typeof setTimeout>>()
+let latestDeliveryId = ''
+let connectGeneration = 0
+let connectDeadline: ReturnType<typeof setTimeout> | undefined
 const listeners = new Set<(msg: WsMessage) => void>()
 
 let ws: WebSocket | null = null
@@ -114,7 +121,6 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 let _baseUrl = ''
 const RELAY_WORKSPACE_STORAGE_PREFIX = 'vb:relayWorkspace:'
 const RELAY_SESSION_TOKEN_STORAGE_KEY = 'vb:relaySessionTokens'
-let suppressReconnect = false
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
@@ -222,6 +228,11 @@ function resolveStoredWorkspace(sessionId = relaySessionId.value): string {
 }
 
 function setActiveWorkspace(nextWorkspaceId: string) {
+  if (activeWorkspaceId.value !== nextWorkspaceId && mode.value === 'relay' && agentStatus.value) {
+    agentStatus.value = {
+      ...agentStatus.value, adapters: [], activeAdapter: null, ideState: null, previewUrl: null, fileTree: undefined,
+    }
+  }
   activeWorkspaceId.value = nextWorkspaceId
   relayWorkspaces.value = relayWorkspaces.value.map(workspace => ({
     ...workspace,
@@ -247,8 +258,9 @@ function upsertRelayWorkspace(nextWorkspace: ConnectedWorkspace) {
 }
 
 function removeRelayWorkspace(workspaceId: string) {
-  const remaining = relayWorkspaces.value.filter(workspace => workspace.id !== workspaceId)
-  syncRelayWorkspaces(remaining)
+  relayWorkspaces.value = relayWorkspaces.value.map(workspace => workspace.id === workspaceId
+    ? { ...workspace, connected: false }
+    : workspace)
 }
 
 function clearStoredSession() {
@@ -313,8 +325,21 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
 
 function emit(msg: WsMessage) {
   const normalized = normalizeIncoming(msg)
+  if (mode.value === 'relay' && normalized.sessionId && normalized.sessionId !== relaySessionId.value) return
+  if (mode.value === 'relay' && typeof normalized.id === 'string' && normalized.source === 'agent' && isReplayable(normalized)) {
+    if (seenRelayEvents.has(normalized.id)) return
+    seenRelayEvents.add(normalized.id)
+    if (seenRelayEvents.size > 256) seenRelayEvents.delete(seenRelayEvents.values().next().value!)
+  }
+  const forActiveWorkspace = !normalized.workspaceId || !activeWorkspaceId.value
+    || normalized.workspaceId === activeWorkspaceId.value
 
-  if (normalized.type === 'status_snapshot') {
+  if (normalized.type === 'terminal_unavailable' && forActiveWorkspace) {
+    latestDeliveryId = ''
+    deliveryNotice.value = { status: 'error', text: 'Le terminal sélectionné a été fermé dans VS Code.' }
+  }
+
+  if (normalized.type === 'status_snapshot' && forActiveWorkspace) {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as Partial<AgentStatus> : normalized as Partial<AgentStatus>
     applyStatusSnapshot(payload)
   }
@@ -350,6 +375,7 @@ function emit(msg: WsMessage) {
       id: normalized.workspace_id,
       name: typeof normalized.workspace_name === 'string' ? normalized.workspace_name : normalized.workspace_id,
       active: normalized.workspace_id === activeWorkspaceId.value,
+      connected: true,
     })
   }
 
@@ -357,14 +383,16 @@ function emit(msg: WsMessage) {
     removeRelayWorkspace(normalized.workspace_id)
   }
 
-  if (normalized.type === 'relay_session') {
+  if (normalized.type === 'relay_session' && forActiveWorkspace) {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as RelayState : null
     if (payload) {
       applyStatusSnapshot({ relay: payload, timestamp: Date.now() })
     }
   }
 
-  listeners.forEach((fn) => fn(normalized))
+  if (forActiveWorkspace || isReplayable(normalized)) {
+    listeners.forEach((fn) => fn(normalized))
+  }
 }
 
 function handleWsMessage(ev: MessageEvent) {
@@ -375,6 +403,27 @@ function handleWsMessage(ev: MessageEvent) {
     return
   }
 
+  if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return
+  if (msg.type === 'message_ack' && !msg.source) {
+    if (typeof msg.request_id !== 'string') return
+    const timer = pendingDelivery.get(msg.request_id)
+    if (!timer) return
+    clearTimeout(timer)
+    pendingDelivery.delete(msg.request_id)
+    if (msg.request_id !== latestDeliveryId) return
+    if (msg.status === 'received') {
+      deliveryNotice.value = { status: 'received', text: 'Reçu par l’agent' }
+    } else if (msg.status === 'unconfirmed') {
+      deliveryNotice.value = { status: 'error', text: 'Réception inconnue. Vérifie la commande dans VS Code avant de la renvoyer.' }
+    } else {
+      deliveryNotice.value = {
+        status: 'error',
+        text: msg.reason === 'workspace_unavailable' ? 'Le workspace sélectionné est indisponible.' : 'La commande a été refusée par ViBridge.',
+      }
+    }
+    return
+  }
+
   if (msg.type === 'auth_fail') {
     authError.value = (msg.reason as BridgeAuthError) ?? 'invalid_token'
     disconnect()
@@ -382,6 +431,12 @@ function handleWsMessage(ev: MessageEvent) {
   }
 
   if (msg.type === 'auth_ok') {
+    if (mode.value === 'relay' && (msg.role !== 'mobile' || msg.sessionId !== relaySessionId.value)) {
+      authError.value = 'invalid_token'
+      disconnect()
+      return
+    }
+    if (connectDeadline) clearTimeout(connectDeadline)
     authError.value = null
     status.value = 'connected'
     retryDelay = 1_000
@@ -392,11 +447,12 @@ function handleWsMessage(ev: MessageEvent) {
         name: String(workspace.name ?? workspace.id),
         path: typeof workspace.path === 'string' ? workspace.path : undefined,
         active: Boolean(workspace.active),
+        connected: workspace.connected,
       })))
     }
     if (mode.value === 'relay' && Array.isArray(msg.history)) {
       for (const entry of msg.history as WsMessage[]) {
-        emit(entry)
+        if (isReplayable(entry)) emit(entry)
       }
     }
 
@@ -408,8 +464,13 @@ function handleWsMessage(ev: MessageEvent) {
   emit(msg)
 }
 
+function isReplayable(entry: WsMessage): boolean {
+  return ['output', 'ai_message', 'message', 'chat', 'chat_response', 'notification'].includes(entry.type)
+}
+
 async function connect() {
-  if (import.meta.server) return
+  if (import.meta.server || ws || status.value === 'connecting') return
+  const generation = ++connectGeneration
   const t = token.value
   if (!t) {
     status.value = 'disconnected'
@@ -449,6 +510,7 @@ async function connect() {
     } else {
       const { detectBestUrl } = useNetworkConfig()
       const result = await detectBestUrl()
+      if (generation !== connectGeneration || token.value !== t) return
       if (!result) {
         status.value = 'disconnected'
         retryDelay = Math.min(retryDelay * 2, 30_000)
@@ -462,72 +524,111 @@ async function connect() {
 
   activeUrl.value = _baseUrl
   const wsUrl = _baseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws') + '/ws'
-  ws = new WebSocket(wsUrl)
-
-  ws.onopen = () => {
-    ws?.send(JSON.stringify({ type: 'auth', token: t }))
-  }
-
-  ws.onmessage = handleWsMessage
-  ws.onclose = (ev) => {
+  let socket: WebSocket
+  try {
+    socket = new WebSocket(wsUrl)
+  } catch {
     status.value = 'disconnected'
+    return
+  }
+  ws = socket
+  connectDeadline = setTimeout(() => {
+    if (ws === socket && status.value === 'connecting') socket.close()
+  }, 10_000)
+  socket.onopen = () => {
+    if (ws === socket) socket.send(JSON.stringify({ type: 'auth', token: t }))
+  }
+  socket.onmessage = ev => { if (ws === socket) handleWsMessage(ev) }
+  socket.onclose = ev => {
+    if (ws !== socket) return
+    if (connectDeadline) clearTimeout(connectDeadline)
     ws = null
-    if (suppressReconnect) {
-      suppressReconnect = false
-      return
-    }
-    // Code 1008 = server rejected auth (even if auth_fail message was lost in transit)
-    if (ev.code === 1008) authError.value = 'invalid_token'
-    // Don't retry if auth was explicitly rejected
+    status.value = 'disconnected'
+    interruptDelivery()
+    if (ev.code === 4401 || ev.code === 4404) authError.value = 'invalid_token'
     if (authError.value) return
     retryDelay = Math.min(retryDelay * 2, 30_000)
-    retryTimer = setTimeout(() => void connect(), retryDelay)
+    retryTimer = setTimeout(() => void connect(), retryDelay * (0.75 + Math.random() * 0.25))
   }
-  ws.onerror = () => ws?.close()
+  socket.onerror = () => { if (ws === socket) socket.close() }
+}
+
+function interruptDelivery() {
+  for (const timeout of pendingDelivery.values()) clearTimeout(timeout)
+  if (pendingDelivery.has(latestDeliveryId)) {
+    deliveryNotice.value = { status: 'error', text: 'Connexion interrompue. Vérifie dans VS Code si la commande a été reçue.' }
+  }
+  pendingDelivery.clear()
 }
 
 function disconnect() {
+  connectGeneration++
   if (retryTimer) clearTimeout(retryTimer)
-  suppressReconnect = true
-  ws?.close()
+  if (connectDeadline) clearTimeout(connectDeadline)
+  const socket = ws
   ws = null
+  socket?.close()
   status.value = 'disconnected'
+  interruptDelivery()
 }
 
-function send(data: unknown) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    if (
-      mode.value === 'relay'
-      && data
-      && typeof data === 'object'
-      && !Array.isArray(data)
-      && activeWorkspaceId.value
-      && typeof (data as Record<string, unknown>).workspace_id !== 'string'
-      && String((data as Record<string, unknown>).type ?? '') !== 'auth'
-    ) {
-      ws.send(JSON.stringify({
-        ...(data as Record<string, unknown>),
-        workspace_id: activeWorkspaceId.value,
-      }))
-      return
-    }
-    ws.send(JSON.stringify(data))
+const RELAY_COMMANDS_WITH_FEEDBACK = new Set([
+  'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
+  'open_project', 'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli',
+])
+
+function send(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false
+  const frame = { ...(data as Record<string, unknown>) }
+  const tracked = mode.value === 'relay'
+    ? RELAY_COMMANDS_WITH_FEEDBACK.has(String(frame.type))
+    : frame.type === 'message' || frame.type === 'chat'
+  if (status.value !== 'connected' || ws?.readyState !== WebSocket.OPEN) {
+    if (tracked) deliveryNotice.value = { status: 'error', text: 'ViBridge est déconnecté. La commande n’a pas été envoyée.' }
+    return false
   }
+  if (mode.value === 'relay' && activeWorkspaceId.value && typeof frame.workspace_id !== 'string') {
+    frame.workspace_id = activeWorkspaceId.value
+  }
+  if (tracked) {
+    if (pendingDelivery.size >= 64) {
+      deliveryNotice.value = { status: 'error', text: 'Trop de commandes sont en attente de réception.' }
+      return false
+    }
+    const id = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
+    latestDeliveryId = id
+    frame.request_id = id
+    deliveryNotice.value = { status: 'pending', text: 'En attente de réception par l’agent' }
+    pendingDelivery.set(id, setTimeout(() => {
+      pendingDelivery.delete(id)
+      if (latestDeliveryId === id) deliveryNotice.value = {
+        status: 'error',
+        text: 'Réception inconnue. Vérifie la commande dans VS Code avant de la renvoyer.',
+      }
+    }, 7_000))
+  }
+  ws.send(JSON.stringify(frame))
+  return true
+}
+
+export function useBridgeDeliveryNotice() {
+  return { notice: readonly(deliveryNotice), dismiss: () => { deliveryNotice.value = null } }
 }
 
 async function fetchRelayStatus() {
-  if (!relaySessionId.value || !token.value) return
+  const sessionId = relaySessionId.value
+  const credential = token.value
+  if (!sessionId || !credential) return
   try {
-    const res = await fetch(`${inferRelayUrl()}/api/relay/sessions/${relaySessionId.value}`, {
-      headers: { Authorization: `Bearer ${token.value}` },
+    const res = await fetch(`${inferRelayUrl()}/api/relay/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${credential}` },
     })
     if (!res.ok) return
     const data = await res.json() as RelaySessionResponse
+    if (sessionId !== relaySessionId.value || credential !== token.value) return
     applyStatusSnapshot({
       ok: true,
-      ideState: agentStatus.value?.ideState ?? {
-        workspaceFolders: data.workspaceFolders,
-      },
+      ideState: agentStatus.value?.ideState ?? null,
       relay: {
         ...(agentStatus.value?.relay ?? {
           enabled: true,
@@ -550,11 +651,11 @@ async function fetchRelayStatus() {
       name: String(workspace.name ?? workspace.id),
       path: typeof workspace.path === 'string' ? workspace.path : undefined,
       active: Boolean(workspace.active),
+      connected: workspace.connected,
     })) : [])
 
     const snapshots = Array.isArray(data.workspaceSnapshots) ? data.workspaceSnapshots : []
     const selectedSnapshot = snapshots.find(snapshot => snapshot.workspaceId === activeWorkspaceId.value)
-      ?? snapshots[0]
     if (selectedSnapshot) {
       applyStatusSnapshot({
         adapters: Array.isArray(selectedSnapshot.adapters) ? selectedSnapshot.adapters : agentStatus.value?.adapters ?? [],
@@ -570,7 +671,7 @@ async function fetchRelayStatus() {
       })
     }
 
-    for (const entry of data.history) emit(entry as WsMessage)
+    for (const entry of data.history as WsMessage[]) if (isReplayable(entry)) emit(entry)
   } catch {
     // ignore transient relay fetch errors
   }
@@ -584,7 +685,7 @@ async function fetchRelaySessions() {
     const requestedToken = token.value
     const credentials = { ...readRelaySessionTokenMap(baseUrl), [relaySessionId.value]: requestedToken }
     const responses = await Promise.allSettled(Object.values(credentials).filter(Boolean).map(async sessionToken => {
-      const res = await fetch(`${baseUrl}/api/relay/sessions`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+      const res = await fetch(`${baseUrl}/api/relay/sessions`, { headers: { Authorization: `Bearer ${sessionToken}` }, signal: AbortSignal.timeout(5_000) })
       if (!res.ok) return []
       const data = await res.json() as { sessions?: RelaySessionListItem[] }
       return Array.isArray(data.sessions) ? data.sessions : []
@@ -609,6 +710,7 @@ async function fetchRelaySessions() {
         name: String(workspace.name ?? workspace.id),
         path: typeof workspace.path === 'string' ? workspace.path : undefined,
         active: Boolean(workspace.active),
+        connected: workspace.connected,
       })) : [],
     }))
     relaySessions.value = sessions
@@ -638,15 +740,21 @@ async function fetchAgentStatus() {
 }
 
 async function pairAt(baseUrl: string, code: string): Promise<boolean> {
+  return pairLocal(baseUrl, { code })
+}
+
+async function pairLocal(baseUrl: string, credential: { code: string } | { qrToken: string }): Promise<boolean> {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl)
   try {
     const res = await fetch(`${normalizedBaseUrl}/pair`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify(credential),
     })
     if (!res.ok) return false
     const { token: t } = await res.json() as { token: string }
+    disconnect()
+    authError.value = null
     mode.value = 'local'
     storageSet('local', normalizedBaseUrl, t)
     token.value = t
@@ -673,6 +781,9 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     })
     if (!res.ok) return false
     const { mobileToken } = await res.json() as { mobileToken: string }
+    disconnect()
+    authError.value = null
+    agentStatus.value = null
     mode.value = 'relay'
     relayUrl.value = normalizedBaseUrl
     relaySessionId.value = sessionId
@@ -690,36 +801,8 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
   }
 }
 
-/**
- * Directly connect using a pre-issued short-lived JWT (from the QR code).
- * No pairing-code exchange required — the token is already valid.
- */
-function connectWithToken(agentBaseUrl: string, preIssuedToken: string): void {
-  const normalizedBaseUrl = normalizeBaseUrl(agentBaseUrl)
-  // In HTTPS context, a ws:// / http:// agentUrl is blocked by Mixed Content.
-  // Fall through to relay mode instead — connect() will resolve the relay URL.
-  const isSecureCtx = import.meta.client && window.location.protocol === 'https:'
-  const isLocalUrl = /^http:\/\//i.test(normalizedBaseUrl)
-  if (isSecureCtx && isLocalUrl) {
-    const relayBaseUrl = inferRelayUrl()
-    if (relayBaseUrl) {
-      mode.value = 'relay'
-      token.value = preIssuedToken
-      _baseUrl = relayBaseUrl
-      storageSet('relay', relayBaseUrl, preIssuedToken)
-      if (relaySessionId.value) persistRelaySessionToken(relaySessionId.value, preIssuedToken)
-      void connect()
-      return
-    }
-    // No relay configured — store token anyway, connect() will warn
-    console.warn('[DevBridge] HTTPS context + local agentUrl + no relay configured; connection may fail')
-  }
-  mode.value = 'local'
-  storageSet('local', normalizedBaseUrl, preIssuedToken)
-  token.value = preIssuedToken
-  relaySessionId.value = ''
-  _baseUrl = normalizedBaseUrl
-  void connect()
+function connectWithToken(agentBaseUrl: string, preIssuedToken: string): Promise<boolean> {
+  return pairLocal(agentBaseUrl, { qrToken: preIssuedToken })
 }
 
 export function useDevBridge() {
@@ -753,6 +836,7 @@ export function useDevBridge() {
     if (!nextToken) return false
     disconnect()
     authError.value = null
+    agentStatus.value = null
     relaySessionId.value = sessionId
     token.value = nextToken
     relayWorkspaces.value = []

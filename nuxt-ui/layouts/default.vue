@@ -51,6 +51,13 @@
       </div>
     </header>
 
+    <div v-if="notice" class="fixed right-4 top-16 z-50 flex max-w-sm gap-3 p-3 text-sm shadow-md"
+      style="background:var(--surface);border:1px solid var(--border-bright);color:var(--text)"
+      :role="notice.status === 'error' ? 'alert' : 'status'">
+      {{ notice.text }}
+      <button type="button" class="shrink-0" aria-label="Masquer le statut de l’envoi" @click="dismiss">×</button>
+    </div>
+
     <!-- ── Content ──────────────────────────────── -->
     <main class="flex-1 pt-14 overflow-hidden relative z-10">
       <slot :active-view="activeView" />
@@ -63,6 +70,7 @@
 const colorMode = useColorMode()
 const activeView = useViewMode()
 const route = useRoute()
+const { notice, dismiss } = useBridgeDeliveryNotice()
 
 const views = [
   { id: 'both' as const,   label: 'Both' },

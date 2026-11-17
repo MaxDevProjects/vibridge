@@ -1290,11 +1290,12 @@ async function pairFromRoute() {
     view.value = 'mobile'
   }
 
-  // ── Fast path: QR code contains pre-issued token — no code exchange needed
+  // Local QR invitation exchange
   if (preIssuedToken && (agentUrl || (host && port))) {
     const effectiveAgentUrl = agentUrl || `http://${host}:${port}`
-    bridge.clearStoredSession()
-    bridge.connectWithToken(effectiveAgentUrl, preIssuedToken)
+    if (!await bridge.connectWithToken(effectiveAgentUrl, preIssuedToken)) {
+      pairError.value = 'Ce QR code a expiré ou a déjà été utilisé. Génère un nouveau QR code dans VS Code.'
+    }
     if (agentUrl) pairAgentUrl.value = agentUrl
     if (host) pairHost.value = host
     if (port) pairPort.value = port
@@ -1360,7 +1361,7 @@ const pendingNotifs = ref<NotifItem[]>([])
 function removeNotif(id: string) { pendingNotifs.value = pendingNotifs.value.filter(n => n.id !== id) }
 function handleNotif(id: string, action: 'validate' | 'refuse') {
   const n = pendingNotifs.value.find(x => x.id === id)
-  bridge.send({ type: 'notif_response', id, action })
+  if (!bridge.send({ type: 'notif_response', id, action })) return
   removeNotif(id)
   activity.value.unshift({ id: Date.now().toString(), ts: Date.now(), tag: action === 'validate' ? 'user' : 'sys', text: `${action === 'validate' ? 'Validé' : 'Refusé'} — ${n?.text.slice(0, 60) ?? ''}` })
 }
@@ -1519,14 +1520,14 @@ const lastFilteredAiMessageId = computed(() => {
 function sendChat() {
   const text = chatDraft.value.trim()
   if (!text || !selectedChatTargetReady.value) return
-  appendUserChatMessage(text)
-  pushActivity('user', `Instruction envoyée — ${shortText(text, 70)}`)
-  bridge.send({
+  if (!bridge.send({
     type: 'message',
     text,
     target: replyTarget.value,
     sendEnter: true,
-  })
+  })) return
+  appendUserChatMessage(text)
+  pushActivity('user', `Instruction transmise — ${shortText(text, 70)}`)
   chatDraft.value = ''
   setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
@@ -1539,14 +1540,14 @@ function appendUserChatMessage(text: string) {
 
 function sendQuickReply(value: string) {
   if (!value || !selectedChatTargetReady.value) return
-  appendUserChatMessage(value)
-  pushActivity('user', `Réponse rapide — ${value}`)
-  bridge.send({
+  if (!bridge.send({
     type: 'message',
     text: value,
     target: replyTarget.value,
     sendEnter: true,
-  })
+  })) return
+  appendUserChatMessage(value)
+  pushActivity('user', `Réponse rapide — ${value}`)
   setAiTyping(true)
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }

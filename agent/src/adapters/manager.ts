@@ -119,16 +119,16 @@ export class AdapterManager {
     this._active = id;
   }
 
-  send(opts: SendOptions): void {
+  send(opts: SendOptions): boolean {
     const id = opts.tool ?? this._active;
     if (!id) {
       console.warn('[Adapters] No active adapter — message dropped');
-      return;
+      return false;
     }
     const adapter = this.adapters.get(id);
     if (!adapter) {
       console.warn(`[Adapters] Adapter not found: ${id}`);
-      return;
+      return false;
     }
     if (adapter.isAvailable && !adapter.isAvailable()) {
       console.warn(`[Adapters] Adapter unavailable: ${id}`);
@@ -137,9 +137,15 @@ export class AdapterManager {
         text: adapter.unavailableReason?.() ?? `Adapter unavailable: ${id}`,
         tool: id,
       });
-      return;
+      return false;
     }
-    adapter.send(opts);
+    try {
+      adapter.send(opts);
+      return true;
+    } catch (error) {
+      console.warn(`[Adapters] Could not send to ${id}:`, error);
+      return false;
+    }
   }
 
   async runAction(action: string, args: string[]): Promise<void> {

@@ -18,18 +18,18 @@ const IPC_SOCK = process.env.IPC_SOCK_PATH ?? '/tmp/devbridge/ipc.sock';
 const IPC_TCP  = process.env.IPC_TCP_PORT ? parseInt(process.env.IPC_TCP_PORT, 10) : undefined;
 const RELAY_INTERNAL_URL = (process.env.RELAY_INTERNAL_URL ?? '').trim();
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? '').trim();
-const PROJECT_ROOT = process.env.PROJECT_ROOT ?? '/workspace';
+const PROJECT_ROOT = process.env.PROJECT_ROOT ?? process.cwd();
 const DATA_DIR = process.env.DATA_DIR ?? require('path').dirname(IPC_SOCK);
 
 async function main() {
   console.log(`[DevBridge Agent] Starting on port ${PORT}…`);
-  const workspace = resolveWorkspaceIdentity();
+  const workspace = resolveWorkspaceIdentity(process.cwd(), DATA_DIR);
   console.log(`[DevBridge Agent] Workspace: ${workspace.id} (${workspace.path})`);
 
   const queue = new MessageQueue();
   const auth = new AuthService();
   const push = new PushService(DATA_DIR);
-  const files = new FileService(PROJECT_ROOT);
+  const files = new FileService(PROJECT_ROOT, process.env.PROJECT_HOST_ROOT);
   const adapters = new AdapterManager(queue);
   const cliRegistry = new CliRegistry(DATA_DIR);
   cliRegistry.load();
@@ -43,7 +43,10 @@ async function main() {
     workspace.id,
     () => relay?.getState()?.sessionId ?? null,
     cliRegistry,
-    (setupToken) => relay?.applyOnboardingSetup(setupToken),
+    async (setupToken) => {
+      if (!relay) throw new Error('relay is disabled');
+      await relay.applyOnboardingSetup(setupToken);
+    },
     async () => relay?.renewPairingQr() ?? null,
   );
   relay = RELAY_INTERNAL_URL && RELAY_PUBLIC_URL

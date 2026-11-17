@@ -19,15 +19,20 @@ const IGNORED = new Set([
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB cap for inline reads
 
 export class FileService {
-  constructor(private root: string) {
+  constructor(private root: string, private hostRoot?: string) {
     this.root = path.resolve(root);
     console.log(`[Files] Workspace root: ${root}`);
   }
 
   tree(dir = this.root, depth = 0, relRoot?: string): FileNode {
+    if (depth === 0) {
+      const resolved = this.resolveRoot(dir);
+      if (!resolved) return { name: path.basename(dir), path: '', type: 'dir', children: [] };
+      dir = resolved;
+      relRoot = resolved;
+    }
     const effectiveRoot = relRoot ?? dir;
     const name = path.basename(dir);
-    if (depth === 0 && !this.resolveRoot(dir)) return { name, path: '', type: 'dir', children: [] };
     const relPath = dir === effectiveRoot ? '' : dir.startsWith(effectiveRoot) ? dir.slice(effectiveRoot.length).replace(/^\//, '') : this.relativize(dir);
     const node: FileNode = { name, path: relPath, type: 'dir', children: [] };
 
@@ -86,7 +91,10 @@ export class FileService {
   private resolveRoot(dir: string): string | null {
     try {
       const root = fs.realpathSync(this.root);
-      const candidate = fs.realpathSync(dir);
+      const host = this.hostRoot && path.resolve(this.hostRoot);
+      const requested = path.resolve(dir);
+      const mapped = host && this.inside(host, requested) ? path.join(root, path.relative(host, requested)) : requested;
+      const candidate = fs.realpathSync(mapped);
       return this.inside(root, candidate) ? candidate : null;
     } catch {
       return null;

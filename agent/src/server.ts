@@ -15,6 +15,7 @@ import type { IpcServer } from './ipc';
 import type { RelayClient } from './relay-client';
 import type { CliRegistry } from './cliRegistry';
 import type { WorkspaceIdentity } from './workspace';
+import { routeTerminalMessage } from './terminal-routing';
 import { listProjects } from './projects';
 
 interface ServerDeps {
@@ -52,61 +53,6 @@ export function createServer(deps: ServerDeps) {
     next();
   };
 
-  const routeTerminalMessage = (
-    text: string,
-    target?: string,
-    sendEnter = true,
-  ): { handled: boolean; resolvedTarget?: string } => {
-    const normalizedTarget = String(target ?? '').trim();
-    console.log('[DIAG][Agent][routeTerminalMessage]', {
-      text,
-      target,
-      normalizedTarget,
-      sendEnter,
-    });
-    if (!normalizedTarget) return { handled: false };
-
-    if (normalizedTarget === 'bash') {
-      console.log('[DIAG][Agent][routeTerminalMessage] -> inject bash');
-      deps.ipc.sendToExtension({ type: 'inject_message', text, target: 'bash', sendEnter });
-      return { handled: true, resolvedTarget: 'bash' };
-    }
-
-    if (normalizedTarget === 'chat:devbridge') {
-      console.log('[DIAG][Agent][routeTerminalMessage] -> inject devbridge chat');
-      deps.ipc.sendToExtension({ type: 'inject_message', text, target: 'chat:devbridge', sendEnter: false });
-      return { handled: true, resolvedTarget: 'chat:devbridge' };
-    }
-
-    const cli = cliRegistry?.getById(normalizedTarget);
-    if (cli) {
-      console.log('[DIAG][Agent][routeTerminalMessage] -> inject cli', {
-        cliId: cli.id,
-        terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
-      });
-      deps.ipc.sendToExtension({
-        type: 'inject_message',
-        text,
-        target: cli.id,
-        cliId: cli.id,
-        terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
-        command: cli.command,
-        args: cli.args,
-        sendEnter,
-      });
-      return { handled: true, resolvedTarget: cli.id };
-    }
-
-    if (normalizedTarget.startsWith('terminal:')) {
-      console.log('[DIAG][Agent][routeTerminalMessage] -> inject terminal target');
-      deps.ipc.sendToExtension({ type: 'inject_message', text, target: normalizedTarget, sendEnter });
-      return { handled: true, resolvedTarget: normalizedTarget };
-    }
-
-    console.log('[DIAG][Agent][routeTerminalMessage] -> not handled');
-    return { handled: false };
-  };
-
   // ── Public endpoints ───────────────────────────────────────
   /** Lightweight health probe — no auth required */
   app.get('/health', (_req, res) => {
@@ -115,8 +61,10 @@ export function createServer(deps: ServerDeps) {
 
   /** Pairing — exchange code verifier for JWT */
   app.post('/pair', (req: Request, res: Response) => {
-    const { code } = req.body as { code: string };
-    if (!auth.verifyPairCode(code)) {
+    const { code, qrToken } = req.body as { code?: unknown; qrToken?: unknown };
+    const valid = typeof qrToken === 'string' ? auth.consumeQrToken(qrToken)
+      : typeof code === 'string' && auth.verifyPairCode(code);
+    if (!valid) {
       res.status(403).json({ error: 'invalid pairing code' });
       return;
     }
@@ -221,13 +169,13 @@ export function createServer(deps: ServerDeps) {
 
   app.post('/message', requireAuth, (req, res) => {
     const { text, tool, target } = req.body as { text: string; tool?: string; target?: string };
-    const routed = routeTerminalMessage(text, target, true);
-    if (routed.handled) {
-      res.json({ queued: true, target: routed.resolvedTarget });
+    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target);
+    if (routed) {
+      res.status(routed.queued ? 200 : 503).json({ queued: routed.queued, target: routed.target });
       return;
     }
-    adapters.send({ text, tool, target });
-    res.json({ queued: true });
+    const queued = adapters.send({ text, tool, target });
+    res.status(queued ? 200 : 503).json({ queued });
   });
 
   app.post('/terminal/send', requireAuth, (req, res) => {
@@ -237,12 +185,12 @@ export function createServer(deps: ServerDeps) {
       res.status(400).json({ error: 'message required' });
       return;
     }
-    const routed = routeTerminalMessage(text, target, sendEnter !== false);
-    if (!routed.handled) {
+    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter !== false);
+    if (!routed) {
       res.status(400).json({ error: 'unknown target' });
       return;
     }
-    res.json({ ok: true, target: routed.resolvedTarget });
+    res.status(routed.queued ? 200 : 503).json({ ok: routed.queued, target: routed.target });
   });
 
   app.post('/action', requireAuth, async (req, res) => {
@@ -386,24 +334,20 @@ export function createServer(deps: ServerDeps) {
 
       // Route message to active adapter (or directly to VS Code for terminal targets)
       if (msg.type === 'message' || msg.type === 'chat') {
-        const target = msg.target as string | undefined;
+        const target = typeof msg.target === 'string' ? msg.target : undefined;
         const sendEnter = msg.sendEnter !== false;
-        console.log('[DIAG][Agent][ws message]', {
-          type: msg.type,
-          text: String(msg.text ?? ''),
-          target,
-          sendEnter,
-        });
-        const routed = routeTerminalMessage(String(msg.text ?? ''), target, sendEnter);
-        if (routed.handled) {
-          return;
+        const text = typeof msg.text === 'string' ? msg.text : '';
+        const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
+        const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter);
+        const queued = routed?.queued ?? adapters.send({ text, tool, target });
+        if (typeof msg.request_id === 'string') {
+          ws.send(JSON.stringify({
+            type: 'message_ack',
+            request_id: msg.request_id,
+            status: queued ? 'received' : 'rejected',
+            reason: queued ? undefined : 'agent_rejected',
+          }));
         }
-
-        adapters.send({
-          text: msg.text as string,
-          tool: msg.tool as string | undefined,
-          target,
-        });
         return;
       }
 
@@ -504,9 +448,22 @@ export function createServer(deps: ServerDeps) {
     });
 
     // Heartbeat — ping every 30s to keep NAT sessions alive
+    let alive = true;
+    ws.on('pong', () => { alive = true; });
     const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.ping();
-    }, 30_000);
+      if (!alive) {
+        ws.terminate();
+        return;
+      }
+      if (credential && !auth.verify(credential)) {
+        ws.close(4401, 'token expired');
+        return;
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        alive = false;
+        ws.ping();
+      }
+    }, 20_000);
 
     ws.on('close', off);
     ws.on('error', off);

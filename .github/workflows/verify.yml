@@ -1,0 +1,34 @@
+name: Verify ViBridge
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            agent/package-lock.json
+            extension/package-lock.json
+            nuxt-ui/package-lock.json
+            relay/package-lock.json
+      - run: npm --prefix relay ci
+      - run: npm --prefix agent ci
+      - run: npm --prefix extension ci
+      - run: npm --prefix nuxt-ui ci
+      - run: npm --prefix relay test
+      - run: npm --prefix agent test
+      - run: npm --prefix extension run build
+      - run: node --test tests/bridge.e2e.cjs
+      - run: npm --prefix nuxt-ui run test:unit
+      - run: npm --prefix nuxt-ui run build

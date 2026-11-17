@@ -16,7 +16,7 @@ services:
     container_name: devbridge-relay
     restart: always
     ports:
-      - "4444:4444"
+      - "127.0.0.1:4444:4444"
     environment:
       NODE_ENV: production
       RELAY_PORT: 4444
@@ -43,7 +43,7 @@ services:
     container_name: devbridge-ui
     restart: always
     ports:
-      - "3000:4000"
+      - "127.0.0.1:3000:4000"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0

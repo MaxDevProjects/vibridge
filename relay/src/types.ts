@@ -40,6 +40,7 @@ export interface ConnectedWorkspace {
   name: string
   path?: string
   active: boolean
+  connected: boolean
 }
 
 export interface StoredWorkspace {

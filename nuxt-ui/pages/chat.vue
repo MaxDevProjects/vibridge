@@ -248,8 +248,8 @@ function scrollToBottom() {
 function sendMessage() {
   const text = draft.value.trim()
   if (!text || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
+  if (!bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: true })) return
   appendUserMessage(text)
-  bridge.send({ type: 'message', text, target: replyTarget.value, sendEnter: true })
   draft.value = ''
   aiTyping.value = true
   if (inputEl.value) { inputEl.value.style.height = 'auto' }
@@ -263,8 +263,8 @@ function appendUserMessage(text: string) {
 
 function sendQuickReply(value: string) {
   if (!value || bridge.status.value !== 'connected' || !selectedTargetReady.value) return
+  if (!bridge.send({ type: 'message', text: value, target: replyTarget.value, sendEnter: true })) return
   appendUserMessage(value)
-  bridge.send({ type: 'message', text: value, target: replyTarget.value, sendEnter: true })
   aiTyping.value = true
   scrollToBottom()
 }

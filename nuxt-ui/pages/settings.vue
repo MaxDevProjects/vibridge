@@ -423,7 +423,9 @@ const newCli = reactive({ name: '', command: '', args: '' })
 function agentFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = bridge.token.value ?? ''
   const base = bridge.activeUrl.value ?? ''
-  return fetch(`${base}${path}`, {
+  const workspace = bridge.mode.value === 'relay' ? bridge.activeWorkspaceId.value : ''
+  const endpoint = workspace ? `${path}?workspaceId=${encodeURIComponent(workspace)}` : path
+  return fetch(`${base}${endpoint}`, {
     ...opts,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
   }).then(r => r.json() as Promise<T>)

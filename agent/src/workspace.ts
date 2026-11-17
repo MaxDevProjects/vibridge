@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 
 export interface WorkspaceIdentity {
   id: string;
@@ -94,7 +95,20 @@ function resolveWorkspaceFolderName(projectPath: string, cwd: string): string {
   return 'project';
 }
 
-export function resolveWorkspaceIdentity(cwd = process.cwd()): WorkspaceIdentity {
+function sessionFileFor(projectPath: string, dataDir?: string): string {
+  const legacyFile = path.join(projectPath, '.vibridge-session');
+  if (!dataDir) return legacyFile;
+  try {
+    fs.accessSync(projectPath, fs.constants.W_OK);
+    return legacyFile;
+  } catch {
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const workspaceKey = createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 16);
+    return path.join(dataDir, `relay-session-${workspaceKey}.json`);
+  }
+}
+
+export function resolveWorkspaceIdentity(cwd = process.cwd(), dataDir?: string): WorkspaceIdentity {
   const envPath = path.join(cwd, '.env');
   const projectPath = String(process.env.PROJECT_ROOT ?? '').trim() || cwd;
   const derivedWorkspaceId = resolveWorkspaceFolderName(projectPath, cwd);
@@ -110,6 +124,6 @@ export function resolveWorkspaceIdentity(cwd = process.cwd()): WorkspaceIdentity
     name: workspaceId,
     path: projectPath,
     envPath,
-    sessionFilePath: path.join(projectPath, '.vibridge-session'),
+    sessionFilePath: sessionFileFor(projectPath, dataDir),
   };
 }
