@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: vibridge-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: SSH deploy
@@ -13,18 +17,67 @@ jobs:
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: SERVER_PATH
           script: |
-            set -e
-            cd ${{ secrets.SERVER_PATH }}
+            set -eu
+            cd "$SERVER_PATH"
             git fetch origin main
-            git checkout -- .
             git reset --hard origin/main
-            # Only relay + nuxt-ui run on the server.
-            # The agent runs locally alongside VS Code and cannot be deployed remotely.
-            docker-compose -f docker-compose.prod.yml build --no-cache relay
-            docker-compose -f docker-compose.prod.yml up -d relay
-            docker-compose -f docker-compose.prod.yml up -d --build ui
+
+            if docker compose version >/dev/null 2>&1; then
+              compose_version=2
+            else
+              compose_version=1
+              docker-compose version
+            fi
+
+            compose() {
+              if [ "$compose_version" -eq 2 ]; then
+                docker compose -f docker-compose.prod.yml "$@"
+              else
+                docker-compose -f docker-compose.prod.yml "$@"
+              fi
+            }
+
+            deploy_service() {
+              service=$1
+              compose build "$service"
+              if [ "$compose_version" -eq 1 ]; then
+                # Compose v1 can fail while reading the old container's image metadata.
+                # Remove only this service's containers and preserve their data mounts.
+                compose rm --stop --force "$service"
+              fi
+              compose up -d --no-build --no-deps "$service"
+            }
+
+            wait_for_http() {
+              container=$1
+              endpoint=$2
+              attempt=0
+              while [ "$attempt" -lt 20 ]; do
+                if docker exec "$container" node -e '
+                  fetch(process.argv[1], { signal: AbortSignal.timeout(3000) })
+                    .then(response => { if (!response.ok) process.exitCode = 1 })
+                    .catch(() => { process.exitCode = 1 })
+                ' "$endpoint" >/dev/null 2>&1; then
+                  return 0
+                fi
+                sleep 3
+                attempt=$((attempt + 1))
+              done
+              docker logs --tail 30 "$container" >&2 || true
+              printf '%s\n' "$container never became healthy" >&2
+              return 1
+            }
+
+            compose config -q
+            deploy_service relay
+            wait_for_http devbridge-relay http://127.0.0.1:4444/health
+            deploy_service ui
+            wait_for_http devbridge-ui http://127.0.0.1:4000/
