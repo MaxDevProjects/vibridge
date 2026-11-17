@@ -59,6 +59,19 @@ Le test d'intégration utilise le vrai relay SQLite, le vrai client agent et le 
 3. **Périmètre VS Code.** L'agent route vers la dernière extension enregistrée sur son canal IPC. Deux fenêtres indépendantes demandent deux agents et des canaux distincts pour un adressage explicite. L'adaptateur VS Code reçoit les actions génériques mais la commande `action` n'a pas de gestionnaire dédié dans l'extension. Le démarrage interactif de Codex CLI répond automatiquement à un dialogue de confiance et se repère dans le texte du terminal. À revoir avec des tests sur le vrai CLI.
 4. **Push et preview.** Les endpoints d'abonnement Web Push existent sur l'agent LAN. Leur proxy relay manque dans `main`. La notification à distance dépend donc du mode d'abonnement et du navigateur. La prévisualisation dépend d'une URL que le téléphone peut ouvrir. Vérifier aussi la suppression des anciens abonnements lors d'une révocation.
 5. **Exploitation.** Le déploiement existant s'enclenche sur push vers `main`. Prévoir une recette avec SQLite sauvegardé, rotation des secrets, versions coordonnées, test depuis le téléphone et procédure de retour arrière. L'historique se limite à 100 événements par session, et SQLite efface les sessions expirées. Ce modèle convient à une session personnelle éphémère. La rétention et les redémarrages sur VPS restent à vérifier en recette.
-6. **Dépendances.** L'audit npm initial signalait des alertes critiques dans les trois applications d'exécution. Le lot de maintenance des verrous traite les mises à jour compatibles et garde les alertes restantes visibles. Vérifier les résultats de ce lot séparément.
+6. **Dépendances.** Huit alertes modérées subsistent dans Nuxt 3 et ses dépendances. Plusieurs concernent les règles de route, les îlots et l'environnement de développement. Le passage à Nuxt 4 mérite une vérification distincte du build, du service worker et de l'appairage avant migration.
+
+## Audit des dépendances
+
+Résultats de `npm audit` sur les verrous, dépendances de développement comprises. Les nombres incluent les alertes transitives signalées par npm. Ils ne mesurent pas l'exploitabilité dans les chemins réellement utilisés par ViBridge.
+
+| Composant | Avant | Après |
+|---|---:|---:|
+| Relay | 7 alertes, dont 1 critique et 5 élevées | 0 |
+| Agent | 8 alertes, dont 1 critique et 5 élevées | 0 |
+| Extension VS Code | 0 | 0 |
+| Nuxt | 44 alertes, dont 5 critiques et 20 élevées | 8 modérées |
+
+Le lot conserve Nuxt sur la majeure 3. Il relève `ws` à 8.23.0, Nuxt à 3.21.11 et `qs` à une version compatible corrigée, et retire `uuid`, inutilisé dans l'agent. Les tests automatisés et le build Nuxt passent sur les verrous mis à jour. Une base SQLite de test créée avec le schéma d'origine a aussi été migrée. Le chat historique reste présent, l'ancien état qui contenait un jeton est retiré et le code d'appairage ne peut être utilisé qu'une fois.
 
 Les réglages d'appairage et le déploiement coordonné sont détaillés dans [la procédure de mise à niveau](session-security.md).
