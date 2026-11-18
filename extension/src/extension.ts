@@ -228,7 +228,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Notify agent whenever a terminal is closed (manual or programmatic)
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
-      ipc?.send({ type: 'terminal_closed', terminalName: terminal.name });
+      ipc?.send({ type: 'terminal_closed', terminalName: terminal.name, terminalId: getTerminalId(terminal) });
     })
   );
 
