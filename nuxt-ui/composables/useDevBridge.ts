@@ -353,6 +353,10 @@ function removeRelayWorkspace(workspaceId: string) {
 
 function clearStoredSession() {
   if (import.meta.server) return
+  // This only signs out the browser. Server-side revocation is a separate operation.
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(RELAY_SESSION_TOKEN_STORAGE_KEY + ':')) localStorage.removeItem(key)
+  }
   localStorage.removeItem('vb:bridgeMode')
   localStorage.removeItem('vb:token')
   localStorage.removeItem('vb:relayUrl')
@@ -374,6 +378,23 @@ function clearStoredSession() {
   activeUrl.value = ''
   latencyMs.value = null
   disconnect()
+}
+
+/** Only claim revocation when the relay confirms invalidation. */
+async function revokeRelaySession(): Promise<boolean> {
+  if (mode.value !== 'relay' || !relaySessionId.value || !token.value) return false
+  try {
+    const res = await fetch(`${inferRelayUrl()}/api/relay/sessions/${encodeURIComponent(relaySessionId.value)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (res.status !== 204) return false
+    clearStoredSession()
+    return true
+  } catch {
+    return false
+  }
 }
 
 function normalizeIncoming(msg: WsMessage): WsMessage {
@@ -1100,6 +1121,7 @@ export function useDevBridge() {
     pairRelay,
     connectWithToken,
     clearStoredSession,
+    revokeRelaySession,
     fetchAgentStatus,
     fetchRelaySessions,
     setActiveWorkspace,
