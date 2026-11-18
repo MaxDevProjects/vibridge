@@ -350,7 +350,28 @@ export function createRelayServer(options: RelayServerOptions) {
     }
 
     const workspaceId = requestedWorkspace(req)
+    const windowId = typeof req.query.windowId === 'string' ? req.query.windowId.trim() : ''
     const filePath = String(req.query.path ?? '').trim()
+
+    if (windowId && !/^[a-zA-Z0-9-]{1,80}$/.test(windowId)) {
+      res.status(400).json({ error: 'invalid windowId' })
+      return
+    }
+    if (!filePath && windowId) {
+      try {
+        const response = await requestAgentPayload(sessionId, workspaceId, 'relay_file_request', {
+          path: '', windowId, list: true,
+        })
+        if (typeof response.error === 'string') {
+          res.status(409).json({ error: response.error })
+          return
+        }
+        res.json({ tree: Array.isArray(response.tree) ? response.tree : [] })
+      } catch {
+        res.status(503).json({ error: 'window unavailable' })
+      }
+      return
+    }
 
     if (!filePath) {
       const snapshot = workspaceId
@@ -365,7 +386,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
     try {
       const response = await requestAgentPayload(sessionId, workspaceId, 'relay_file_request', {
-        path: filePath,
+        path: filePath, windowId,
       })
       if (typeof response.error === 'string') {
         res.status(404).json({ error: response.error })

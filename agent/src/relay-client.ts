@@ -617,10 +617,22 @@ export class RelayClient {
 
     if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
       const filePath = typeof msg.path === 'string' ? msg.path : '';
-      const ideState = this.options.ipc.getIdeState();
-      const workspaceFolders = Array.isArray(ideState?.workspaceFolders) ? ideState.workspaceFolders as string[] : [];
-      const firstFolder = workspaceFolders.length ? String(workspaceFolders[0] ?? '') : '';
-      const content = this.options.files.read(filePath, firstFolder || undefined);
+      const windowId = typeof msg.windowId === 'string' ? msg.windowId : '';
+      const online = this.options.ipc.getWindows().filter(window => window.connected);
+      const selected = windowId
+        ? online.find(window => window.id === windowId)
+        : online.length === 1 ? online[0] : undefined;
+      const folder = selected?.workspaceFolders?.[0];
+      if (!selected || !folder) {
+        this.send('relay_file_response', { request_id: msg.request_id, error: 'window unavailable or ambiguous' });
+        return;
+      }
+      if (msg.list === true) {
+        const tree = this.options.files.treeFrom(folder).children ?? [];
+        this.send('relay_file_response', { request_id: msg.request_id, tree });
+        return;
+      }
+      const content = this.options.files.read(filePath, folder);
       this.send('relay_file_response', {
         request_id: msg.request_id,
         path: filePath,
