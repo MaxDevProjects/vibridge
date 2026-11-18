@@ -34,7 +34,7 @@ interface SessionPeers {
 const MOBILE_COMMANDS = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
   'open_project', 'list_projects', 'get_preview_url', 'get_pairing_code',
-  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli',
+  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window',
 ])
 
 const COMMAND_FIELDS = [
