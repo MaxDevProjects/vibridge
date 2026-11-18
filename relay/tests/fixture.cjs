@@ -19,8 +19,8 @@ async function fixture(t, sessionTtlMs = 60_000) {
     store.close()
   })
   const base = `http://127.0.0.1:${httpServer.address().port}`
-  const api = (path, { token, body } = {}) => fetch(base + path, {
-    method: body === undefined ? 'GET' : 'POST',
+  const api = (path, { token, body, method } = {}) => fetch(base + path, {
+    method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
