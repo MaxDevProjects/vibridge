@@ -18,6 +18,13 @@ const DEV_SERVER_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?(?:\/[^\s
 export class IpcServer {
   private server: net.Server;
   private activeExtension: net.Socket | null = null;
+  private windowSockets = new Map<string, net.Socket>();
+  private socketWindows = new Map<net.Socket, string>();
+  private windowStates = new Map<string, {
+    id: string; connected: boolean; ideState: Record<string, unknown> | null;
+    projects: Array<{ name: string; path: string; isActive: boolean }>;
+    parentDir: string; lastSeen: number;
+  }>();
   private adapterOwners = new Map<string, net.Socket>();
   private tcpServer: net.Server | null = null;
   private clients = new Set<net.Socket>();
@@ -154,7 +161,7 @@ export class IpcServer {
             continue;
           }
           const control = ['register', 'get_pairing_code', 'relay_setup_link', 'ping'];
-          if (socket === this.activeExtension || control.includes(String(message?.type))) {
+          if (this.socketWindows.has(socket) || control.includes(String(message?.type))) {
             this.handleMessage(socket, message);
           }
         } catch {
@@ -165,64 +172,68 @@ export class IpcServer {
 
     socket.on('close', () => {
       if (deadline) clearTimeout(deadline);
-      if (this.activeExtension === socket) {
-        this.activeExtension = null;
-        this.ideState = null;
-        // A replaced VS Code window must not leave the old project's terminals
-        // looking active while the new extension is starting up.
-        const cleared = { workspaceFolders: [], activeFile: null, activeLanguage: null,
-          activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
-        this.broadcast?.({ type: 'ide_snapshot', state: cleared });
-        this.forward?.('ide_snapshot', { payload: { state: cleared } });
-        this.projects = [];
-        this.projectsParentDir = '';
-        this.broadcast?.({ type: 'projects_update', projects: [], parentDir: '' });
-        this.forward?.('projects_update', { projects: [], parentDir: '' });
+      const windowId = this.socketWindows.get(socket);
+      this.socketWindows.delete(socket);
+      if (windowId && this.windowSockets.get(windowId) === socket) {
+        this.windowSockets.delete(windowId);
+        const record = this.windowStates.get(windowId);
+        if (record) this.windowStates.set(windowId, { ...record, connected: false, lastSeen: Date.now() });
+        this.publishWindows();
       }
-      if (registeredAdapterId && this.adapterOwners.get(registeredAdapterId) === socket) {
-        this.adapterOwners.delete(registeredAdapterId);
-        this.adapters.unregister(registeredAdapterId);
+      if (this.activeExtension === socket) {
+        this.activeExtension = [...this.windowSockets.values()].at(-1) ?? null;
+        const focus = this.getFocusedWindowId();
+        const state = this.windowStates.get(focus);
+        this.ideState = state?.ideState ?? null;
+        this.projects = state?.projects ?? [];
+        this.projectsParentDir = state?.parentDir ?? '';
+        if (registeredAdapterId && this.adapterOwners.get(registeredAdapterId) === socket) {
+          this.adapterOwners.delete(registeredAdapterId);
+          this.adapters.unregister(registeredAdapterId);
+          if (this.activeExtension) this.registerActiveAdapter(registeredAdapterId, 'VS Code Extension');
+        }
       }
       this.clients.delete(socket);
       off();
     });
     socket.on('error', () => socket.destroy());
 
-    const registerAdapter = (id: string, label: string) => {
+    const registerAdapter = (id: string, label: string, proposedWindowId: string) => {
       registeredAdapterId = id;
-      if (this.activeExtension !== socket) {
-        // A different VS Code window took focus. Invalidate previous terminal
-        // identities before accepting the new window's own snapshot.
-        this.ideState = null;
-        this.projects = [];
-        this.projectsParentDir = '';
-        const cleared = { workspaceFolders: [], activeFile: null, activeLanguage: null,
-          activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
-        this.forward?.('ide_snapshot', { payload: { state: cleared } });
-        this.forward?.('projects_update', { projects: [], parentDir: '' });
-      }
+      const windowId = /^[a-zA-Z0-9-]{1,80}$/.test(proposedWindowId) ? proposedWindowId : 'legacy';
+      const alreadyRegistered = this.socketWindows.get(socket);
+      if (alreadyRegistered && alreadyRegistered !== windowId) { socket.destroy(); return; }
+      const previousSocket = this.windowSockets.get(windowId);
+      if (previousSocket && previousSocket !== socket) previousSocket.destroy();
+      this.windowSockets.set(windowId, socket);
+      this.socketWindows.set(socket, windowId);
+      const existing = this.windowStates.get(windowId);
+      this.windowStates.set(windowId, existing
+        ? { ...existing, connected: true, lastSeen: Date.now() }
+        : { id: windowId, connected: true, ideState: null, projects: [], parentDir: '', lastSeen: Date.now() });
       this.activeExtension = socket;
-      this.adapterOwners.set(id, socket);
-      this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
-        if (this.activeExtension !== socket || !this.writeToExtension(socket, data)) {
-          throw new Error('VS Code extension unavailable');
-        }
-      });
+      this.ideState = existing?.ideState ?? null;
+      this.projects = existing?.projects ?? [];
+      this.projectsParentDir = existing?.parentDir ?? '';
+      this.registerActiveAdapter(id, label);
+      this.publishWindows();
     };
 
     (socket as net.Socket & { __registerAdapter?: typeof registerAdapter }).__registerAdapter = registerAdapter;
   }
 
   private handleMessage(socket: net.Socket, msg: Record<string, unknown>): void {
+    // Window ownership is derived from the registered IPC socket, never a message field.
+    const windowId = this.socketWindows.get(socket);
     switch (msg.type) {
       case 'register': {
         const tool = String(msg.tool ?? '').trim();
         if (!tool) break;
         const label = String(msg.label ?? tool);
         const registerAdapter = (socket as net.Socket & {
-          __registerAdapter?: (id: string, label: string) => void
+          __registerAdapter?: (id: string, label: string, windowId: string) => void
         }).__registerAdapter;
-        registerAdapter?.(tool, label);
+        registerAdapter?.(tool, label, String(msg.windowId ?? 'legacy'));
         break;
       }
       case 'get_pairing_code': {
@@ -259,7 +270,7 @@ export class IpcServer {
         break;
       }
       case 'ide_snapshot': {
-        this.ideState = {
+        const state = {
           workspaceFolders: Array.isArray(msg.workspaceFolders) ? msg.workspaceFolders : [],
           activeFile: msg.activeFile ?? null,
           activeLanguage: msg.activeLanguage ?? null,
@@ -268,8 +279,14 @@ export class IpcServer {
           terminals: Array.isArray(msg.terminals) ? msg.terminals : [],
           updatedAt: typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now(),
         };
-        this.broadcast?.({ type: 'ide_snapshot', state: this.ideState });
-        this.forward?.('ide_snapshot', { payload: { state: this.ideState } });
+        if (windowId) {
+          const record = this.windowStates.get(windowId);
+          if (record) this.windowStates.set(windowId, { ...record, ideState: state, lastSeen: Date.now() });
+          if (this.activeExtension === socket) this.ideState = state;
+          this.publishWindows();
+        }
+        this.broadcast?.({ type: 'ide_snapshot', state, windowId });
+        this.forward?.('ide_snapshot', { payload: { state, windowId } });
         break;
       }
       case 'ide_event': {
@@ -278,6 +295,8 @@ export class IpcServer {
           kind: msg.kind,
           terminal: msg.terminal,
           commandLine: msg.commandLine,
+          terminalId: msg.terminalId,
+          windowId,
           activeFile: msg.activeFile,
           language: msg.language,
           target: msg.target,
@@ -297,6 +316,7 @@ export class IpcServer {
           reason: msg.reason,
           terminalId: msg.terminalId,
           terminalName: msg.terminalName,
+          windowId,
         };
         if (!payload.request_id || !['dispatched', 'rejected'].includes(String(payload.phase))) break;
         this.broadcast?.({ type: 'command_execution', ...payload });
@@ -313,13 +333,13 @@ export class IpcServer {
           type: 'output',
           text,
           tool,
-          data: { terminalId, terminalName },
+          data: { terminalId, terminalName, windowId },
         };
         this.queue.emit(payload);
 
         // Purely heuristic: notify that intervention *may* be required.
         // Never automatically answer a trust/approval prompt.
-        const key = terminalId || terminalName || tool;
+        const key = `${windowId ?? 'unknown'}:${terminalId || terminalName || tool}`;
         const previous = this.terminalQuestionState.get(key) ?? { text: '', notifiedAt: 0 };
         const plain = (previous.text + text)
           .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
@@ -334,14 +354,14 @@ export class IpcServer {
         if (requiresAttention) {
           const notification = {
             type: 'notification', text: 'Une intervention pourrait être nécessaire dans ' + (terminalName || 'un terminal'),
-            terminalId, terminalName, tool, isQuestion: true, target: tool,
+            terminalId, terminalName, windowId, tool, isQuestion: true, target: tool,
           };
           this.broadcast?.(notification);
           this.forward?.('notification', notification);
           void this.push.send({
             title: 'VibeBridge - intervention possible',
             body: 'Vérifie le terminal ' + (terminalName || 'actif') + ' depuis VibeBridge.',
-            data: { type: 'question', terminalId, workspaceId: this.workspaceId, sessionId: this.getRelaySessionId() },
+            data: { type: 'question', terminalId, windowId, workspaceId: this.workspaceId, sessionId: this.getRelaySessionId() },
           });
         }
         break;
@@ -366,42 +386,51 @@ export class IpcServer {
       }
       case 'cli_started': {
         // Extension confirms terminal was opened
-        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName, terminalId: msg.terminalId };
+        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
         this.broadcast?.(payload);
         this.forward?.('cli_started', payload);
         break;
       }
       case 'terminal_unavailable': {
-        const payload = { type: 'terminal_unavailable', terminalName: msg.terminalName };
+        const payload = { type: 'terminal_unavailable', terminalName: msg.terminalName, windowId };
         this.broadcast?.(payload);
         this.forward?.('terminal_unavailable', payload);
         break;
       }
       case 'terminal_created': {
-        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId };
+        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
         this.broadcast?.(payload);
         this.forward?.('terminal_created', payload);
         break;
       }
       case 'terminal_closed': {
         // Extension reports a terminal was closed (manually or via kill_cli)
-        const payload = { type: 'terminal_closed', terminalName: msg.terminalName, terminalId: msg.terminalId };
+        const payload = { type: 'terminal_closed', terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
         this.broadcast?.(payload);
         this.forward?.('terminal_closed', payload);
         break;
       }
       case 'file_changed': {
-        const payload = { type: 'file_changed', path: msg.path, event: msg.event };
+        const payload = { type: 'file_changed', path: msg.path, event: msg.event, windowId };
         this.broadcast?.(payload);
         this.forward?.('file_changed', payload);
         break;
       }
       case 'projects_report': {
-        this.projectsParentDir = String(msg.parentDir ?? '');
-        this.projects = Array.isArray(msg.projects)
+        const parentDir = String(msg.parentDir ?? '');
+        const projects = Array.isArray(msg.projects)
           ? (msg.projects as Array<{ name: string; path: string; isActive: boolean }>)
           : [];
-        const update = { projects: this.projects, parentDir: this.projectsParentDir };
+        if (windowId) {
+          const record = this.windowStates.get(windowId);
+          if (record) this.windowStates.set(windowId, { ...record, projects, parentDir, lastSeen: Date.now() });
+          this.publishWindows();
+        }
+        if (this.activeExtension === socket) {
+          this.projects = projects;
+          this.projectsParentDir = parentDir;
+        }
+        const update = { projects, parentDir, windowId };
         this.broadcast?.({ type: 'projects_update', ...update });
         this.forward?.('projects_update', update);
         break;
@@ -458,8 +487,44 @@ export class IpcServer {
     }) + '\n');
   }
 
+  /** Never fall back to the focused window if more than one is connected. */
   sendToExtension(data: unknown): boolean {
-    return this.activeExtension ? this.writeToExtension(this.activeExtension, data) : false;
+    if (!data || typeof data !== 'object') return false;
+    const frame = data as Record<string, unknown>;
+    const requested = typeof frame.windowId === 'string' ? frame.windowId : '';
+    const connected = [...this.windowSockets.entries()].filter(([, socket]) => !socket.destroyed);
+    const socket = requested
+      ? this.windowSockets.get(requested)
+      : connected.length === 1 ? connected[0]![1] : undefined;
+    return socket ? this.writeToExtension(socket, data) : false;
+  }
+
+  getFocusedWindowId(): string {
+    return [...this.windowSockets.entries()].find(([, socket]) => socket === this.activeExtension)?.[0] ?? '';
+  }
+
+  getWindows() {
+    return [...this.windowStates.values()].map(record => ({
+      id: record.id,
+      connected: this.windowSockets.has(record.id) && record.connected,
+      workspaceFolders: Array.isArray(record.ideState?.workspaceFolders) ? record.ideState.workspaceFolders : [],
+      ideState: record.ideState,
+      projects: record.projects,
+      lastSeen: record.lastSeen,
+    }));
+  }
+
+  private publishWindows(): void {
+    const update = { windows: this.getWindows(), focusedWindowId: this.getFocusedWindowId() };
+    this.broadcast?.({ type: 'windows_update', ...update });
+    this.forward?.('windows_update', update);
+  }
+
+  private registerActiveAdapter(id: string, label: string): void {
+    this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
+      if (!this.sendToExtension(data)) throw new Error('No unambiguous VS Code window selected');
+    });
+    if (this.activeExtension) this.adapterOwners.set(id, this.activeExtension);
   }
 
   private writeToExtension(socket: net.Socket, data: unknown): boolean {
@@ -477,7 +542,8 @@ export class IpcServer {
     this.relayQrUrl = url;
   }
 
-  getIdeState(): Record<string, unknown> | null {
+  getIdeState(windowId?: string): Record<string, unknown> | null {
+    if (windowId) return this.windowStates.get(windowId)?.ideState ?? null;
     return this.ideState;
   }
 
@@ -485,11 +551,13 @@ export class IpcServer {
     return this.previewUrl;
   }
 
-  getProjects(): Array<{ name: string; path: string; isActive: boolean }> {
+  getProjects(windowId?: string): Array<{ name: string; path: string; isActive: boolean }> {
+    if (windowId) return this.windowStates.get(windowId)?.projects ?? [];
     return this.projects;
   }
 
-  getProjectsParentDir(): string {
+  getProjectsParentDir(windowId?: string): string {
+    if (windowId) return this.windowStates.get(windowId)?.parentDir ?? '';
     return this.projectsParentDir;
   }
 
