@@ -73,6 +73,21 @@
           "default": 1,
           "description": "Number of question patterns that must match before sending a push notification."
         },
+        "devbridge.hostTools": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Outils CLI supplémentaires autorisés localement depuis les paramètres **Utilisateur** VS Code. Les paramètres du workspace ne sont pas utilisés pour empêcher un projet tiers de déclarer une commande exécutable. Les IDs sont préfixés par `host-` dans ViBridge.",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "command"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+              "name": { "type": "string" },
+              "command": { "type": "string" },
+              "args": { "type": "array", "items": { "type": "string" }, "default": [] }
+            }
+          }
+        },
         "devbridge.terminalSendMode": {
           "type": "string",
           "enum": ["paste", "split"],
