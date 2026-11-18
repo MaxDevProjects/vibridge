@@ -759,7 +759,7 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'projects', 'parentDir']
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),
@@ -788,9 +788,8 @@ export function createRelayServer(options: RelayServerOptions) {
         }
       }
 
-      // VS Code reports the actual opened folder independently from periodic
-      // agent snapshots. Persist this live context so reconnecting phones see
-      // the correct project and terminal list without waiting for a refresh.
+      // IDE/project updates are live state, not conversation history. Persist
+      // one current snapshot per workspace without evicting genuine chat output.
       if (msg.type === 'ide_snapshot' && payload && typeof payload === 'object' && !Array.isArray(payload)) {
         const state = (payload as Record<string, unknown>).state
         if (state && typeof state === 'object' && !Array.isArray(state)) {
@@ -799,7 +798,17 @@ export function createRelayServer(options: RelayServerOptions) {
             ideState: ide,
             timestamp: typeof ide.updatedAt === 'number' ? ide.updatedAt : Date.now(),
           })
+          sendWorkspaceEvent(sessionId, { type: 'ide_snapshot', workspaceId: ws.workspaceId,
+            state: ide, payload: { state: ide } })
         }
+        return
+      }
+      if (msg.type === 'projects_update') {
+        const projects = Array.isArray(msg.projects) ? msg.projects : []
+        const parentDir = typeof msg.parentDir === 'string' ? msg.parentDir : ''
+        sendWorkspaceEvent(sessionId, { type: 'projects_update', workspaceId: ws.workspaceId,
+          projects, parentDir, payload: { projects, parentDir } })
+        return
       }
 
       const envelope = store.append(sessionId, 'agent', {

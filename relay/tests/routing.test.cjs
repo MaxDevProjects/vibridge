@@ -202,6 +202,7 @@ test('VS Code project and terminal snapshots remain current on relay reconnect',
   const snapshot = store.getWorkspaceSnapshot(session.sessionId, 'editor')
   assert.deepEqual(snapshot?.ideState?.workspaceFolders, state.workspaceFolders)
   assert.equal(snapshot?.ideState?.activeTerminalId, 'terminal-new')
+  assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'ide_snapshot'), false)
   const response = await (await api('/api/relay/sessions/' + session.sessionId, { token: mobileToken })).json()
   assert.equal(response.workspaceSnapshots.find(s => s.workspaceId === 'editor')?.ideState?.activeTerminalId, 'terminal-new')
 
@@ -210,4 +211,5 @@ test('VS Code project and terminal snapshots remain current on relay reconnect',
     { name: 'second-project', path: '/home/dev/projects/second-project', isActive: true },
   ], parentDir: '/home/dev/projects' })
   assert.equal((await projectUpdate).payload.projects[0].isActive, true)
+  assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'projects_update'), false)
 })
