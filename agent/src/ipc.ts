@@ -266,6 +266,20 @@ export class IpcServer {
         this.forward?.('ide_event', payload);
         break;
       }
+      case 'command_execution': {
+        const payload = {
+          request_id: typeof msg.request_id === 'string' ? msg.request_id : '',
+          action: msg.action,
+          phase: msg.phase,
+          reason: msg.reason,
+          terminalId: msg.terminalId,
+          terminalName: msg.terminalName,
+        };
+        if (!payload.request_id || !['dispatched', 'rejected'].includes(String(payload.phase))) break;
+        this.broadcast?.({ type: 'command_execution', ...payload });
+        this.forward?.('command_execution', payload);
+        break;
+      }
       case 'terminal_output': {
         const text = String(msg.text ?? '');
         if (!text) break;
