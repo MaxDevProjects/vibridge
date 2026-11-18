@@ -58,6 +58,14 @@
       <button type="button" class="shrink-0" aria-label="Masquer le statut de l’envoi" @click="dismiss">×</button>
     </div>
 
+    <!-- Control permissions are enforced on the local agent, not in this UI. -->
+    <div v-if="!isSetupRoute && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe'"
+      class="fixed left-4 right-4 bottom-4 z-40 p-3 text-xs"
+      style="background:var(--surface);border:1px solid var(--border-bright);color:var(--text)"
+      role="status">
+      Mode observation : la machine refuse les commandes distantes. Autorise le contrôle dans la configuration locale de l'agent si nécessaire.
+    </div>
+
     <!-- ── Content ──────────────────────────────── -->
     <main class="flex-1 pt-14 overflow-hidden relative z-10">
       <slot :active-view="activeView" />
@@ -71,6 +79,7 @@ const colorMode = useColorMode()
 const activeView = useViewMode()
 const route = useRoute()
 const { notice, dismiss } = useBridgeDeliveryNotice()
+const bridge = useDevBridge()
 
 const views = [
   { id: 'both' as const,   label: 'Both' },
