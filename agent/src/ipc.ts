@@ -24,6 +24,7 @@ export class IpcServer {
     id: string; connected: boolean; ideState: Record<string, unknown> | null;
     projects: Array<{ name: string; path: string; isActive: boolean }>;
     parentDir: string; lastSeen: number;
+    activity?: { state: 'running' | 'finished' | 'attention_possible'; terminalId?: string; updatedAt: number };
   }>();
   private adapterOwners = new Map<string, net.Socket>();
   private tcpServer: net.Server | null = null;
@@ -304,6 +305,19 @@ export class IpcServer {
           workspaceFolders: msg.workspaceFolders,
           ts: msg.ts,
         };
+        if (windowId && (msg.kind === 'terminal_command_started' || msg.kind === 'terminal_command_finished')) {
+          const record = this.windowStates.get(windowId);
+          if (record) {
+            const nextState = msg.kind === 'terminal_command_started' ? 'running' : 'finished';
+            this.windowStates.set(windowId, {
+              ...record, lastSeen: Date.now(), activity: {
+                state: nextState, terminalId: String(msg.terminalId ?? ''),
+                updatedAt: Date.now(),
+              },
+            });
+            this.publishWindows();
+          }
+        }
         this.broadcast?.(payload);
         this.forward?.('ide_event', payload);
         break;
@@ -352,6 +366,14 @@ export class IpcServer {
           notifiedAt: requiresAttention ? now : previous.notifiedAt,
         });
         if (requiresAttention) {
+          if (windowId) {
+            const record = this.windowStates.get(windowId);
+            if (record) {
+              this.windowStates.set(windowId, { ...record, lastSeen: Date.now(),
+                activity: { state: 'attention_possible', terminalId, updatedAt: Date.now() } });
+              this.publishWindows();
+            }
+          }
           const notification = {
             type: 'notification', text: 'Une intervention pourrait être nécessaire dans ' + (terminalName || 'un terminal'),
             terminalId, terminalName, windowId, tool, isQuestion: true, target: tool,
@@ -510,6 +532,7 @@ export class IpcServer {
       workspaceFolders: Array.isArray(record.ideState?.workspaceFolders) ? record.ideState.workspaceFolders : [],
       ideState: record.ideState,
       projects: record.projects,
+      activity: record.activity,
       lastSeen: record.lastSeen,
     }));
   }

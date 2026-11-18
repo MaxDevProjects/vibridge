@@ -26,6 +26,7 @@ export interface ConnectedWindow {
   workspaceFolders: string[]
   ideState?: AgentStatus['ideState']
   lastSeen: number
+  activity?: WindowActivity
 }
 
 export interface WindowActivity {
@@ -153,6 +154,8 @@ function selectWindow(windowId: string): void {
 }
 function syncWindows(next: ConnectedWindow[], focused = ''): void {
   windows.value = next
+  windowActivity.value = Object.fromEntries(next.filter(window => window.activity)
+    .map(window => [window.id, window.activity!]))
   const saved = import.meta.client ? localStorage.getItem(windowStorageKey()) ?? '' : ''
   const wanted = [activeWindowId.value, saved, focused, next.find(window => window.connected)?.id ?? '']
     .find(id => next.some(window => window.id === id)) ?? ''
