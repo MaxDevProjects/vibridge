@@ -18,6 +18,7 @@
       <WorkspaceSwitcher
         :workspaces="relayWorkspaceOptions"
         :active-workspace-id="bridge.activeWorkspaceId.value"
+        :active-project-path="bridge.activeProjectPath.value"
         :projects="projects"
         :loading-projects="loadingProjects"
         :project-opening="projectOpening"
@@ -26,6 +27,12 @@
         @request-projects="requestOpenProject"
         @open-listed-project="openListedProject"
       />
+    </div>
+
+    <div v-if="bridge.projectTransition.value" class="shrink-0 px-4 py-2 text-xs" role="status"
+      style="background:var(--surface2);border-bottom:1px solid var(--border)">
+      Ouverture de {{ projectName(bridge.projectTransition.value.path) }} dans VS Code…
+      Les envois sont suspendus jusqu'à confirmation du nouveau projet.
     </div>
 
     <!-- AUTH ERROR BANNER -->
@@ -113,6 +120,7 @@
 <script setup lang="ts">
 import type { WsMessage } from '~/composables/useDevBridge'
 import { loadWorkspaceChatHistory, saveWorkspaceChatHistory } from '~/composables/useWorkspaceChatHistory'
+import { projectIsActive, projectName } from '~/composables/projectContext'
 
 const REPLY_TARGET_KEY = 'vb:chatTarget'
 
@@ -134,7 +142,12 @@ const bridge = useDevBridge()
 const activeWorkspaceKey = bridge.chatHistoryKey
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relayWorkspaces.value.length
-      ? bridge.relayWorkspaces.value.map(w => ({ id: w.id, name: w.name, active: w.id === bridge.activeWorkspaceId.value }))
+      ? bridge.relayWorkspaces.value.map(w => ({
+          id: w.id,
+          name: w.id === bridge.activeWorkspaceId.value && bridge.activeProjectName.value ? bridge.activeProjectName.value : w.name,
+          active: w.id === bridge.activeWorkspaceId.value,
+          connected: w.connected,
+        }))
       : bridge.relaySessions.value.map(session => ({
           id: session.id,
           name: session.label,
@@ -162,9 +175,10 @@ interface ChatTarget {
 }
 
 // Target (synced with index.vue via localStorage)
-const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? '__new__') : '__new__'
-)
+const replyTarget = ref('__new__')
+function targetStorageKey(): string {
+  return `${REPLY_TARGET_KEY}:${bridge.projectContextKey.value}`
+}
 const creatingTerminal = ref(false)
 
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
@@ -213,7 +227,7 @@ function nextTerminalName(): string {
 
 function setTarget(id: string) {
   replyTarget.value = id
-  if (import.meta.client) localStorage.setItem(REPLY_TARGET_KEY, id)
+  if (import.meta.client && bridge.projectContextKey.value) localStorage.setItem(targetStorageKey(), id)
 }
 
 function selectChatTarget(target: ChatTarget) {
@@ -277,14 +291,16 @@ function clearChat() {
 }
 
 function requestOpenProject() {
-  loadingProjects.value = true
-  bridge.send({ type: 'list_projects' })
+  loadingProjects.value = bridge.send({ type: 'list_projects' })
 }
 
 function openListedProject(payload: { path: string; newWindow: boolean }) {
+  if (!bridge.requestOpenProject(payload.path, payload.newWindow)) return
   projectOpening.value[payload.path] = payload.newWindow ? 'parallel' : 'replace'
-  bridge.send({ type: 'open_project', path: payload.path, newWindow: payload.newWindow })
-  setTimeout(() => { delete projectOpening.value[payload.path] }, 4_000)
+  if (payload.newWindow) {
+    // Creating a parallel window does not make it the active remote target.
+    setTimeout(() => { delete projectOpening.value[payload.path] }, 4_000)
+  }
 }
 
 function autoResize(e: Event) {
@@ -358,8 +374,11 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
     creatingTerminal.value = false
     if (msg.terminalId || msg.terminalName) setTarget(`terminal:${String(msg.terminalId ?? msg.terminalName)}`)
   } else if (msg.type === 'terminal_closed') {
-    const terminalName = String(msg.terminalName ?? '')
-    if (replyTarget.value === `terminal:${terminalName}`) setTarget('__new__')
+    const terminalId = String(msg.terminalId ?? msg.terminalName ?? '')
+    if (replyTarget.value === `terminal:${terminalId}`) setTarget('__new__')
+  } else if (msg.type === 'projects_update' && Array.isArray(msg.projects)) {
+    loadingProjects.value = false
+    projects.value = msg.projects as ProjectItem[]
   } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
     loadingProjects.value = false
     projects.value = msg.projects as ProjectItem[]
@@ -387,9 +406,8 @@ useHead({ title: 'Chat — VibeBridge' })
 const selectedTargetReady = computed(() => {
   if (!replyTarget.value.startsWith('terminal:')) return false
   const selected = chatTargets.value.find(target => target.id === replyTarget.value)
-  return Boolean(selected && selected.state !== 'new' && selected.terminalName && terminals.value.some(
-    t => String((t as { name?: string }).name ?? '') === selected.terminalName
-  ))
+  return Boolean(!bridge.projectTransition.value && selected && selected.state !== 'new'
+    && terminals.value.some(t => `terminal:${String(t.id ?? t.name)}` === replyTarget.value))
 })
 
 const lastAiMessageId = computed(() => {
@@ -406,11 +424,30 @@ watch(chatTargets, (targets) => {
 }, { immediate: true })
 
 watch(activeWorkspaceKey, (workspaceId) => {
+  const saved = import.meta.client && bridge.projectContextKey.value
+    ? localStorage.getItem(targetStorageKey()) : null
+  const activeId = bridge.agentStatus.value?.ideState?.activeTerminalId
+  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : '__new__')
   messages.value = loadWorkspaceChatHistory(workspaceId)
   aiTyping.value = false
   currentTool.value = null
   scrollToBottom()
 }, { immediate: true, flush: 'sync' })
+
+watch(() => bridge.projectTransition.value, (pending, previous) => {
+  if (pending || !previous) return
+  if (projectIsActive(previous.path, bridge.activeProjectPath.value)) {
+    projectOpening.value[previous.path] = 'done'
+    setTimeout(() => { delete projectOpening.value[previous.path] }, 2_000)
+    requestOpenProject()
+  } else {
+    delete projectOpening.value[previous.path]
+  }
+})
+
+watch(() => bridge.activeProjectPath.value, (path, oldPath) => {
+  if (path && path !== oldPath && bridge.status.value === 'connected') requestOpenProject()
+})
 
 function targetButtonLabel(target: ChatTarget) {
   if (target.state === 'new') return '+'
