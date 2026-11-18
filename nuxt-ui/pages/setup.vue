@@ -17,8 +17,7 @@
               Toi aussi, ailleurs.
             </h1>
             <p class="max-w-xl text-[13px] leading-7 sm:text-[14px]" style="color:var(--text-mid)">
-              ViBridge relie ta session VS Code, ton relay et la PWA dans une seule boucle. Le nouveau flow garde l’esthétique
-              actuelle, mais clarifie l’entrée, l’auth, l’installation et la première connexion.
+              ViBridge relie ta session VS Code, ton relay et la PWA dans une seule boucle. Le parcours connecte directement ton téléphone à un agent autorisé. Aucun faux compte ni connexion OAuth simulée.
             </p>
           </div>
 
@@ -41,7 +40,7 @@
             </div>
             <div>
               <p class="text-[10px] uppercase tracking-[0.2em]" style="color:var(--muted)">Flow</p>
-              <p class="mt-2 text-[12px] leading-6" style="color:var(--text-mid)">Landing → auth → extension → attente → première liaison → session durable.</p>
+              <p class="mt-2 text-[12px] leading-6" style="color:var(--text-mid)">Présentation → extension → appairage réel → contrôle local selon les permissions.</p>
             </div>
             <div>
               <p class="text-[10px] uppercase tracking-[0.2em]" style="color:var(--muted)">Statut</p>
@@ -80,7 +79,7 @@
               <p class="text-[10px] uppercase tracking-[0.24em]" style="color:var(--muted)">Écran 0 — Landing page</p>
               <h2 class="font-display text-3xl font-light leading-tight">Un setup propre, sans friction ni QR à répétition.</h2>
               <p class="text-[12px] leading-7" style="color:var(--text-mid)">
-                Un dev inconnu doit comprendre le produit, créer son accès, installer l’extension et arriver à une première connexion
+                Tu installes l’extension, configures l’agent puis appaires ton téléphone avec un code temporaire pour établir une connexion
                 fiable sans bricolage.
               </p>
             </div>
@@ -96,81 +95,9 @@
               </div>
             </div>
 
-            <button class="vb-button vb-button-primary w-full text-[11px] uppercase tracking-[0.22em]" @click="step = 1">
+            <button class="vb-button vb-button-primary w-full text-[11px] uppercase tracking-[0.22em]" @click="step = 2">
               Commencer gratuitement
             </button>
-          </div>
-
-          <div v-else-if="step === 1" class="space-y-6">
-            <div class="space-y-3">
-              <p class="text-[10px] uppercase tracking-[0.24em]" style="color:var(--muted)">Écran 1 — Auth</p>
-              <h2 class="font-display text-3xl font-light">Créer ou récupérer le compte</h2>
-              <p class="text-[12px] leading-7" style="color:var(--text-mid)">
-                L’UI prépare déjà les trois entrées attendues. La persistance réelle du compte reste à brancher côté backend, mais
-                l’expérience et l’ordre des choix sont prêts.
-              </p>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                class="vb-button text-[10px] uppercase tracking-[0.18em]"
-                :style="authMode === 'signup' ? 'background:var(--text);color:var(--bg);border-color:var(--text)' : ''"
-                @click="authMode = 'signup'"
-              >
-                Sign up
-              </button>
-              <button
-                class="vb-button text-[10px] uppercase tracking-[0.18em]"
-                :style="authMode === 'signin' ? 'background:var(--text);color:var(--bg);border-color:var(--text)' : ''"
-                @click="authMode = 'signin'"
-              >
-                Sign in
-              </button>
-            </div>
-
-            <div class="grid gap-3">
-              <button
-                v-for="option in authOptions"
-                :key="option.id"
-                class="vb-button justify-between text-left"
-                :style="provider === option.id ? 'border-color:var(--accent);background:var(--accent-soft)' : ''"
-                @click="selectProvider(option.id)"
-              >
-                <span>
-                  <span class="block text-[10px] uppercase tracking-[0.18em]" style="color:var(--muted)">{{ option.kicker }}</span>
-                  <span class="mt-1 block text-[12px]" :style="provider === option.id ? 'color:var(--text)' : 'color:var(--text-mid)'">{{ option.label }}</span>
-                </span>
-                <span class="text-[10px] uppercase tracking-[0.2em]" :style="provider === option.id ? 'color:var(--text)' : 'color:var(--muted)'">
-                  {{ provider === option.id ? 'Sélectionné' : 'Choisir' }}
-                </span>
-              </button>
-            </div>
-
-            <div v-if="provider === 'email'" class="grid gap-3 sm:grid-cols-2">
-              <input
-                v-model="email"
-                type="email"
-                autocomplete="email"
-                placeholder="dev@vibridge.app"
-                class="min-h-[2.9rem] px-3 text-[12px] outline-none"
-                style="background:var(--surface2);border:1px solid var(--border-bright);color:var(--text)"
-              >
-              <input
-                v-model="password"
-                type="password"
-                autocomplete="current-password"
-                placeholder="Mot de passe"
-                class="min-h-[2.9rem] px-3 text-[12px] outline-none"
-                style="background:var(--surface2);border:1px solid var(--border-bright);color:var(--text)"
-              >
-            </div>
-
-            <div class="flex gap-3">
-              <button class="vb-button flex-1 text-[11px] uppercase tracking-[0.2em]" @click="step = 0">Retour</button>
-              <button class="vb-button vb-button-primary flex-1 text-[11px] uppercase tracking-[0.2em]" @click="submitAuth">
-                {{ authMode === 'signup' ? 'Créer le compte' : 'Récupérer le compte' }}
-              </button>
-            </div>
           </div>
 
           <div v-else-if="step === 2" class="space-y-6">
@@ -216,7 +143,7 @@
             </div>
 
             <div class="flex gap-3">
-              <button class="vb-button flex-1 text-[11px] uppercase tracking-[0.2em]" @click="step = 1">Retour</button>
+              <button class="vb-button flex-1 text-[11px] uppercase tracking-[0.2em]" @click="step = 0">Retour</button>
               <button class="vb-button vb-button-primary flex-1 text-[11px] uppercase tracking-[0.2em]" @click="startInstallFlow()">
                 Continuer
               </button>
@@ -412,9 +339,9 @@ const onboardingSession = ref<OnboardingSessionState | null>(null)
 
 const highlights = [
   { kicker: 'Landing', title: 'Positionnement plus clair', body: 'Une promesse produit nette avant toute complexité technique.' },
-  { kicker: 'Auth', title: 'Trois portes d’entrée', body: 'GitHub, GitLab ou email, dans un écran unique et lisible.' },
+  { kicker: 'Sécurité', title: 'Pas de faux compte', body: 'L’accès repose sur un appairage réel, avec des autorisations appliquées localement.' },
   { kicker: 'Install', title: 'Extension d’abord', body: 'Le parcours pousse l’action utile avant d’exposer les détails réseau.' },
-  { kicker: 'Connect', title: 'Session durable', body: 'Le flow insiste sur le fait que le QR ne doit servir qu’une seule fois.' },
+  { kicker: 'Connect', title: 'Accès temporaire', body: 'L’appairage reste nécessaire lorsque la session relay expire.' },
 ]
 
 const authOptions = [
@@ -431,7 +358,6 @@ const waiterFacts = [
 
 const setupStages = [
   { step: 0 as SetupStep, order: 0 },
-  { step: 1 as SetupStep, order: 1 },
   { step: 2 as SetupStep, order: 2 },
   { step: 3 as SetupStep, order: 3 },
   { step: 35 as SetupStep, order: 4 },
@@ -590,7 +516,7 @@ async function createOnboardingSession() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        label: email.value.trim() || provider.value,
+        label: 'VibeBridge local',
       }),
     })
     if (!res.ok) return
