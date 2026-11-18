@@ -130,6 +130,29 @@
         <button class="mb-sheet-dismiss" @click="closeSheets">{{ t('cancel') }}</button>
       </section>
     </div>
+    <div v-if="previewOpen" class="mb-overlay" role="dialog" aria-modal="true" :aria-label="t('preview')">
+      <section class="mb-preview-sheet">
+        <div class="mb-preview-top"><div><small>{{ activeThread?.project }}</small><h2>{{ t('preview') }}</h2></div>
+          <button class="mb-iconbtn" :aria-label="t('cancel')" @click="closePreview">×</button>
+        </div>
+        <p class="mb-preview-hint">{{ lang==='fr' ? 'Capture Playwright sur ton PC, sans tunnel public.' : 'Local Playwright screenshot on your PC, no public tunnel.' }}</p>
+        <div class="mb-preview-controls">
+          <label :for="'mb-preview-port'">{{ lang==='fr' ? 'Port local' : 'Local port' }}</label>
+          <input id="mb-preview-port" v-model.number="previewPort" type="number" min="1024" max="65535" />
+          <select v-model="previewDevice" :aria-label="lang==='fr' ? 'Format de capture' : 'Capture size'">
+            <option value="mobile">Mobile</option><option value="desktop">Desktop</option>
+          </select>
+        </div>
+        <button class="mb-preview-request" :disabled="previewBusy || bridge.status.value!=='connected'" @click="requestPreview">
+          {{ previewBusy ? (lang==='fr' ? 'Capture en cours…' : 'Capturing…') : (lang==='fr' ? 'Capturer la page' : 'Capture page') }}
+        </button>
+        <p v-if="previewBusy" class="mb-preview-hint">{{ lang==='fr' ? 'En attente de réponse de VS Code. La capture ne sera pas relancée automatiquement.' : 'Waiting for VS Code. No automatic retry.' }}</p>
+        <p v-if="previewError" class="mb-preview-error" role="alert">{{ previewError }}</p>
+        <div v-if="previewImage" class="mb-preview-image"><img :src="previewImage" :alt="lang==='fr' ? 'Capture de la page locale' : 'Local page screenshot'" /></div>
+        <p v-else-if="!previewBusy && !previewError" class="mb-preview-placeholder">▣<br>{{ lang==='fr' ? 'Aucune capture pour cette session' : 'No screenshot yet' }}</p>
+        <p class="mb-preview-hint">{{ lang==='fr' ? 'Prérequis : Playwright et Chromium dans WSL. Port autorisé dans devbridge.previewPorts.' : 'Requires Playwright and Chromium in WSL. Port allowed in devbridge.previewPorts.' }}</p>
+      </section>
+    </div>
     <div v-if="confirmRevoke" class="mb-overlay" role="dialog" aria-modal="true" :aria-label="t('revoke')">
       <div class="mb-confirm">
         <h2>{{ t('revoke') }}</h2><p>{{ t('revokeConfirm') }}</p>
@@ -418,4 +441,12 @@ useHead({title:'DevBridge | Conversations'})
 .mb-overlay{position:absolute;inset:0;z-index:80;display:flex;align-items:flex-end;justify-content:center;background:#000a}.mb-sheet{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:22px 22px 0 0;padding:12px 18px max(20px,env(safe-area-inset-bottom));max-height:80%;overflow:auto}.mb-sheet-handle{height:4px;width:39px;border-radius:5px;background:var(--border-bright);margin:0 auto 18px}.mb-sheet h2,.mb-confirm h2{font-size:18px;font-weight:650;margin-bottom:13px}.mb-sheet-action{width:100%;text-align:left;display:flex;justify-content:space-between;gap:10px;padding:17px 2px;border-bottom:1px solid var(--border);font-size:13px}.mb-sheet-action small{color:var(--muted)}.mb-sheet-action.danger,.mb-error{color:var(--dot-red)}.mb-sheet-dismiss{width:100%;padding:13px;font-size:12px;color:var(--muted);margin-top:10px}.mb-confirm{padding:22px;background:var(--surface);border:1px solid var(--border);border-radius:18px;width:calc(100% - 36px);max-width:440px;margin:auto}.mb-confirm p{font-size:13px;line-height:1.6;color:var(--text-mid)}.mb-revoke-btn{background:var(--dot-red);color:var(--bg);padding:13px;border-radius:9px;width:100%;margin-top:18px;font-weight:600}.mb-revoke-btn:disabled{opacity:.5}
 @media(min-width:768px){.mb-root{border-left:1px solid var(--border);border-right:1px solid var(--border)}}
 @media(prefers-reduced-motion:reduce){.mb-pulse{animation:none}.mb-messages{scroll-behavior:auto}}
+
+.mb-preview-sheet{width:100%;height:min(88dvh,850px);max-width:900px;background:var(--surface);border:1px solid var(--border);border-radius:20px 20px 0 0;padding:18px 16px max(18px,env(safe-area-inset-bottom));overflow-y:auto;display:flex;flex-direction:column;gap:13px}
+.mb-preview-top{display:flex;align-items:center;justify-content:space-between;gap:15px}.mb-preview-top h2{font-size:19px;font-weight:650}.mb-preview-top small{font-size:11px;color:var(--muted)}
+.mb-preview-hint{font-size:11px;line-height:1.5;color:var(--muted)}.mb-preview-error{font-size:12px;color:var(--dot-red)}
+.mb-preview-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mb-preview-controls label{font-size:12px;color:var(--muted)}.mb-preview-controls input,.mb-preview-controls select{padding:10px 9px;border:1px solid var(--border);border-radius:9px;background:var(--bg);font-size:13px;color:var(--text)}.mb-preview-controls input{width:94px}.mb-preview-controls select{flex:1;min-width:110px}
+.mb-preview-request{padding:13px 16px;background:var(--text);color:var(--bg);border-radius:12px;font-size:13px;font-weight:600}.mb-preview-request:disabled{opacity:.4}
+.mb-preview-image{background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:auto;display:flex;justify-content:center;max-height:48dvh}.mb-preview-image img{max-width:100%;height:auto;object-fit:contain;align-self:flex-start}
+.mb-preview-placeholder{padding:40px 15px;background:var(--bg);border:1px dashed var(--border);border-radius:13px;text-align:center;font-size:12px;line-height:2;color:var(--muted)}
 </style>
