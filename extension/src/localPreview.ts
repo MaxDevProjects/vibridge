@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 
-const captureScript = String.raw\`
+const captureScript = String.raw`
 'use strict'
 const { chromium } = require(process.argv[1])
 const port = Number(process.argv[2])
@@ -47,7 +47,7 @@ const allowedHosts = new Set(['127.0.0.1', 'localhost'])
     await browser.close()
   }
 })().catch(e => { console.error(e && e.message ? e.message : String(e)); process.exitCode = 1 })
-\`
+`
 
 export async function captureLocalPreview(port: number, device: 'mobile' | 'desktop'): Promise<string> {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('invalid_port')
