@@ -43,7 +43,9 @@ services:
     container_name: devbridge-ui
     restart: always
     ports:
-      - "127.0.0.1:3000:4000"
+      # Host port 5173 is the established VPS upstream for host Nginx.
+      # Nuxt still listens on 4000 inside the container.
+      - "127.0.0.1:5173:4000"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
