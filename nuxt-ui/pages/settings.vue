@@ -327,8 +327,16 @@
             style="border:1px solid var(--dot-red);color:var(--dot-red);background:none"
             @click="clearSession"
           >
-            Effacer la session (déconnexion)
+            Déconnecter cet appareil (sans révocation)
           </button>
+          <button v-if="bridge.mode.value === 'relay'" class="ml-2 mt-2 px-4 py-2 text-[10px] uppercase tracking-wider"
+            style="border:1px solid var(--dot-red);color:var(--dot-red)" :disabled="revoking"
+            @click="revokeCurrentRelaySession">
+            {{ revoking ? 'Révocation…' : 'Révoquer la session relay' }}
+          </button>
+          <p v-if="revokeError" class="text-xs mt-2" role="alert" style="color:var(--dot-red)">
+            Révocation non confirmée. La session peut encore être active : vérifie la connexion avant de réessayer.
+          </p>
         </div>
       </section>
 
@@ -338,6 +346,8 @@
 
 <script setup lang="ts">
 const bridge = useDevBridge()
+const revoking = ref(false)
+const revokeError = ref(false)
 const { config: netConfig, getCandidates, testUrl, isHttpsContext } = useNetworkConfig()
 const push = usePushNotifications()
 
@@ -405,6 +415,16 @@ function reconnect() {
 function clearSession() {
   bridge.clearStoredSession()
   navigateTo('/setup')
+}
+
+async function revokeCurrentRelaySession() {
+  if (!window.confirm('Révoquer cette session pour tous ses clients associés ? Un nouvel appairage VS Code sera nécessaire.')) return
+  revoking.value = true
+  revokeError.value = false
+  const ok = await bridge.revokeRelaySession()
+  revoking.value = false
+  if (ok) void navigateTo('/setup')
+  else revokeError.value = true
 }
 
 // ── CLI Registry ───────────────────────────────────────
