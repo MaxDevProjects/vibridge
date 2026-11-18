@@ -670,7 +670,8 @@ export class RelayClient {
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
         const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false,
           typeof msg.request_id === 'string' ? msg.request_id : undefined, windowId);
-        return routed?.queued ?? adapters.send({ text: msg.text, tool, target });
+        return routed ? routed.queued : windows.length === 1
+          ? adapters.send({ text: msg.text, tool, target }) : false;
       }
       case 'adapter_toggle':
         if (typeof msg.id !== 'string') return false;
@@ -679,11 +680,15 @@ export class RelayClient {
         void this.sendStatusSnapshot();
         return true;
       case 'notif_response': {
+        // Legacy response is unscoped plain text, NOT an approved CLI operation.
+        if (windows.length !== 1) return false;
         if (typeof msg.id !== 'string' || (msg.action !== 'validate' && msg.action !== 'refuse')) return false;
         const note = `Mobile user ${msg.action === 'validate' ? 'approved' : 'rejected'} request ${msg.id}`;
         return adapters.send({ text: note });
       }
       case 'action':
+        // The legacy action runner addresses the global adapter, not a window.
+        if (windows.length !== 1) return false;
         if (typeof msg.action !== 'string') return false;
         await adapters.runAction(msg.action, Array.isArray(msg.args) ? msg.args.map(String) : []);
         return true;
@@ -695,7 +700,8 @@ export class RelayClient {
         return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true, request_id: msg.request_id, windowId });
       }
       case 'list_projects': {
-        const projects = ipc.getProjects();
+        if (windows.length > 1 && (!windowId || !windows.some(window => window.id === windowId))) return false;
+        const projects = ipc.getProjects(windowId);
         const listing = projects.length ? { projects, parentDir: ipc.getProjectsParentDir(windowId) } : listProjects(workspace.path);
         this.send('projects_list', { payload: { ...listing, windowId }, windowId });
         return true;

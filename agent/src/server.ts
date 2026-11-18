@@ -186,6 +186,9 @@ export function createServer(deps: ServerDeps) {
       res.status(409).json({ error: 'window unavailable or ambiguous' }); return;
     }
     const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, true, undefined, windowId);
+    if (!routed && windows.length > 1) {
+      res.status(409).json({ error: 'explicit terminal target required with multiple windows' }); return;
+    }
     if (routed) {
       res.status(routed.queued ? 200 : 503).json({ queued: routed.queued, target: routed.target });
       return;
@@ -384,7 +387,8 @@ export function createServer(deps: ServerDeps) {
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
         const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter,
           typeof msg.request_id === 'string' ? msg.request_id : undefined, windowId);
-        const queued = routed?.queued ?? adapters.send({ text, tool, target });
+        const queued = routed?.queued ?? (windows.length === 1
+          ? adapters.send({ text, tool, target }) : false);
         if (typeof msg.request_id === 'string') {
           ws.send(JSON.stringify({
             type: 'message_ack',
@@ -407,6 +411,10 @@ export function createServer(deps: ServerDeps) {
       }
 
       if (msg.type === 'notif_response') {
+        if (windows.length !== 1) {
+          ws.send(JSON.stringify({ type: 'action_rejected', action: msg.type, reason: 'unscoped_adapter' }))
+          return
+        }
         const action = msg.action === 'validate' ? 'approved' : 'rejected';
         const note = `Mobile user ${action} request ${String(msg.id ?? '')}`.trim();
         adapters.send({ text: note });

@@ -126,6 +126,10 @@ export class IpcServer {
 
     // Forward AI output back to the extension
     const off = this.queue.onOutput((payload: OutputPayload) => {
+      const data = payload.data && typeof payload.data === 'object'
+        ? payload.data as { windowId?: string } : null;
+      // Prevent a window's terminal output leaking into other VS Code mirrors.
+      if (data?.windowId && this.socketWindows.get(socket) !== data.windowId) return;
       if (authenticated && !socket.destroyed && socket.writable) {
         try {
           socket.write(JSON.stringify({ type: 'output', payload }) + '\n');
