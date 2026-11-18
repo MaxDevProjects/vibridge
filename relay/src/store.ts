@@ -86,6 +86,16 @@ export class RelayStore {
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      -- Idempotency must survive a relay process restart. An action is never
+      -- replayed merely because its acknowledgement was lost.
+      CREATE TABLE IF NOT EXISTS remote_command_ids (
+        session_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        reserved_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, request_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
       DELETE FROM message_history
       WHERE type IN ('status_snapshot', 'relay_session')
         AND (instr(payload_json, '"agentToken"') > 0 OR instr(payload_json, '"pairingCode"') > 0);
@@ -111,6 +121,20 @@ export class RelayStore {
     if (!snapshotColumns.some(column => column.name === 'control_json')) {
       this.db.exec('ALTER TABLE workspace_snapshots ADD COLUMN control_json TEXT')
     }
+  }
+
+  /** Reserve an action ID before forwarding it. Never release on timeout or failure:
+   * the local CLI may have received it even when the relay lost its ACK.
+   * Records persist for the session lifetime and cascade on session expiry.
+   */
+  reserveRemoteCommand(sessionId: string, requestId: string): boolean {
+    if (!requestId || requestId.length > 128) return false
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO remote_command_ids (session_id, request_id, reserved_at)
+      SELECT id, ?, ? FROM sessions
+      WHERE id = ? AND status <> 'closed' AND expires_at > ?
+    `).run(requestId, Date.now(), sessionId, Date.now())
+    return result.changes === 1
   }
 
   private makePairingCode(): string {

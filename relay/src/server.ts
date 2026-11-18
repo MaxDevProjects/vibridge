@@ -57,7 +57,6 @@ export function createRelayServer(options: RelayServerOptions) {
   const { auth, store, publicBaseUrl, uiBaseUrl, sessionTtlMs } = options
   const peers = new Map<string, SessionPeers>()
   const pendingAgentRequests = new Map<string, PendingAgentRequest>()
-  const recentCommands = new Map<string, number>()
 
   app.use((_req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -627,16 +626,10 @@ export function createRelayServer(options: RelayServerOptions) {
     const readOnly = type === 'list_projects' || type === 'get_preview_url' || type === 'get_pairing_code'
     if (!readOnly) {
       if (!id) return reply('rejected', 'request_id_required')
-      const key = sessionId + ':' + id
-      if (recentCommands.has(key)) return reply('unconfirmed', 'duplicate_request_not_replayed')
-      // Register before forwarding: duplicate submissions are never silently re-executed.
-      recentCommands.set(key, Date.now())
-      if (recentCommands.size > 4_096) {
-        const cutoff = Date.now() - 15 * 60_000
-        for (const [request, at] of recentCommands) {
-          if (at < cutoff) recentCommands.delete(request)
-        }
-        if (recentCommands.size > 4_096) recentCommands.delete(recentCommands.keys().next().value!)
+      // SQLite reservation is atomic and persists across relay restarts.
+      // Never release on delivery timeout: execution may already have begun.
+      if (!store.reserveRemoteCommand(sessionId, id)) {
+        return reply('unconfirmed', 'duplicate_request_not_replayed')
       }
     }
 

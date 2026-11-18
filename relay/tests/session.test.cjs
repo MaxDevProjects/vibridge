@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict')
 const { once } = require('node:events')
 const { test } = require('node:test')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { RelayStore } = require('../dist/store')
 const { fixture } = require('./fixture.cjs')
 
 test('a mobile credential exposes only its own session and no bearer tokens', async t => {
@@ -83,4 +87,32 @@ test('an authenticated socket and HTTP access expire with the session', async t 
   assert.equal(JSON.parse((await reply)[0]).type, 'auth_ok')
   assert.equal((await once(ws, 'close'))[0], 4401)
   assert.equal((await api('/workspaces', { token: mobileToken })).status, 401)
+})
+
+
+test('remote command deduplication survives relay restarts and remains session-scoped', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibridge-replay-'))
+  const file = path.join(dir, 'relay.sqlite')
+  try {
+    const first = new RelayStore(file)
+    const expiresAt = Date.now() + 60_000
+    const one = first.createSession({ agentToken: 'agent-1', expiresAt })
+    const two = first.createSession({ agentToken: 'agent-2', expiresAt })
+    assert.equal(first.reserveRemoteCommand(one.id, 'same-id'), true)
+    assert.equal(first.reserveRemoteCommand(one.id, 'same-id'), false)
+    first.close()
+
+    const restarted = new RelayStore(file)
+    try {
+      assert.equal(restarted.reserveRemoteCommand(one.id, 'same-id'), false)
+      assert.equal(restarted.reserveRemoteCommand(two.id, 'same-id'), true)
+      assert.equal(restarted.reserveRemoteCommand(one.id, 'new-id'), true)
+      assert.equal(restarted.reserveRemoteCommand('missing-session', 'test-id'), false)
+      assert.equal(restarted.reserveRemoteCommand(one.id, ''), false)
+    } finally {
+      restarted.close()
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
