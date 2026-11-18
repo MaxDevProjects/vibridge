@@ -58,6 +58,9 @@ services:
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
       UI_PUBLIC_URL: ${UI_PUBLIC_URL:-}
       JWT_SECRET: ${JWT_SECRET:?Run scripts/check-ports.sh to generate .env}
+      VIBRIDGE_REMOTE_MODE: ${VIBRIDGE_REMOTE_MODE:-observe}
+      VIBRIDGE_ALLOWED_CLIS: ${VIBRIDGE_ALLOWED_CLIS:-codex,claude-code}
+      VIBRIDGE_ALLOW_TERMINAL_CLOSE: ${VIBRIDGE_ALLOW_TERMINAL_CLOSE:-false}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_EMAIL: ${VAPID_EMAIL:-mailto:devbridge@localhost}
