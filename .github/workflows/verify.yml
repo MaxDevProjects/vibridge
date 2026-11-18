@@ -28,7 +28,7 @@ jobs:
       - run: npm --prefix nuxt-ui ci
       - run: npm --prefix relay test
       - run: npm --prefix agent test
-      - run: npm --prefix extension run build
+      - run: npm --prefix extension test
       - run: node --test tests/bridge.e2e.cjs
       - run: npm --prefix nuxt-ui run test:unit
       - run: npm --prefix nuxt-ui run build
