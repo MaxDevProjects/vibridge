@@ -1080,14 +1080,20 @@ async function loadFileTree() {
       const token = bridge.token.value ?? ''
       const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
       const workspaceId = bridge.activeWorkspaceId.value
+      const windowId = bridge.activeWindowId.value
+      if (!windowId && bridge.windows.value.length > 1) {
+        fileTree.value = []
+        return
+      }
       if (relayBase && bridge.relaySessionId.value) {
         const res = await fetch(
-          `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}`,
+          `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}`,
           { headers: { Authorization: `Bearer ${token}` } },
         )
         if (res.ok) {
           const data = await res.json() as { tree?: FileNode[] }
           if (Array.isArray(data.tree)) {
+            if (windowId !== bridge.activeWindowId.value) return
             fileTree.value = data.tree
             return
           }
@@ -1096,8 +1102,11 @@ async function loadFileTree() {
     } catch {
       // fall back to the latest cached snapshot below
     }
-    const snapshotTree = bridge.agentStatus.value?.fileTree as FileNode[] | undefined
-    if (Array.isArray(snapshotTree)) fileTree.value = snapshotTree
+    // Never show the last focused window's cached tree for another window.
+    if (!bridge.activeWindowId.value) {
+      const snapshotTree = bridge.agentStatus.value?.fileTree as FileNode[] | undefined
+      fileTree.value = Array.isArray(snapshotTree) ? snapshotTree : []
+    } else fileTree.value = []
     return
   }
   const t = bridge.token.value
@@ -1143,8 +1152,9 @@ async function loadSelectedFileContent(path: string) {
       const token = bridge.token.value ?? ''
       const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
       const workspaceId = bridge.activeWorkspaceId.value
+      const windowId = bridge.activeWindowId.value
       const res = await fetch(
-        `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+        `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}&path=${encodeURIComponent(path)}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       if (!res.ok) {
@@ -1152,6 +1162,7 @@ async function loadSelectedFileContent(path: string) {
         return
       }
       const data = await res.json() as { content?: string }
+      if (windowId !== bridge.activeWindowId.value) return
       selectedFileContent.value = data.content ?? ''
       return
     } catch {
@@ -1186,7 +1197,10 @@ function openCodeFile(path: string) {
 
 async function loadPreviewUrl() {
   if (bridge.mode.value === 'relay') {
-    previewUrl.value = String(bridge.agentStatus.value?.previewUrl ?? '')
+    // The old preview detector is global to the agent, not scoped to a VS Code
+    // window. Hide it rather than show project B's localhost URL under project A.
+    previewUrl.value = bridge.windows.value.length > 1
+      ? '' : String(bridge.agentStatus.value?.previewUrl ?? '')
     return
   }
   const t = bridge.token.value
@@ -1803,7 +1817,14 @@ watch(() => bridge.projectTransition.value, (pending, previous) => {
 })
 
 watch(() => bridge.activeWindowId.value, () => {
-  if (bridge.status.value === 'connected') void requestProjects()
+  fileTree.value = []
+  selectedFile.value = null
+  selectedFileContent.value = ''
+  previewUrl.value = ''
+  if (bridge.status.value === 'connected') {
+    void requestProjects()
+    void loadFileTree()
+  }
 })
 
 watch(() => bridge.activeProjectPath.value, (next, previous) => {
