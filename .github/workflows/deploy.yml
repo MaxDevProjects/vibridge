@@ -26,23 +26,21 @@ jobs:
           script: |
             set -eu
             cd "$SERVER_PATH"
-            git fetch origin main
-            git reset --hard origin/main
-
-            if docker compose version >/dev/null 2>&1; then
-              compose_version=2
-            else
-              compose_version=1
-              docker-compose version
+            # Fail instead of overwriting manually adjusted VPS files.
+            if [ "$(git branch --show-current)" != "main" ]; then
+              echo "Expected the VPS repository to be on main" >&2
+              exit 1
             fi
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo "Uncommitted VPS changes detected. Back them up and reconcile before deployment." >&2
+              exit 1
+            fi
+            git fetch origin main
+            git merge --ff-only origin/main
 
-            compose() {
-              if [ "$compose_version" -eq 2 ]; then
-                docker compose -f docker-compose.prod.yml "$@"
-              else
-                docker-compose -f docker-compose.prod.yml "$@"
-              fi
-            }
+            # Compose V2 is required; never silently fall back to legacy V1.
+            docker compose version
+            compose() { docker compose -f docker-compose.prod.yml "$@"; }
 
             deploy_service() {
               service=$1
