@@ -104,6 +104,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.cjs",
     "watch": "tsc -watch -p tsconfig.json",
     "package": "npx @vscode/vsce package"
   },
