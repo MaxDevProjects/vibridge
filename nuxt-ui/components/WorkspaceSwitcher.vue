@@ -8,7 +8,12 @@
         class="inline-block w-1.5 h-1.5 rounded-full"
         :style="`background:${activeWorkspace && activeWorkspace.connected !== false ? 'var(--dot-green)' : 'var(--border)'}`"
       />
-      <span class="truncate max-w-[12rem]">{{ activeWorkspaceLabel }}</span>
+      <span class="flex min-w-0 flex-col text-left">
+        <span class="truncate max-w-[14rem] font-semibold" :title="activeProjectPath || activeProjectLabel">{{ activeProjectLabel }}</span>
+        <span class="truncate max-w-[14rem] text-[9px] normal-case tracking-normal" style="color:var(--muted)">
+          {{ activeWorkspace ? `VS Code · ${activeWorkspaceLabel}` : 'VS Code non connecté' }}
+        </span>
+      </span>
       <span class="ml-auto text-[9px]" style="color:var(--muted)">▾</span>
     </summary>
     <div
@@ -49,13 +54,13 @@
             v-for="project in projects"
             :key="project.path"
             class="w-full flex items-center gap-2 px-3 py-2 text-left text-[10px] uppercase tracking-[0.16em] transition-colors hover:bg-surface disabled:opacity-40"
-            :style="project.isActive ? 'color:var(--text)' : 'color:var(--muted)'"
-            :disabled="Boolean(projectOpening[project.path])"
+            :style="isCurrentProject(project) ? 'color:var(--text)' : 'color:var(--muted)'"
+            :disabled="isCurrentProject(project) || Boolean(projectOpening[project.path])"
             @click="openListedProject(project.path, false)"
           >
-            <span>{{ project.isActive ? '●' : '○' }}</span>
+            <span>{{ isCurrentProject(project) ? '●' : '○' }}</span>
             <span class="truncate flex-1">{{ project.name }}</span>
-            <span v-if="project.isActive" class="text-[9px]">actif</span>
+            <span v-if="isCurrentProject(project)" class="text-[9px]">actif</span>
             <span v-else class="text-[9px]">ouvrir</span>
           </button>
         </template>
@@ -68,6 +73,10 @@
             Retour
           </button>
         </div>
+        <p class="px-3 py-2 text-[10px] leading-relaxed" style="color:var(--muted)">
+          « Ouvrir ici » change le projet de la fenêtre pilotée. « En parallèle »
+          ouvre une autre fenêtre ; son contrôle dépend de sa connexion à l'agent.
+        </p>
         <p v-if="loadingProjects" class="px-3 py-3 text-[10px] uppercase tracking-[0.16em]" style="color:var(--muted)">
           Chargement…
         </p>
@@ -79,17 +88,17 @@
             style="border-bottom:1px solid var(--border)"
           >
             <div class="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em]" style="color:var(--text)">
-              <span>{{ project.isActive ? '●' : '○' }}</span>
+              <span>{{ isCurrentProject(project) ? '●' : '○' }}</span>
               <span class="truncate flex-1">{{ project.name }}</span>
             </div>
             <div class="mt-2 grid grid-cols-2 gap-2">
               <button
                 class="px-2 py-2 text-[9px] uppercase tracking-[0.14em] transition-colors disabled:opacity-40"
                 style="border:1px solid var(--border);color:var(--text)"
-                :disabled="Boolean(projectOpening[project.path])"
+                :disabled="isCurrentProject(project) || Boolean(projectOpening[project.path])"
                 @click="openListedProject(project.path, false)"
               >
-                {{ projectOpening[project.path] === 'replace' ? 'Ouverture…' : 'Ouvrir ici' }}
+                {{ isCurrentProject(project) ? 'Projet actif' : projectOpening[project.path] === 'replace' ? 'Ouverture…' : 'Ouvrir ici' }}
               </button>
               <button
                 class="px-2 py-2 text-[9px] uppercase tracking-[0.14em] transition-colors disabled:opacity-40"
@@ -111,6 +120,7 @@
 </template>
 
 <script setup lang="ts">
+import { projectIsActive, projectName } from '~/composables/projectContext'
 interface WorkspaceOption {
   id: string
   name: string
@@ -127,10 +137,12 @@ interface ProjectOption {
 const props = withDefaults(defineProps<{
   workspaces: WorkspaceOption[]
   activeWorkspaceId: string
+  activeProjectPath?: string
   projects?: ProjectOption[]
   loadingProjects?: boolean
   projectOpening?: Record<string, string>
 }>(), {
+  activeProjectPath: '',
   projects: () => [],
   loadingProjects: false,
   projectOpening: () => ({}),
@@ -148,6 +160,12 @@ const showProjects = ref(false)
 
 const activeWorkspace = computed(() => props.workspaces.find(workspace => workspace.id === props.activeWorkspaceId) ?? null)
 const activeWorkspaceLabel = computed(() => activeWorkspace.value?.name ?? 'Aucun workspace')
+const activeProjectLabel = computed(() => props.activeProjectPath
+  ? projectName(props.activeProjectPath)
+  : 'Projet non synchronisé')
+function isCurrentProject(project: ProjectOption): boolean {
+  return projectIsActive(project.path, props.activeProjectPath)
+}
 
 function selectWorkspace(workspaceId: string) {
   open.value = false

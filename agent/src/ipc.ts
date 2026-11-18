@@ -168,6 +168,16 @@ export class IpcServer {
       if (this.activeExtension === socket) {
         this.activeExtension = null;
         this.ideState = null;
+        // A replaced VS Code window must not leave the old project's terminals
+        // looking active while the new extension is starting up.
+        const cleared = { workspaceFolders: [], activeFile: null, activeLanguage: null,
+          activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
+        this.broadcast?.({ type: 'ide_snapshot', state: cleared });
+        this.forward?.('ide_snapshot', { payload: { state: cleared } });
+        this.projects = [];
+        this.projectsParentDir = '';
+        this.broadcast?.({ type: 'projects_update', projects: [], parentDir: '' });
+        this.forward?.('projects_update', { projects: [], parentDir: '' });
       }
       if (registeredAdapterId && this.adapterOwners.get(registeredAdapterId) === socket) {
         this.adapterOwners.delete(registeredAdapterId);
@@ -180,6 +190,17 @@ export class IpcServer {
 
     const registerAdapter = (id: string, label: string) => {
       registeredAdapterId = id;
+      if (this.activeExtension !== socket) {
+        // A different VS Code window took focus. Invalidate previous terminal
+        // identities before accepting the new window's own snapshot.
+        this.ideState = null;
+        this.projects = [];
+        this.projectsParentDir = '';
+        const cleared = { workspaceFolders: [], activeFile: null, activeLanguage: null,
+          activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
+        this.forward?.('ide_snapshot', { payload: { state: cleared } });
+        this.forward?.('projects_update', { projects: [], parentDir: '' });
+      }
       this.activeExtension = socket;
       this.adapterOwners.set(id, socket);
       this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
@@ -243,6 +264,7 @@ export class IpcServer {
           activeFile: msg.activeFile ?? null,
           activeLanguage: msg.activeLanguage ?? null,
           activeTerminal: msg.activeTerminal ?? null,
+          activeTerminalId: msg.activeTerminalId ?? null,
           terminals: Array.isArray(msg.terminals) ? msg.terminals : [],
           updatedAt: typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now(),
         };
@@ -379,7 +401,9 @@ export class IpcServer {
         this.projects = Array.isArray(msg.projects)
           ? (msg.projects as Array<{ name: string; path: string; isActive: boolean }>)
           : [];
-        this.broadcast?.({ type: 'projects_update', projects: this.projects, parentDir: this.projectsParentDir });
+        const update = { projects: this.projects, parentDir: this.projectsParentDir };
+        this.broadcast?.({ type: 'projects_update', ...update });
+        this.forward?.('projects_update', update);
         break;
       }
       case 'inject_message': {

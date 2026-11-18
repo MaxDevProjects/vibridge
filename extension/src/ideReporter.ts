@@ -88,6 +88,11 @@ export class IdeReporter {
     return { dispose: () => this.dispose() };
   }
 
+  /** Send a fresh snapshot whenever this VS Code window becomes the controller. */
+  refresh(): void {
+    this.sendSnapshot();
+  }
+
   dispose(): void {
     for (const disposable of this.disposables) {
       disposable.dispose();

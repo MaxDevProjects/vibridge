@@ -788,6 +788,29 @@ export function createRelayServer(options: RelayServerOptions) {
         }
       }
 
+      // IDE/project updates are live state, not conversation history. Persist
+      // one current snapshot per workspace without evicting genuine chat output.
+      if (msg.type === 'ide_snapshot' && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const state = (payload as Record<string, unknown>).state
+        if (state && typeof state === 'object' && !Array.isArray(state)) {
+          const ide = state as Record<string, unknown>
+          store.upsertWorkspaceSnapshot(sessionId, ws.workspaceId, {
+            ideState: ide,
+            timestamp: typeof ide.updatedAt === 'number' ? ide.updatedAt : Date.now(),
+          })
+          sendWorkspaceEvent(sessionId, { type: 'ide_snapshot', workspaceId: ws.workspaceId,
+            state: ide, payload: { state: ide } })
+        }
+        return
+      }
+      if (msg.type === 'projects_update') {
+        const projects = Array.isArray(msg.projects) ? msg.projects : []
+        const parentDir = typeof msg.parentDir === 'string' ? msg.parentDir : ''
+        sendWorkspaceEvent(sessionId, { type: 'projects_update', workspaceId: ws.workspaceId,
+          projects, parentDir, payload: { projects, parentDir } })
+        return
+      }
+
       const envelope = store.append(sessionId, 'agent', {
         type: String(msg.type),
         workspaceId: ws.workspaceId,

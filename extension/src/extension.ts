@@ -271,6 +271,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const ideReporter = new IdeReporter(ipc);
   context.subscriptions.push(ideReporter.start());
 
+  // Several VS Code windows may share one local agent. The last connected
+  // extension is not necessarily the window the developer is currently using.
+  // Re-register on desktop focus and immediately publish that window's project
+  // and terminal snapshot. No remote command is run as a result.
+  context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
+    if (!state.focused || !ipc?.isConnected()) return;
+    ipc.send({ type: 'register', tool: 'vscode', label: 'VS Code Extension' });
+    ipc.send({ type: 'projects_report', ...(getProjectsList() ?? { projects: [], parentDir: '' }) });
+    ideReporter.refresh();
+  }));
+
   // Read-only mirror of adapter output + workspace context inside VS Code
   const mirror = new MirrorView(ipc);
   context.subscriptions.push(mirror.start());
