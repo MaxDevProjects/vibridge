@@ -135,9 +135,9 @@ export class CliRegistry {
     for (const def of definitions.slice(0, 20)) {
       if (!def || !/^[a-z][a-z0-9-]{1,63}$/.test(def.id)) continue;
       if (typeof def.name !== 'string' || !def.name.trim() || def.name.length > 100) continue;
-      if (typeof def.command !== 'string' || !/^[a-zA-Z0-9_.:/\\-]{1,200}$/.test(def.command)) continue;
+      if (typeof def.command !== 'string' || !/^[a-zA-Z0-9_.:\/\\-]{1,200}$/.test(def.command)) continue;
       if (def.args && (!Array.isArray(def.args) || def.args.length > 20
-        || !def.args.every(arg => typeof arg === 'string' && arg.length < 200 && !/[\\r\\n]/.test(arg)))) continue;
+        || !def.args.every(arg => typeof arg === 'string' && arg.length < 200 && !/[\r\n]/.test(arg)))) continue;
       const id = 'host-' + def.id;
       allowed.set(id, {
         id,
