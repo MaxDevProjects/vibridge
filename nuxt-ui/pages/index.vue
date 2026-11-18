@@ -93,10 +93,10 @@
               :style="i < projectsList.length - 1 ? 'border-bottom:1px solid var(--border)' : ''"
             >
               <span class="flex items-center gap-2 truncate">
-                <span v-if="proj.isActive" class="shrink-0" style="color:var(--dot-amber)">★</span>
+                <span v-if="projectIsActive(proj.path, bridge.activeProjectPath.value)" class="shrink-0" style="color:var(--dot-amber)">★</span>
                 <span class="truncate">{{ proj.name }}</span>
               </span>
-              <span v-if="proj.isActive" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
+              <span v-if="projectIsActive(proj.path, bridge.activeProjectPath.value)" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
               <button
                 v-else
                 :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
@@ -230,6 +230,7 @@
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="bridge.activeWorkspaceId.value"
+              :active-project-path="bridge.activeProjectPath.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -346,6 +347,7 @@
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
               :active-workspace-id="bridge.activeWorkspaceId.value"
+              :active-project-path="bridge.activeProjectPath.value"
               :projects="projectsList"
               :loading-projects="projectsLoading"
               :project-opening="projectOpening"
@@ -581,6 +583,8 @@
 </template>
 
 <script setup lang="ts">
+import { projectIsActive, projectName } from '~/composables/projectContext'
+
 import { renderSVG } from 'uqr'
 import type { ActivityEntry } from '~/components/ActivityFeed.vue'
 import type { FileNode } from '~/components/FileTree.vue'
@@ -669,19 +673,14 @@ const tools = computed<Tool[]>(() => (bridge.agentStatus.value?.adapters ?? []).
 const ideState = computed(() => bridge.agentStatus.value?.ideState ?? null)
 const activeTool = computed(() => tools.value.find(t => t.active) ?? null)
 const activeToolLabel = computed(() => activeTool.value?.label ?? '—')
-const activeWorkspaceLabel = computed(() => bridge.mode.value === 'relay'
-  ? bridge.relaySessions.value.find(session => session.id === bridge.relaySessionId.value)?.label
-    ?? bridge.activeWorkspace.value?.name
-    ?? (relaySessionId.value || relayState.value?.sessionId ? 'Session relay' : 'Aucun workspace')
-  : 'Workspace local')
+const activeWorkspaceLabel = computed(() => bridge.activeProjectName.value
+  || bridge.activeWorkspace.value?.name
+  || (bridge.mode.value === 'relay' ? 'Projet non synchronisé' : 'Workspace local'))
 const activeWorkspaceKey = bridge.chatHistoryKey
 function resolveWorkspaceName(workspace: { id: string; name: string }): string {
-  // When the agent falls back to "project" (Docker default), prefer the VS Code workspace folder name
-  const genericNames = new Set(['project', 'workspace', 'app', 'local'])
-  if (!genericNames.has(workspace.name.toLowerCase()) || workspace.id !== bridge.activeWorkspaceId.value) return workspace.name
-  const folder = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
-  if (folder) return lastPathSegment(String(folder))
-  return workspace.name
+  // Only the live IDE snapshot can name the project being controlled.
+  return workspace.id === bridge.activeWorkspaceId.value && bridge.activeProjectName.value
+    ? bridge.activeProjectName.value : workspace.name
 }
 const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
   ? (bridge.relayWorkspaces.value.length
@@ -695,13 +694,12 @@ const relayWorkspaceOptions = computed(() => bridge.mode.value === 'relay'
 const activeProjectLabel = computed(() => {
   const workspace = Array.isArray(ideState.value?.workspaceFolders) ? ideState.value?.workspaceFolders[0] : ''
   if (workspace) return shortText(lastPathSegment(String(workspace)), 26)
-  if (previewUrl.value) return shortText(new URL(previewUrl.value).hostname, 26)
-  return 'Bridge idle'
+  return 'Projet non synchronisé'
 })
 const projectRootLabel = computed(() => {
   const activeFile = ideState.value?.activeFile
   if (typeof activeFile === 'string' && activeFile) return shortText(activeFile, 42)
-  return fileTree.value.length ? '/workspace' : 'No files loaded'
+  return bridge.activeProjectPath.value || 'Aucun dossier VS Code confirmé'
 })
 const transportLabel = computed(() => {
   if (bridge.mode.value === 'relay') return 'Relay'
@@ -826,15 +824,20 @@ async function loadProjects() {
   }
 }
 
-async function openProject(projPath: string, projName: string, newWindow = true) {
-  projectOpening.value[projPath] = newWindow ? 'parallel' : 'replace'
+async function openProject(projPath: string, projName: string, newWindow = false) {
   if (bridge.mode.value === 'relay') {
-    bridge.send({ type: 'open_project', path: projPath, newWindow, payload: { projectPath: projPath, newWindow } })
-    projectOpening.value[projPath] = 'done'
-    pushActivity('sys', `${projName} ouvert dans VS Code`)
-    setTimeout(() => { delete projectOpening.value[projPath] }, 4_000)
+    if (!bridge.requestOpenProject(projPath, newWindow)) {
+      pushActivity('err', 'Ouverture impossible : projet en cours de changement ou agent indisponible')
+      return
+    }
+    projectOpening.value[projPath] = newWindow ? 'parallel' : 'replace'
+    pushActivity('sys', newWindow
+      ? `Ouverture en parallèle demandée pour ${projName}. La fenêtre contrôlée ne change pas automatiquement.`
+      : `Ouverture de ${projName} demandée. En attente de la confirmation VS Code.`)
+    if (newWindow) setTimeout(() => { delete projectOpening.value[projPath] }, 4_000)
     return
   }
+  projectOpening.value[projPath] = newWindow ? 'parallel' : 'replace'
   try {
     const token = bridge.token.value ?? ''
     const base = bridge.activeUrl.value ?? currentAgentBaseUrl()
@@ -845,7 +848,7 @@ async function openProject(projPath: string, projName: string, newWindow = true)
     })
     if (res.ok) {
       projectOpening.value[projPath] = 'done'
-      pushActivity('sys', `${projName} ouvert dans VS Code`)
+      pushActivity('sys', `Demande d'ouverture de ${projName} acceptée par l'agent local`)
       setTimeout(() => { delete projectOpening.value[projPath] }, 4_000)
     } else {
       projectOpening.value[projPath] = ''
@@ -1424,9 +1427,10 @@ function setAiTyping(value: boolean) {
 const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const REPLY_TARGET_KEY = 'vb:chatTarget'
-const replyTarget = ref(
-  import.meta.client ? (localStorage.getItem(REPLY_TARGET_KEY) ?? 'bash') : 'bash'
-)
+const replyTarget = ref('chat:devbridge')
+function targetStorageKey(): string {
+  return `${REPLY_TARGET_KEY}:${bridge.projectContextKey.value}`
+}
 const replyTargetPinned = ref(false)
 const replyTargetLabel = computed(() => {
   const target = chatTargets.value.find((item) => item.id === replyTarget.value)
@@ -1494,11 +1498,15 @@ const chatTargets = computed<ChatTarget[]>(() => {
 })
 
 const selectedChatTargetReady = computed(() => {
+  if (bridge.projectTransition.value) return false
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
   const target = chatTargets.value.find((item) => item.id === replyTarget.value)
   if (!target) return false
   if (target.id === 'bash' || target.id === 'chat:devbridge') return true
-  if (target.kind === 'terminal') return true
+  if (target.kind === 'terminal') {
+    if (target.id === 'bash') return true
+    return terminals.some(terminal => `terminal:${String(terminal.id ?? terminal.name)}` === target.id)
+  }
   return Boolean(target.state !== 'starting' && target.terminalName && terminals.some(
     terminal => String(terminal?.name ?? '').trim() === target.terminalName
   ))
@@ -1576,7 +1584,7 @@ function appendAiMessage(text: string, tool?: string, merge = false, target?: st
 function setReplyTarget(nextTarget: string, pinned = false) {
   if (!nextTarget) return
   replyTarget.value = nextTarget
-  if (import.meta.client) localStorage.setItem(REPLY_TARGET_KEY, nextTarget)
+  if (import.meta.client && bridge.projectContextKey.value) localStorage.setItem(targetStorageKey(), nextTarget)
   if (pinned) replyTargetPinned.value = true
 }
 
@@ -1707,6 +1715,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'clis_update' && Array.isArray(msg.clis)) {
     cliList.value = msg.clis as CliItem[]
   } else if (msg.type === 'projects_update' && Array.isArray(msg.projects)) {
+    projectsLoading.value = false
     projectsList.value = msg.projects as ProjectItem[]
   } else if (msg.type === 'projects_list' && Array.isArray(msg.projects)) {
     projectsLoading.value = false
@@ -1768,12 +1777,40 @@ watch(() => bridge.status.value, (next) => {
 watch(chatTargets, (targets) => {
   if (!targets.some((target) => target.id === replyTarget.value)) {
     replyTargetPinned.value = false
-    replyTarget.value = 'bash'
-  }
-  if (!replyTarget.value && targets.length) {
-    setReplyTarget('bash')
+    setReplyTarget('chat:devbridge')
   }
 }, { immediate: true })
+
+watch(() => bridge.projectContextKey.value, (scope) => {
+  replyTargetPinned.value = false
+  const saved = import.meta.client && scope ? localStorage.getItem(targetStorageKey()) : null
+  const activeId = bridge.agentStatus.value?.ideState?.activeTerminalId
+  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : 'chat:devbridge')
+}, { immediate: true })
+
+watch(() => bridge.projectTransition.value, (pending, previous) => {
+  if (pending || !previous) return
+  if (projectIsActive(previous.path, bridge.activeProjectPath.value)) {
+    projectOpening.value[previous.path] = 'done'
+    pushActivity('sys', `Projet actif confirmé : ${projectName(previous.path)}`)
+    setTimeout(() => { delete projectOpening.value[previous.path] }, 2_000)
+    void requestProjects()
+    void loadFileTree()
+  } else {
+    delete projectOpening.value[previous.path]
+    pushActivity('err', 'Le changement de projet n’a pas été confirmé par VS Code')
+  }
+})
+
+watch(() => bridge.activeProjectPath.value, (next, previous) => {
+  if (next && next !== previous && bridge.status.value === 'connected') {
+    void requestProjects()
+    void loadFileTree()
+    selectedFile.value = null
+    selectedFileContent.value = ''
+    previewUrl.value = ''
+  }
+})
 
 watch(activeWorkspaceKey, (workspaceId, previous) => {
   if (chatHistorySaveTimer) {
