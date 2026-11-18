@@ -8,6 +8,7 @@ import type { WorkspaceIdentity } from './workspace';
 import type { CliRegistry } from './cliRegistry';
 import { routeTerminalMessage } from './terminal-routing';
 import { listProjects } from './projects';
+import { ControlPolicy } from './control-policy';
 
 interface RelaySessionState {
   enabled: boolean;
@@ -64,6 +65,7 @@ interface RelayClientOptions {
   ipc: IpcServer;
   queue: MessageQueue;
   cliRegistry?: CliRegistry;
+  controlPolicy?: ControlPolicy;
 }
 
 export class RelayClient {
@@ -207,6 +209,7 @@ export class RelayClient {
         previewUrl: this.options.adapters.getPreviewUrl(),
         fileTree: fileTreeNode.children ?? [],
         relay: this.getState(),
+        control: (this.options.controlPolicy ?? new ControlPolicy()).describe(),
         timestamp: Date.now(),
       },
     });
@@ -584,6 +587,11 @@ export class RelayClient {
 
   private async dispatchMobileCommand(msg: Record<string, unknown>): Promise<boolean> {
     const { adapters, ipc, cliRegistry, workspace } = this.options;
+    const decision = (this.options.controlPolicy ?? new ControlPolicy()).authorize(String(msg.type ?? ''), msg);
+    if (!decision.allowed) {
+      this.send('action_rejected', { action: String(msg.type ?? ''), reason: decision.reason });
+      return false;
+    }
     switch (msg.type) {
       case 'chat':
       case 'message': {
