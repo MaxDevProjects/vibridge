@@ -153,6 +153,8 @@ export function createServer(deps: ServerDeps) {
       activeAdapter: adapters.active(),
       control: controlPolicy.describe(),
       ideState: deps.ipc.getIdeState(),
+      windows: deps.ipc.getWindows(),
+      focusedWindowId: deps.ipc.getFocusedWindowId(),
       previewUrl: adapters.getPreviewUrl() ?? deps.ipc.getPreviewUrl(),
       relay: relay?.getState() ?? null,
       timestamp: Date.now(),
@@ -177,8 +179,16 @@ export function createServer(deps: ServerDeps) {
   });
 
   app.post('/message', requireAuth, controlOnly('message'), (req, res) => {
-    const { text, tool, target } = req.body as { text: string; tool?: string; target?: string };
-    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target);
+    const { text, tool, target, windowId } = req.body as { text: string; tool?: string; target?: string; windowId?: string };
+    const windows = deps.ipc.getWindows().filter(window => window.connected)
+    if (!windows.length || (windowId
+      ? !windows.some(window => window.id === windowId) : windows.length !== 1)) {
+      res.status(409).json({ error: 'window unavailable or ambiguous' }); return;
+    }
+    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, true, undefined, windowId);
+    if (!routed && windows.length > 1) {
+      res.status(409).json({ error: 'explicit terminal target required with multiple windows' }); return;
+    }
     if (routed) {
       res.status(routed.queued ? 200 : 503).json({ queued: routed.queued, target: routed.target });
       return;
@@ -188,13 +198,18 @@ export function createServer(deps: ServerDeps) {
   });
 
   app.post('/terminal/send', requireAuth, controlOnly('message'), (req, res) => {
-    const { message, target, sendEnter } = req.body as { message?: string; target?: string; sendEnter?: boolean };
+    const { message, target, sendEnter, windowId } = req.body as { message?: string; target?: string; sendEnter?: boolean; windowId?: string };
     const text = String(message ?? '').trim();
     if (!text) {
       res.status(400).json({ error: 'message required' });
       return;
     }
-    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter !== false);
+    const windows = deps.ipc.getWindows().filter(window => window.connected)
+    if (!windows.length || (windowId
+      ? !windows.some(window => window.id === windowId) : windows.length !== 1)) {
+      res.status(409).json({ error: 'window unavailable or ambiguous' }); return;
+    }
+    const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter !== false, undefined, windowId);
     if (!routed) {
       res.status(400).json({ error: 'unknown target' });
       return;
@@ -266,8 +281,9 @@ export function createServer(deps: ServerDeps) {
     }
     const known = listing.projects.some(p => p.path === projectPath);
     if (!known) { res.status(403).json({ error: 'Projet inconnu' }); return; }
-    deps.ipc.sendToExtension({ type: 'open_project', projectPath, newWindow });
-    res.json({ ok: true });
+    const windowId = typeof req.body?.windowId === 'string' ? req.body.windowId : undefined;
+    const queued = deps.ipc.sendToExtension({ type: 'open_project', projectPath, newWindow, windowId });
+    res.status(queued ? 200 : 409).json({ ok: queued, error: queued ? undefined : 'window unavailable or ambiguous' });
   });
 
   /** Public VAPID key for browser PushManager subscription */
@@ -348,6 +364,21 @@ export function createServer(deps: ServerDeps) {
         return;
       }
 
+      const windowId = typeof msg.windowId === 'string' ? msg.windowId : undefined;
+      const windows = deps.ipc.getWindows().filter(window => window.connected)
+      const scoped = ['message', 'chat', 'notif_response', 'open_project',
+        'start_cli', 'create_terminal', 'focus_terminal', 'kill_cli']
+      if (scoped.includes(String(msg.type))
+        && (!windows.length || (windowId
+          ? !windows.some(window => window.id === windowId)
+          : windows.length !== 1))) {
+        ws.send(JSON.stringify({ type: 'action_rejected', action: msg.type, reason: 'window_unavailable_or_ambiguous' }))
+        if (typeof msg.request_id === 'string') ws.send(JSON.stringify({
+          type: 'message_ack', request_id: msg.request_id, status: 'rejected', reason: 'window_unavailable_or_ambiguous',
+        }))
+        return
+      }
+
       // Route message to active adapter (or directly to VS Code for terminal targets)
       if (msg.type === 'message' || msg.type === 'chat') {
         const target = typeof msg.target === 'string' ? msg.target : undefined;
@@ -355,8 +386,9 @@ export function createServer(deps: ServerDeps) {
         const text = typeof msg.text === 'string' ? msg.text : '';
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
         const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter,
-          typeof msg.request_id === 'string' ? msg.request_id : undefined);
-        const queued = routed?.queued ?? adapters.send({ text, tool, target });
+          typeof msg.request_id === 'string' ? msg.request_id : undefined, windowId);
+        const queued = routed?.queued ?? (windows.length === 1
+          ? adapters.send({ text, tool, target }) : false);
         if (typeof msg.request_id === 'string') {
           ws.send(JSON.stringify({
             type: 'message_ack',
@@ -379,6 +411,10 @@ export function createServer(deps: ServerDeps) {
       }
 
       if (msg.type === 'notif_response') {
+        if (windows.length !== 1) {
+          ws.send(JSON.stringify({ type: 'action_rejected', action: msg.type, reason: 'unscoped_adapter' }))
+          return
+        }
         const action = msg.action === 'validate' ? 'approved' : 'rejected';
         const note = `Mobile user ${action} request ${String(msg.id ?? '')}`.trim();
         adapters.send({ text: note });
@@ -400,12 +436,16 @@ export function createServer(deps: ServerDeps) {
           type: 'open_project',
           projectPath: typeof msg.path === 'string' ? msg.path : undefined,
           newWindow: msg.newWindow === true,
+          windowId,
         });
         return;
       }
 
       if (msg.type === 'list_projects') {
-        const listing = listProjects(deps.workspace.path);
+        const projects = deps.ipc.getProjects(windowId);
+        const listing = projects.length
+          ? { projects, parentDir: deps.ipc.getProjectsParentDir(windowId) }
+          : listProjects(deps.workspace.path);
         ws.send(JSON.stringify({ type: 'projects_list', projects: listing.projects, parentDir: listing.parentDir }));
         return;
       }
@@ -424,6 +464,7 @@ export function createServer(deps: ServerDeps) {
           command: cli.command,
           args: cli.args,
           terminalName: `DevBridge ${cli.name}`,
+          windowId,
         });
         return;
       }
@@ -434,6 +475,7 @@ export function createServer(deps: ServerDeps) {
         deps.ipc.sendToExtension({
           type: 'create_terminal',
           terminalName,
+          windowId,
         });
         return;
       }
@@ -443,6 +485,8 @@ export function createServer(deps: ServerDeps) {
         deps.ipc.sendToExtension({
           type: 'focus_terminal',
           terminalName: String(msg.terminalName ?? ''),
+          terminalId: msg.terminalId,
+          windowId,
         });
         return;
       }
@@ -452,6 +496,8 @@ export function createServer(deps: ServerDeps) {
         deps.ipc.sendToExtension({
           type: 'kill_cli',
           terminalName: String(msg.terminalName ?? ''),
+          terminalId: msg.terminalId,
+          windowId,
         });
         return;
       }

@@ -112,19 +112,22 @@ const filteredTree = computed(() => filterNodes(tree.value, fileQuery.value))
 async function refreshTree() {
   if (bridge.mode.value === 'relay') {
     const workspaceId = bridge.activeWorkspaceId.value
+    const windowId = bridge.activeWindowId.value
+    if (!windowId && bridge.windows.value.length > 1) { tree.value = []; return }
     try {
-      const res = await fetch(`${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}`, {
+      const res = await fetch(`${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}`, {
         headers: { Authorization: `Bearer ${bridge.token.value}` },
       })
       if (res.ok) {
         const data = await res.json() as { tree?: FileNode[] }
+        if (windowId !== bridge.activeWindowId.value) return
         tree.value = Array.isArray(data.tree) ? data.tree : []
         return
       }
     } catch {
       // ignore and fall back to cached snapshot
     }
-    tree.value = (bridge.agentStatus.value?.fileTree as FileNode[] | undefined) ?? []
+    tree.value = !windowId ? (bridge.agentStatus.value?.fileTree as FileNode[] | undefined) ?? [] : []
     return
   }
   try {
@@ -142,12 +145,14 @@ async function openFile(path: string) {
   if (bridge.mode.value === 'relay') {
     try {
       const workspaceId = bridge.activeWorkspaceId.value
+      const windowId = bridge.activeWindowId.value
       const res = await fetch(
-        `${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+        `${relayBaseUrl()}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}&path=${encodeURIComponent(path)}`,
         { headers: { Authorization: `Bearer ${bridge.token.value}` } },
       )
       if (res.ok) {
         const data = await res.json() as { content?: string }
+        if (windowId !== bridge.activeWindowId.value) return
         fileContent.value = data.content ?? ''
       } else {
         fileContent.value = `[ERREUR ${res.status}]`
@@ -193,6 +198,13 @@ onMounted(() => {
 
 watch(() => bridge.status.value, (s) => {
   if (s === 'connected') refreshTree()
+})
+
+watch(() => bridge.activeWindowId.value, () => {
+  tree.value = []
+  fileContent.value = null
+  activePath.value = null
+  if (bridge.status.value === 'connected') void refreshTree()
 })
 
 watch(() => bridge.activeWorkspaceId.value, () => {

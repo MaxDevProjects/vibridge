@@ -53,6 +53,8 @@ export interface StoredWorkspace {
 export interface WorkspaceSnapshot {
   workspaceId: string
   ideState?: unknown
+  windows?: unknown[]
+  focusedWindowId?: string
   previewUrl?: string | null
   fileTree?: unknown
   control?: unknown

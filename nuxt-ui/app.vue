@@ -50,6 +50,17 @@ onMounted(() => {
     const sessionKey = notifSession || localStorage.getItem('vb:relaySessionId') || ''
     if (sessionKey) {
       localStorage.setItem(`vb:relayWorkspace:${sessionKey}`, notifWorkspace)
+      const windowId = typeof route.query.window === 'string' ? route.query.window.trim() : ''
+      const terminalId = typeof route.query.terminal === 'string' ? route.query.terminal.trim() : ''
+      if (windowId && /^[a-zA-Z0-9-]{1,80}$/.test(windowId)) {
+        localStorage.setItem(`vb:selectedWindow:${sessionKey}:${notifWorkspace}`, windowId)
+        if (terminalId && /^[a-zA-Z0-9-]{1,90}$/.test(terminalId)) {
+          const base = localStorage.getItem('vb:relayUrl') ?? String(config.public.relayUrl ?? '')
+          const workspaceKey = JSON.stringify(['relay', base, sessionKey, notifWorkspace])
+          const contextKey = JSON.stringify([workspaceKey, windowId])
+          localStorage.setItem(`vb:chatTarget:${contextKey}`, `terminal:${terminalId}`)
+        }
+      }
     }
     void router.replace({ path: '/', query: {} })
     return

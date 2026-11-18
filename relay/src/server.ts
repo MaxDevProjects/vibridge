@@ -39,7 +39,7 @@ const MOBILE_COMMANDS = new Set([
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'terminalId', 'cliId', 'sendEnter',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
@@ -350,7 +350,28 @@ export function createRelayServer(options: RelayServerOptions) {
     }
 
     const workspaceId = requestedWorkspace(req)
+    const windowId = typeof req.query.windowId === 'string' ? req.query.windowId.trim() : ''
     const filePath = String(req.query.path ?? '').trim()
+
+    if (windowId && !/^[a-zA-Z0-9-]{1,80}$/.test(windowId)) {
+      res.status(400).json({ error: 'invalid windowId' })
+      return
+    }
+    if (!filePath && windowId) {
+      try {
+        const response = await requestAgentPayload(sessionId, workspaceId, 'relay_file_request', {
+          path: '', windowId, list: true,
+        })
+        if (typeof response.error === 'string') {
+          res.status(409).json({ error: response.error })
+          return
+        }
+        res.json({ tree: Array.isArray(response.tree) ? response.tree : [] })
+      } catch {
+        res.status(503).json({ error: 'window unavailable' })
+      }
+      return
+    }
 
     if (!filePath) {
       const snapshot = workspaceId
@@ -365,7 +386,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
     try {
       const response = await requestAgentPayload(sessionId, workspaceId, 'relay_file_request', {
-        path: filePath,
+        path: filePath, windowId,
       })
       if (typeof response.error === 'string') {
         res.status(404).json({ error: response.error })
@@ -759,7 +780,7 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis']
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'windowId']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),
@@ -799,8 +820,18 @@ export function createRelayServer(options: RelayServerOptions) {
             timestamp: typeof ide.updatedAt === 'number' ? ide.updatedAt : Date.now(),
           })
           sendWorkspaceEvent(sessionId, { type: 'ide_snapshot', workspaceId: ws.workspaceId,
-            state: ide, payload: { state: ide } })
+            state: ide, windowId: typeof ide.windowId === 'string' ? ide.windowId : (payload as Record<string, unknown>).windowId,
+            payload: { state: ide } })
         }
+        return
+      }
+      if (msg.type === 'windows_update') {
+        const windows = Array.isArray(msg.windows) ? msg.windows : []
+        const focusedWindowId = typeof msg.focusedWindowId === 'string' ? msg.focusedWindowId : ''
+        store.upsertWorkspaceSnapshot(sessionId, ws.workspaceId, {
+          windows, focusedWindowId, timestamp: Date.now(),
+        })
+        sendWorkspaceEvent(sessionId, { type: 'windows_update', workspaceId: ws.workspaceId, windows, focusedWindowId })
         return
       }
       if (msg.type === 'projects_update') {

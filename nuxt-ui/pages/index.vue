@@ -97,17 +97,24 @@
                 <span class="truncate">{{ proj.name }}</span>
               </span>
               <span v-if="projectIsActive(proj.path, bridge.activeProjectPath.value)" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
-              <button
-                v-else
-                :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
-                class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
-                :style="projectOpening[proj.path] === 'done'
-                  ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
-                  : 'border:1px solid var(--border);color:var(--text);background:none'"
-                @click="openProject(proj.path, proj.name)"
-              >
-                {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? 'Ouverture…' : projectOpening[proj.path] === 'done' ? 'Ouvert ✓' : 'Ouvrir →' }}
-              </button>
+              <div class="flex shrink-0 items-center gap-1 ml-2">
+                <button v-if="!projectIsActive(proj.path, bridge.activeProjectPath.value)"
+                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
+                  class="text-[9px] px-2 py-1 disabled:opacity-40"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  title="Remplacer le dossier de la fenêtre VS Code sélectionnée"
+                  @click="openProject(proj.path, proj.name, false)">
+                  {{ projectOpening[proj.path] === 'replace' ? 'Ouverture…' : 'Ouvrir ici' }}
+                </button>
+                <button
+                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
+                  class="text-[9px] px-2 py-1 disabled:opacity-40"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  title="Créer une autre fenêtre VS Code sans fermer celle-ci"
+                  @click="openProject(proj.path, proj.name, true)">
+                  {{ projectOpening[proj.path] === 'parallel' ? 'Ouverture…' : 'En parallèle' }}
+                </button>
+              </div>
             </div>
             <p v-if="!projectsList.length" class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
           </div>
@@ -226,6 +233,9 @@
             <div class="text-right text-[9px]" style="color:var(--muted)">{{ latencyLabel }}<br><span class="text-[8px]">{{ transportLabel }}</span></div>
           </div>
 
+          <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+            :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
+
           <div class="px-4 mb-4">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
@@ -343,6 +353,8 @@
 
         <!-- CHAT tab -->
         <div v-show="activeTab === 'chat'" class="absolute inset-0 flex flex-col">
+          <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+            :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
           <div class="shrink-0 px-4 py-3" style="border-bottom:1px solid var(--border)">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
@@ -379,31 +391,38 @@
             <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color:var(--muted)">
               Dans {{ bridge.activeProjectName.value || 'aucun projet synchronisé' }} · Réponse vers {{ replyTargetLabel }}
             </div>
-            <div class="flex gap-2 overflow-x-auto pb-2 mb-2">
-              <button
-                v-for="target in chatTargets"
-                :key="target.id"
-                :disabled="Boolean(bridge.projectTransition.value) || target.state === 'starting'"
-                class="shrink-0 min-w-[9rem] text-left px-3 py-2 disabled:pointer-events-none"
-                :style="targetButtonStyle(target)"
-                @click="selectChatTarget(target)"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-[10px] uppercase tracking-[0.14em] font-mono">{{ targetButtonLabel(target) }}</span>
-                  <span class="text-[8px] uppercase tracking-[0.12em]" style="color:var(--muted)">{{ targetSupportLabel(target) }}</span>
-                </div>
-                <div class="mt-1 text-[9px]" style="color:var(--muted)">{{ target.caption }}</div>
-              </button>
-              <button
-                :disabled="creatingTerminal || Boolean(bridge.projectTransition.value)"
-                class="shrink-0 w-10 flex items-center justify-center text-lg disabled:opacity-30"
-                style="border:1px dashed var(--border);color:var(--muted);background:none"
-                title="Nouveau terminal"
-                @click="createNewTerminal"
-              >
-                +
-              </button>
+            <div class="flex items-center gap-2 mb-2">
+              <label for="vibridge-terminal" class="shrink-0 text-[10px]" style="color:var(--muted)">Terminal</label>
+              <select id="vibridge-terminal"
+                :value="terminalTargets.some(t => t.id === replyTarget) ? replyTarget : ''"
+                :disabled="Boolean(bridge.projectTransition.value)"
+                class="min-w-0 flex-1 px-2 py-2 text-[11px] outline-none"
+                style="background:var(--surface);color:var(--text);border:1px solid var(--border)"
+                @change="chooseTerminalFromSelect">
+                <option value="">Choisir un terminal…</option>
+                <option v-for="target in terminalTargets" :key="target.id" :value="target.id">
+                  {{ target.label }} · {{ target.caption }}
+                </option>
+              </select>
+              <button :disabled="creatingTerminal || Boolean(bridge.projectTransition.value)"
+                class="shrink-0 px-3 py-2 text-xs disabled:opacity-30"
+                style="border:1px solid var(--border);color:var(--text)"
+                title="Créer un terminal dans cette fenêtre"
+                @click="createNewTerminal">+ Terminal</button>
             </div>
+            <details class="mb-3 text-[10px]" style="color:var(--muted)">
+              <summary class="cursor-pointer py-1">Lancer un outil (Codex, AGY, Claude…)</summary>
+              <div class="flex flex-wrap gap-2 pt-2">
+                <button v-for="cli in cliList.filter(cli => cli.detected)" :key="cli.id"
+                  :disabled="Boolean(cliLaunching[cli.id]) || Boolean(bridge.projectTransition.value)"
+                  class="px-3 py-2 text-[10px] disabled:opacity-30"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  @click="launchCli(cli.id)">
+                  {{ cliLaunching[cli.id] ? 'Démarrage…' : cli.name }}
+                </button>
+                <span v-if="!cliList.some(cli => cli.detected)">Aucun outil détecté</span>
+              </div>
+            </details>
             <div class="flex gap-2 items-end">
             <button class="w-10 h-10 flex items-center justify-center text-base shrink-0" style="border:1px solid var(--border);color:var(--muted)">🎤</button>
             <button class="w-10 h-10 flex items-center justify-center text-base shrink-0" style="border:1px solid var(--border);color:var(--muted)">📎</button>
@@ -781,10 +800,8 @@ function targetButtonStyle(target: ChatTarget) {
 
 function isChatTargetId(value: unknown) {
   const id = String(value ?? '').trim()
-  return id === 'bash'
-    || id === 'chat:devbridge'
-    || id.startsWith('terminal:')
-    || cliList.value.some(cli => cli.id === id)
+  return id.startsWith('terminal:')
+    && terminalTargets.value.some(terminal => terminal.id === id)
 }
 
 function killCli(terminalName: string) {
@@ -1070,14 +1087,20 @@ async function loadFileTree() {
       const token = bridge.token.value ?? ''
       const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
       const workspaceId = bridge.activeWorkspaceId.value
+      const windowId = bridge.activeWindowId.value
+      if (!windowId && bridge.windows.value.length > 1) {
+        fileTree.value = []
+        return
+      }
       if (relayBase && bridge.relaySessionId.value) {
         const res = await fetch(
-          `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}`,
+          `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}`,
           { headers: { Authorization: `Bearer ${token}` } },
         )
         if (res.ok) {
           const data = await res.json() as { tree?: FileNode[] }
           if (Array.isArray(data.tree)) {
+            if (windowId !== bridge.activeWindowId.value) return
             fileTree.value = data.tree
             return
           }
@@ -1086,8 +1109,11 @@ async function loadFileTree() {
     } catch {
       // fall back to the latest cached snapshot below
     }
-    const snapshotTree = bridge.agentStatus.value?.fileTree as FileNode[] | undefined
-    if (Array.isArray(snapshotTree)) fileTree.value = snapshotTree
+    // Never show the last focused window's cached tree for another window.
+    if (!bridge.activeWindowId.value) {
+      const snapshotTree = bridge.agentStatus.value?.fileTree as FileNode[] | undefined
+      fileTree.value = Array.isArray(snapshotTree) ? snapshotTree : []
+    } else fileTree.value = []
     return
   }
   const t = bridge.token.value
@@ -1133,8 +1159,9 @@ async function loadSelectedFileContent(path: string) {
       const token = bridge.token.value ?? ''
       const relayBase = bridge.relayUrl.value || configuredRelayUrl.value
       const workspaceId = bridge.activeWorkspaceId.value
+      const windowId = bridge.activeWindowId.value
       const res = await fetch(
-        `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+        `${relayBase}/api/relay/sessions/${bridge.relaySessionId.value}/files?workspaceId=${encodeURIComponent(workspaceId)}&windowId=${encodeURIComponent(windowId)}&path=${encodeURIComponent(path)}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       if (!res.ok) {
@@ -1142,6 +1169,7 @@ async function loadSelectedFileContent(path: string) {
         return
       }
       const data = await res.json() as { content?: string }
+      if (windowId !== bridge.activeWindowId.value) return
       selectedFileContent.value = data.content ?? ''
       return
     } catch {
@@ -1176,7 +1204,10 @@ function openCodeFile(path: string) {
 
 async function loadPreviewUrl() {
   if (bridge.mode.value === 'relay') {
-    previewUrl.value = String(bridge.agentStatus.value?.previewUrl ?? '')
+    // The old preview detector is global to the agent, not scoped to a VS Code
+    // window. Hide it rather than show project B's localhost URL under project A.
+    previewUrl.value = bridge.windows.value.length > 1
+      ? '' : String(bridge.agentStatus.value?.previewUrl ?? '')
     return
   }
   const t = bridge.token.value
@@ -1319,11 +1350,16 @@ async function pairFromRoute() {
     ((host || agentUrl) && code.length === 6)
   )
 
-  if (hasExplicitPairing) {
-    bridge.clearStoredSession()
-  } else if (bridge.token.value) {
+  // Pairing URLs are one-use invitations, not bookmarks. Reopening a URL
+  // from an already paired device must NEVER erase its working credential.
+  if (hasExplicitPairing && relayFlag === '1' && routeSessionId
+    && localStorage.getItem('vb:relaySessionId') === routeSessionId
+    && localStorage.getItem('vb:token')
+    && localStorage.getItem('vb:bridgeMode') === 'relay') {
+    await router.replace({ query: { view: targetView || 'mobile' } })
     return
   }
+  if (!hasExplicitPairing && bridge.token.value) return
 
   if (host) pairHost.value = host
   if (port) pairPort.value = port
@@ -1435,14 +1471,15 @@ function setAiTyping(value: boolean) {
 const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const REPLY_TARGET_KEY = 'vb:chatTarget'
-const replyTarget = ref('chat:devbridge')
+const replyTarget = ref('')
+const pendingTerminalSelection = ref('')
 function targetStorageKey(): string {
   return `${REPLY_TARGET_KEY}:${bridge.projectContextKey.value}`
 }
 const replyTargetPinned = ref(false)
 const replyTargetLabel = computed(() => {
-  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  return target ? `${target.label} · ${target.caption}` : 'Terminal VS Code'
+  const target = terminalTargets.value.find((item) => item.id === replyTarget.value)
+  return target ? `${target.label} · ${target.caption}` : 'aucun terminal sélectionné'
 })
 const chatTargets = computed<ChatTarget[]>(() => {
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
@@ -1466,59 +1503,22 @@ const chatTargets = computed<ChatTarget[]>(() => {
     })
   }
 
-  if (!seenTerminalNames.has('bash')) {
-    targets.push({
-      id: 'bash',
-      label: 'bash',
-      caption: 'ouvre un terminal VS Code',
-      support: 'direct',
-      kind: 'terminal',
-      terminalName: 'bash',
-      state: replyTarget.value === 'bash' ? 'active' : 'idle',
-    })
-  }
-
-  targets.push({
-    id: 'chat:devbridge',
-    label: 'DevBridge Chat',
-    caption: 'canal VS Code',
-    support: 'vscode',
-    kind: 'vscode',
-    state: replyTarget.value === 'chat:devbridge' ? 'active' : 'idle',
-  })
-
-  for (const cli of cliList.value) {
-    const terminalName = `DevBridge ${cli.name}`
-    const isLaunched = terminals.some(terminal => String(terminal?.name ?? '').trim() === terminalName)
-    const isStarting = Boolean(cliLaunching.value[cli.id])
-    targets.push({
-      id: cli.id,
-      label: cliButtonName(cli),
-      caption: isLaunched ? `terminal prêt · ${terminalName}` : `lance ${cli.command}`,
-      support: 'launcher',
-      kind: 'launcher',
-      terminalName,
-      cliId: cli.id,
-      state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
-    })
-  }
+  // Only existing terminal instances are valid reply channels.
+  // CLI launchers are actions, displayed separately in the composer.
   return targets
 })
 
-const selectedChatTargetReady = computed(() => {
-  if (bridge.projectTransition.value) return false
-  const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
-  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  if (!target) return false
-  if (target.id === 'bash' || target.id === 'chat:devbridge') return true
-  if (target.kind === 'terminal') {
-    if (target.id === 'bash') return true
-    return terminals.some(terminal => `terminal:${String(terminal.id ?? terminal.name)}` === target.id)
-  }
-  return Boolean(target.state !== 'starting' && target.terminalName && terminals.some(
-    terminal => String(terminal?.name ?? '').trim() === target.terminalName
-  ))
-})
+const terminalTargets = computed(() => chatTargets.value.filter(target => target.kind === 'terminal'
+  && target.id.startsWith('terminal:')))
+
+const selectedChatTargetReady = computed(() => Boolean(!bridge.projectTransition.value
+  && terminalTargets.value.some(target => target.id === replyTarget.value)))
+
+function chooseTerminalFromSelect(event: Event) {
+  const chosen = (event.target as HTMLSelectElement).value
+  if (!terminalTargets.value.some(target => target.id === chosen)) return
+  setReplyTarget(chosen, true)
+}
 
 const filteredChatMessages = computed(() => {
   const target = replyTarget.value
@@ -1624,11 +1624,16 @@ function selectChatTarget(target: ChatTarget) {
     return
   }
   if (target.kind !== 'launcher') return
-  const isLaunched = Boolean(target.terminalName && Array.isArray(ideState.value?.terminals) && ideState.value?.terminals?.some(
-    terminal => String(terminal?.name ?? '').trim() === target.terminalName
-  ))
-  if (!target.cliId || isLaunched) return
-  launchCli(target.cliId)
+  const existingTerminal = target.terminalName && Array.isArray(ideState.value?.terminals)
+    ? ideState.value.terminals.find(t => t.name === target.terminalName) : null
+  if (existingTerminal) {
+    // CLI is a launcher, not a reply channel. Reply to the actual terminal ID.
+    const terminalId = String(existingTerminal.id ?? existingTerminal.name)
+    setReplyTarget(`terminal:${terminalId}`, true)
+    bridge.send({ type: 'focus_terminal', terminalId, terminalName: existingTerminal.name })
+    return
+  }
+  if (target.cliId) launchCli(target.cliId)
 }
 
 function scheduleChatHistorySave() {
@@ -1739,13 +1744,14 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
     pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
-    if (cliId) setReplyTarget(cliId, true)
+    if (msg.terminalId) pendingTerminalSelection.value = `terminal:${String(msg.terminalId)}`
+    else pushActivity('sys', 'Terminal créé, en attente de son identifiant réel')
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_created') {
     const terminalName = String(msg.terminalName ?? '')
     creatingTerminal.value = false
     pushActivity('sys', `✓ Terminal ${terminalName} créé`)
-    if (terminalName) setReplyTarget(`terminal:${String(msg.terminalId ?? terminalName)}`, true)
+    if (msg.terminalId) pendingTerminalSelection.value = `terminal:${String(msg.terminalId)}`
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_closed') {
     pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)
@@ -1785,10 +1791,14 @@ watch(() => bridge.status.value, (next) => {
   }
 }, { immediate: true })
 
-watch(chatTargets, (targets) => {
-  if (!targets.some((target) => target.id === replyTarget.value)) {
+watch(terminalTargets, (targets) => {
+  if (pendingTerminalSelection.value && targets.some(t => t.id === pendingTerminalSelection.value)) {
+    setReplyTarget(pendingTerminalSelection.value, true)
+    pendingTerminalSelection.value = ''
+  }
+  if (replyTarget.value && !targets.some(t => t.id === replyTarget.value)) {
     replyTargetPinned.value = false
-    setReplyTarget('chat:devbridge')
+    replyTarget.value = ''
   }
 }, { immediate: true })
 
@@ -1796,7 +1806,7 @@ watch(() => bridge.projectContextKey.value, (scope) => {
   replyTargetPinned.value = false
   const saved = import.meta.client && scope ? localStorage.getItem(targetStorageKey()) : null
   const activeId = bridge.agentStatus.value?.ideState?.activeTerminalId
-  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : 'chat:devbridge')
+  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : '')
 }, { immediate: true })
 
 watch(() => bridge.projectTransition.value, (pending, previous) => {
@@ -1810,6 +1820,17 @@ watch(() => bridge.projectTransition.value, (pending, previous) => {
   } else {
     delete projectOpening.value[previous.path]
     pushActivity('err', 'Le changement de projet n’a pas été confirmé par VS Code')
+  }
+})
+
+watch(() => bridge.activeWindowId.value, () => {
+  fileTree.value = []
+  selectedFile.value = null
+  selectedFileContent.value = ''
+  previewUrl.value = ''
+  if (bridge.status.value === 'connected') {
+    void requestProjects()
+    void loadFileTree()
   }
 })
 

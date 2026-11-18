@@ -209,6 +209,8 @@ export class RelayClient {
         adapters: this.options.adapters.list(),
         activeAdapter: this.options.adapters.active(),
         ideState,
+        windows: this.options.ipc.getWindows(),
+        focusedWindowId: this.options.ipc.getFocusedWindowId(),
         previewUrl: this.options.adapters.getPreviewUrl(),
         fileTree: fileTreeNode.children ?? [],
         relay: this.getState(),
@@ -615,10 +617,22 @@ export class RelayClient {
 
     if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
       const filePath = typeof msg.path === 'string' ? msg.path : '';
-      const ideState = this.options.ipc.getIdeState();
-      const workspaceFolders = Array.isArray(ideState?.workspaceFolders) ? ideState.workspaceFolders as string[] : [];
-      const firstFolder = workspaceFolders.length ? String(workspaceFolders[0] ?? '') : '';
-      const content = this.options.files.read(filePath, firstFolder || undefined);
+      const windowId = typeof msg.windowId === 'string' ? msg.windowId : '';
+      const online = this.options.ipc.getWindows().filter(window => window.connected);
+      const selected = windowId
+        ? online.find(window => window.id === windowId)
+        : online.length === 1 ? online[0] : undefined;
+      const folder = selected?.workspaceFolders?.[0];
+      if (!selected || !folder) {
+        this.send('relay_file_response', { request_id: msg.request_id, error: 'window unavailable or ambiguous' });
+        return;
+      }
+      if (msg.list === true) {
+        const tree = this.options.files.treeFrom(folder).children ?? [];
+        this.send('relay_file_response', { request_id: msg.request_id, tree });
+        return;
+      }
+      const content = this.options.files.read(filePath, folder);
       this.send('relay_file_response', {
         request_id: msg.request_id,
         path: filePath,
@@ -636,6 +650,18 @@ export class RelayClient {
       this.send('action_rejected', { action: String(msg.type ?? ''), reason: decision.reason });
       return false;
     }
+    const windowId = typeof msg.windowId === 'string' ? msg.windowId : undefined;
+    const windows = ipc.getWindows().filter(window => window.connected);
+    // A mobile must always choose its target when multiple VS Code windows exist.
+    const scopedActions = ['chat', 'message', 'open_project', 'focus_terminal',
+      'kill_cli', 'create_terminal', 'start_cli', 'action', 'notif_response'];
+    if (scopedActions.includes(String(msg.type))
+      && (!windows.length || (windowId
+        ? !windows.some(window => window.id === windowId)
+        : windows.length !== 1))) {
+      this.send('action_rejected', { action: String(msg.type), reason: 'window_unavailable_or_ambiguous' });
+      return false;
+    }
     switch (msg.type) {
       case 'chat':
       case 'message': {
@@ -643,8 +669,9 @@ export class RelayClient {
         const target = typeof msg.target === 'string' ? msg.target : undefined;
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
         const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false,
-          typeof msg.request_id === 'string' ? msg.request_id : undefined);
-        return routed?.queued ?? adapters.send({ text: msg.text, tool, target });
+          typeof msg.request_id === 'string' ? msg.request_id : undefined, windowId);
+        return routed ? routed.queued : windows.length === 1
+          ? adapters.send({ text: msg.text, tool, target }) : false;
       }
       case 'adapter_toggle':
         if (typeof msg.id !== 'string') return false;
@@ -653,25 +680,30 @@ export class RelayClient {
         void this.sendStatusSnapshot();
         return true;
       case 'notif_response': {
+        // Legacy response is unscoped plain text, NOT an approved CLI operation.
+        if (windows.length !== 1) return false;
         if (typeof msg.id !== 'string' || (msg.action !== 'validate' && msg.action !== 'refuse')) return false;
         const note = `Mobile user ${msg.action === 'validate' ? 'approved' : 'rejected'} request ${msg.id}`;
         return adapters.send({ text: note });
       }
       case 'action':
+        // The legacy action runner addresses the global adapter, not a window.
+        if (windows.length !== 1) return false;
         if (typeof msg.action !== 'string') return false;
         await adapters.runAction(msg.action, Array.isArray(msg.args) ? msg.args.map(String) : []);
         return true;
       case 'open_project': {
         const projectPath = msg.projectPath ?? msg.path;
-        const projects = ipc.getProjects();
+        const projects = ipc.getProjects(windowId);
         const available = projects.length ? projects : listProjects(workspace.path).projects;
         if (typeof projectPath !== 'string' || !available.some(project => project.path === projectPath)) return false;
-        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true, request_id: msg.request_id });
+        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true, request_id: msg.request_id, windowId });
       }
       case 'list_projects': {
-        const projects = ipc.getProjects();
-        const listing = projects.length ? { projects, parentDir: ipc.getProjectsParentDir() } : listProjects(workspace.path);
-        this.send('projects_list', { payload: listing });
+        if (windows.length > 1 && (!windowId || !windows.some(window => window.id === windowId))) return false;
+        const projects = ipc.getProjects(windowId);
+        const listing = projects.length ? { projects, parentDir: ipc.getProjectsParentDir(windowId) } : listProjects(workspace.path);
+        this.send('projects_list', { payload: { ...listing, windowId }, windowId });
         return true;
       }
       case 'get_preview_url':
@@ -683,15 +715,15 @@ export class RelayClient {
       case 'focus_terminal':
       case 'kill_cli':
         return (typeof msg.terminalName === 'string' || typeof msg.terminalId === 'string')
-          && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName, terminalId: msg.terminalId, request_id: msg.request_id });
+          && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName, terminalId: msg.terminalId, request_id: msg.request_id, windowId });
       case 'create_terminal':
-        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1', request_id: msg.request_id });
+        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1', request_id: msg.request_id, windowId });
       case 'start_cli': {
         const cli = typeof msg.cliId === 'string' ? cliRegistry?.getById(msg.cliId) : undefined;
         return !!cli && ipc.sendToExtension({
           type: 'start_cli', cliId: cli.id, command: cli.command, args: cli.args,
           terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
-          request_id: msg.request_id,
+          request_id: msg.request_id, windowId,
         });
       }
       default:
@@ -704,6 +736,8 @@ export class RelayClient {
       text: payload.text,
       tool: payload.tool,
       payload: payload.data,
+      windowId: payload.data && typeof payload.data === 'object' && 'windowId' in payload.data
+        ? (payload.data as { windowId?: string }).windowId : undefined,
       isQuestion: payload.isQuestion,
     });
   }

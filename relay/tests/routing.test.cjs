@@ -213,3 +213,56 @@ test('VS Code project and terminal snapshots remain current on relay reconnect',
   assert.equal((await projectUpdate).payload.projects[0].isActive, true)
   assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'projects_update'), false)
 })
+
+test('relay preserves a selected VS Code window and publishes the complete window registry', async t => {
+  const { mobile, addAgent, store, session, api, mobileToken } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const request = next(agent, msg => msg.type === 'message' && msg.payload.windowId === 'window-b')
+  const reply = next(mobile, msg => msg.type === 'message_ack' && msg.request_id === 'window-command')
+  send(mobile, {
+    type: 'message', workspace_id: 'editor', windowId: 'window-b',
+    target: 'terminal:terminal-b', text: 'only B', request_id: 'window-command',
+  })
+  const message = await request
+  assert.equal(message.payload.windowId, 'window-b')
+  send(agent, { type: 'relay_command_ack', request_id: message.request_id, ok: true })
+  assert.equal((await reply).status, 'received')
+
+  const windows = [
+    { id: 'window-a', connected: true, workspaceFolders: ['/projects/a'], ideState: { workspaceFolders: ['/projects/a'] } },
+    { id: 'window-b', connected: true, workspaceFolders: ['/projects/b'], ideState: { workspaceFolders: ['/projects/b'] } },
+  ]
+  const broadcast = next(mobile, msg => msg.type === 'windows_update')
+  send(agent, { type: 'windows_update', windows, focusedWindowId: 'window-a' })
+  const state = await broadcast
+  assert.deepEqual(state.windows.map(w => w.id), ['window-a', 'window-b'])
+  const stored = store.getWorkspaceSnapshot(session.sessionId, 'editor')
+  assert.deepEqual(stored?.windows?.map(w => w.id), ['window-a', 'window-b'])
+  const response = await (await api('/api/relay/sessions/' + session.sessionId, { token: mobileToken })).json()
+  assert.deepEqual(response.workspaceSnapshots.find(s => s.workspaceId === 'editor')?.windows?.map(w => w.id), ['window-a', 'window-b'])
+})
+
+test('remote file reads and trees are routed only to the selected VS Code window', async t => {
+  const { session, addAgent, mobileToken, api } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const base = '/api/relay/sessions/' + session.sessionId + '/files?workspaceId=editor'
+
+  const nextRead = next(agent, msg => msg.type === 'relay_file_request' && msg.path === 'src/main.ts')
+  const read = api(base + '&windowId=window-b&path=src%2Fmain.ts', { token: mobileToken })
+  const requested = await nextRead
+  assert.equal(requested.windowId, 'window-b')
+  send(agent, { type: 'relay_file_response', request_id: requested.request_id, content: 'from B', path: requested.path })
+  assert.deepEqual((await (await read).json()).content, 'from B')
+
+  const nextTree = next(agent, msg => msg.type === 'relay_file_request' && msg.list === true)
+  const list = api(base + '&windowId=window-a', { token: mobileToken })
+  const treeRequest = await nextTree
+  assert.equal(treeRequest.windowId, 'window-a')
+  send(agent, { type: 'relay_file_response', request_id: treeRequest.request_id,
+    tree: [{ name: 'a.txt', type: 'file', path: 'a.txt' }] })
+  const tree = await (await list).json()
+  assert.equal(tree.tree[0].path, 'a.txt')
+
+  assert.equal((await api(base + '&windowId=%20bad!&path=src%2Fmain.ts',
+    { token: mobileToken })).status, 400)
+})

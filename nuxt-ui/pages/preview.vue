@@ -1,5 +1,16 @@
 <template>
   <div class="flex flex-col h-[calc(100dvh-3.5rem)] lg:h-[calc(100dvh-3rem)]">
+    <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+      :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
+    <p class="px-4 py-2 text-xs border-b border-border" style="color:var(--muted)">
+      Aperçu dans {{ bridge.activeProjectName.value || 'le projet sélectionné' }}.
+      Pour le moment, seuls les sites accessibles depuis ce navigateur peuvent être ouverts.
+      La capture locale Playwright reste à développer.
+    </p>
+    <p v-if="previewError" class="px-4 py-2 text-xs" role="alert"
+      style="color:var(--dot-amber);border-bottom:1px solid var(--border)">
+      {{ previewError }}
+    </p>
     <!-- TOOLBAR -->
     <div class="flex items-center gap-3 border-b border-border px-4 py-2 shrink-0 flex-wrap">
       <p class="text-xs uppercase tracking-widest text-muted mr-2">APERÇU</p>
@@ -80,7 +91,8 @@ const devices: Device[] = [
   { label: 'SM', width: 390, height: 844 },
 ]
 
-const urlInput = ref('http://localhost:5173')
+const urlInput = ref('')
+const previewError = ref('')
 const activeUrl = ref('')
 const activeDevice = ref('FULL')
 const frameLoading = ref(false)
@@ -97,7 +109,31 @@ const frameStyle = computed(() => {
 function applyUrl() {
   const url = urlInput.value.trim()
   if (!url) return
-  activeUrl.value = url
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    previewError.value = 'Adresse invalide.'
+    return
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    previewError.value = 'Seules les URLs HTTP et HTTPS sont prises en charge.'
+    return
+  }
+  const localhost = ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)
+  const browserLocal = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  if (localhost && !browserLocal) {
+    previewError.value = 'Cette URL localhost est celle du PC et ne fonctionne pas depuis le téléphone. La capture Playwright locale sera nécessaire.'
+    activeUrl.value = ''
+    return
+  }
+  if (window.location.protocol === 'https:' && parsed.protocol !== 'https:') {
+    previewError.value = 'Le navigateur HTTPS ne peut pas intégrer cette adresse HTTP. Utilise une adresse HTTPS ou une capture distante.'
+    activeUrl.value = ''
+    return
+  }
+  previewError.value = ''
+  activeUrl.value = parsed.toString()
   frameLoading.value = true
 }
 
@@ -109,22 +145,28 @@ function reload() {
 
 // Listen for dev-server URL from agent — auto-navigate
 const offMessage = bridge.onMessage((msg: WsMessage) => {
-  if (msg.type === 'dev_server_url' && msg.url) {
-    urlInput.value = msg.url as string
-    activeUrl.value = msg.url as string
-    frameLoading.value = true
+  if (msg.type === 'dev_server_url' && msg.url && bridge.windows.value.length <= 1) {
+    urlInput.value = String(msg.url)
+    applyUrl()
   }
 })
 
 onMounted(() => {
   const snapshotUrl = bridge.agentStatus.value?.previewUrl
-  if (snapshotUrl) {
+  if (bridge.windows.value.length > 1) {
+    previewError.value = 'Détection automatique désactivée en multi-fenêtres : impossible de garantir à quel projet appartient le serveur.'
+  } else if (snapshotUrl) {
     urlInput.value = snapshotUrl
-    activeUrl.value = snapshotUrl
-    frameLoading.value = true
+    applyUrl()
   } else if (bridge.status.value === 'connected') {
     bridge.send({ type: 'get_preview_url' })
   }
+})
+
+watch(() => bridge.activeWindowId.value, () => {
+  activeUrl.value = ''
+  urlInput.value = ''
+  previewError.value = 'Projet changé. Indique une URL accessible depuis ton téléphone.'
 })
 
 onUnmounted(offMessage)

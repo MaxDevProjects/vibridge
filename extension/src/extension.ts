@@ -3,6 +3,7 @@ import { getTerminalId, findTerminal } from './terminalIdentity';
  * DevBridge VS Code Extension — Main activation
  */
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -58,6 +59,8 @@ function getProjectsList(): ProjectInfo | null {
 
 let ipc: IpcClient | undefined;
 const PENDING_SETUP_TOKEN_KEY = 'devbridge.pendingSetupToken';
+// Stable during IPC reconnects; distinct when two windows open the same project.
+const windowId = randomUUID();
 
 function resolveWorkspaceCwd(): string | undefined {
   const activeEditor = vscode.window.activeTextEditor;
@@ -97,7 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
     console.log(`[DevBridge] Unix socket → ${path}`);
   }
 
-  ipc = new IpcClient(target);
+  ipc = new IpcClient(target, windowId);
   ipc.connect();
   const reportCommand = (msg: Record<string, unknown>, action: string,
     phase: 'dispatched' | 'rejected', reason?: string, terminal?: vscode.Terminal) => {
@@ -277,7 +280,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // and terminal snapshot. No remote command is run as a result.
   context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
     if (!state.focused || !ipc?.isConnected()) return;
-    ipc.send({ type: 'register', tool: 'vscode', label: 'VS Code Extension' });
+    ipc.send({ type: 'register', tool: 'vscode', label: 'VS Code Extension', windowId });
     ipc.send({ type: 'projects_report', ...(getProjectsList() ?? { projects: [], parentDir: '' }) });
     ideReporter.refresh();
   }));

@@ -14,6 +14,9 @@
       </div>
     </div>
 
+    <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+      :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
+
     <div class="shrink-0 border-b border-border px-4 py-2">
       <WorkspaceSwitcher
         :workspaces="relayWorkspaceOptions"
@@ -430,6 +433,10 @@ watch(chatTargets, (targets) => {
     setTarget('__new__')
   }
 }, { immediate: true })
+
+watch(() => bridge.activeWindowId.value, () => {
+  if (bridge.status.value === 'connected') requestOpenProject()
+})
 
 watch(activeWorkspaceKey, (workspaceId) => {
   const saved = import.meta.client && bridge.projectContextKey.value

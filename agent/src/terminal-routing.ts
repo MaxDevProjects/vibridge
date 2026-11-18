@@ -8,6 +8,7 @@ export function routeTerminalMessage(
   target?: string,
   sendEnter = true,
   requestId?: string,
+  windowId?: string,
 ): { target: string; queued: boolean } | null {
   const name = target?.trim();
   if (!name) return null;
@@ -20,6 +21,7 @@ export function routeTerminalMessage(
     target: name,
     sendEnter: name === 'chat:devbridge' ? false : sendEnter,
     request_id: requestId,
+    windowId,
     ...(cli && {
       cliId: cli.id,
       terminalName: registry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
