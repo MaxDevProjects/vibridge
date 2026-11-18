@@ -127,3 +127,41 @@ test('invalid JSON shapes close their own socket without taking down the relay',
   assert.equal((await closed)[0], 1008)
   assert.equal((await api('/health')).status, 200)
 })
+
+
+test('push registration is authorized and routed to the selected agent', async t => {
+  const { mobileToken, addAgent, api } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  assert.equal((await api('/push/public-key?workspaceId=editor')).status, 401)
+
+  const keyRequest = next(agent, msg => msg.type === 'relay_push_request' && msg.action === 'public_key')
+  const keyResponse = api('/push/public-key?workspaceId=editor', { token: mobileToken })
+  const keyMsg = await keyRequest
+  send(agent, { type: 'relay_push_response', request_id: keyMsg.request_id, publicKey: 'test-vapid-key' })
+  assert.equal((await (await keyResponse).json()).publicKey, 'test-vapid-key')
+
+  const body = { endpoint: 'https://fcm.googleapis.com/test', keys: { auth: 'auth', p256dh: 'p256dh' } }
+  const subscribeRequest = next(agent, msg => msg.type === 'relay_push_request' && msg.action === 'subscribe')
+  const subscription = api('/push/subscribe?workspaceId=editor', { token: mobileToken, method: 'POST', body })
+  const subscribeMsg = await subscribeRequest
+  assert.equal(subscribeMsg.subscription.endpoint, body.endpoint)
+  send(agent, { type: 'relay_push_response', request_id: subscribeMsg.request_id, ok: true })
+  assert.equal((await subscription).status, 200)
+})
+
+test('extension dispatch evidence is distinct from agent receipt', async t => {
+  const { mobile, addAgent, store, session } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const observed = next(mobile, msg => msg.type === 'command_execution')
+  send(agent, {
+    type: 'command_execution',
+    request_id: 'terminal-request-1',
+    phase: 'dispatched',
+    action: 'message',
+    terminalId: 'terminal-123',
+  })
+  const event = await observed
+  assert.equal(event.payload.phase, 'dispatched')
+  assert.equal(event.payload.terminalId, 'terminal-123')
+  assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'command_execution'), true)
+})
