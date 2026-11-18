@@ -65,6 +65,7 @@ async function main() {
       queue,
       cliRegistry,
       controlPolicy,
+      push,
     })
     : null;
 
