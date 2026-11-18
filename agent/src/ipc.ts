@@ -291,6 +291,14 @@ export class IpcServer {
         this.queue.emit(payload);
         break;
       }
+      case 'host_clis': {
+        // Only a registered local extension may define host tools.
+        if (socket !== this.activeExtension) break;
+        this.cliRegistry?.replaceHostTools(
+          Array.isArray(msg.definitions) ? msg.definitions as import('./cliRegistry').HostToolDefinition[] : [],
+        );
+        break;
+      }
       case 'cli_report': {
         // Extension reports which CLIs are installed on the host
         const detectedIds = Array.isArray(msg.detected)
