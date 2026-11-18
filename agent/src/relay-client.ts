@@ -541,6 +541,10 @@ export class RelayClient {
         respond({ error: 'no registry', clis: [] });
         return;
       }
+      if (action !== 'list' && action !== 'detect') {
+        respond({ error: 'CLI configuration is only allowed on the host', ok: false });
+        return;
+      }
       if (action === 'list') {
         respond({ clis: registry.getAll() });
       } else if (action === 'detect') {
