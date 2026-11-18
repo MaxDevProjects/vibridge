@@ -123,6 +123,7 @@
           <h2>{{ t('menu') }}</h2>
           <button class="mb-sheet-action" @click="showProjectPicker">{{ t('projects') }} <span>⌄</span></button>
           <div class="mb-sheet-action"><span>{{ t('language') }}</span><button @click="lang=lang==='fr'?'en':'fr'">{{ lang.toUpperCase() }} ⇄</button></div>
+          <button class="mb-sheet-action" @click="openAdvancedSettings">{{ lang==='fr'?'Paramètres avancés':'Advanced settings' }} <span>⚙</span></button>
           <button class="mb-sheet-action" @click="signOut">{{ t('disconnectDevice') }}</button>
           <button class="mb-sheet-action danger" @click="confirmRevoke=true;menuOpen=false">{{ t('revoke') }}</button>
           <p class="mb-muted">{{ t('revokeExplain') }}</p>
@@ -315,6 +316,7 @@ function closeSheets(){menuOpen.value=false;actionsOpen.value=false;projectsOpen
 function showProjectPicker(){closeSheets();projectsOpen.value=true;availableProjects.value=[];if(bridge.status.value==='connected')bridge.send({type:'list_projects'})}
 function chooseWindow(windowId:string){const next=allThreads.value.find(item=>item.windowId===windowId);closeSheets();if(next)openThread(next);else bridge.selectWindow(windowId)}
 function openProject(path:string){closeSheets();bridge.requestOpenProject(path,true)}
+function openAdvancedSettings(){closeSheets();void navigateTo('/settings')}
 function signOut(){closeSheets();bridge.clearStoredSession();void navigateTo('/setup')}
 function requestWindowClose(){if(!activeThread.value?.connected || !bridge.agentStatus.value?.control?.allowWindowClose)return;confirmClose.value=false;if(bridge.send({type:'close_window'})){activeThread.value=null}}
 async function revokeAccess(){revoking.value=true;revokeError.value=false;const success=await bridge.revokeRelaySession();revoking.value=false;if(success){confirmRevoke.value=false;void navigateTo('/setup')}else revokeError.value=true}
@@ -402,7 +404,7 @@ useHead({title:'DevBridge | Conversations'})
 </script>
 
 <style scoped>
-.mb-root{height:calc(100dvh - 3.5rem);max-width:900px;margin:auto;color:var(--text);background:var(--bg);font-family:Inter,system-ui,sans-serif;position:relative;overflow:hidden}
+.mb-root{height:100dvh;max-width:900px;margin:auto;color:var(--text);background:var(--bg);font-family:Inter,system-ui,sans-serif;position:relative;overflow:hidden}
 .mb-inbox,.mb-chat{height:100%;display:flex;flex-direction:column;min-height:0}
 .mb-heading{padding:28px 20px 14px;display:flex;justify-content:space-between;align-items:center}
 .mb-eyebrow,.mb-subline{font-family:monospace;font-size:10px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
