@@ -43,6 +43,7 @@ interface WorkspaceSnapshot {
   ideState?: AgentStatus['ideState']
   previewUrl?: string | null
   fileTree?: unknown
+  control?: AgentStatus['control']
   adapters?: AgentStatus['adapters']
   activeAdapter?: string | null
   control?: AgentStatus['control']
@@ -684,6 +685,7 @@ async function fetchRelayStatus() {
           ? selectedSnapshot.previewUrl
           : agentStatus.value?.previewUrl ?? null,
         fileTree: selectedSnapshot.fileTree ?? agentStatus.value?.fileTree,
+        control: selectedSnapshot.control ?? agentStatus.value?.control,
         timestamp: typeof selectedSnapshot.timestamp === 'number' ? selectedSnapshot.timestamp : Date.now(),
       })
     }
