@@ -213,3 +213,31 @@ test('VS Code project and terminal snapshots remain current on relay reconnect',
   assert.equal((await projectUpdate).payload.projects[0].isActive, true)
   assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'projects_update'), false)
 })
+
+test('relay preserves a selected VS Code window and publishes the complete window registry', async t => {
+  const { mobile, addAgent, store, session, api, mobileToken } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const request = next(agent, msg => msg.type === 'message' && msg.payload.windowId === 'window-b')
+  const reply = next(mobile, msg => msg.type === 'message_ack' && msg.request_id === 'window-command')
+  send(mobile, {
+    type: 'message', workspace_id: 'editor', windowId: 'window-b',
+    target: 'terminal:terminal-b', text: 'only B', request_id: 'window-command',
+  })
+  const message = await request
+  assert.equal(message.payload.windowId, 'window-b')
+  send(agent, { type: 'relay_command_ack', request_id: message.request_id, ok: true })
+  assert.equal((await reply).status, 'received')
+
+  const windows = [
+    { id: 'window-a', connected: true, workspaceFolders: ['/projects/a'], ideState: { workspaceFolders: ['/projects/a'] } },
+    { id: 'window-b', connected: true, workspaceFolders: ['/projects/b'], ideState: { workspaceFolders: ['/projects/b'] } },
+  ]
+  const broadcast = next(mobile, msg => msg.type === 'windows_update')
+  send(agent, { type: 'windows_update', windows, focusedWindowId: 'window-a' })
+  const state = await broadcast
+  assert.deepEqual(state.windows.map(w => w.id), ['window-a', 'window-b'])
+  const stored = store.getWorkspaceSnapshot(session.sessionId, 'editor')
+  assert.deepEqual(stored?.windows?.map(w => w.id), ['window-a', 'window-b'])
+  const response = await (await api('/api/relay/sessions/' + session.sessionId, { token: mobileToken })).json()
+  assert.deepEqual(response.workspaceSnapshots.find(s => s.workspaceId === 'editor')?.windows?.map(w => w.id), ['window-a', 'window-b'])
+})
