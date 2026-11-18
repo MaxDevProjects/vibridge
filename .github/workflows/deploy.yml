@@ -1,9 +1,8 @@
 name: Deploy to server
 
+# Human-in-the-loop release: merging a PR must not silently deploy to a VPS.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 concurrency:
   group: vibridge-production
