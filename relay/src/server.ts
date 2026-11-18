@@ -439,42 +439,16 @@ export function createRelayServer(options: RelayServerOptions) {
     }
   })
 
-  app.post('/clis/default', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { id } = req.body as { id: string }
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'set_default', id })
-      res.json({ ok: response.ok ?? false, clis: response.clis ?? [] })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  // CLI executable definitions and defaults are host-owned. The public relay
+  // must never be able to reconfigure which commands a workstation trusts.
+  app.post('/clis/default', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
-
-  app.post('/clis/custom', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { name, command, args } = req.body as { name?: unknown; command?: unknown; args?: unknown }
-    if (typeof name !== 'string' || !name.trim() || typeof command !== 'string' || !command.trim()
-      || (args !== undefined && (!Array.isArray(args) || !args.every(arg => typeof arg === 'string')))) {
-      res.status(400).json({ error: 'valid name, command and args required' })
-      return
-    }
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'add_custom', name, command, args })
-      res.json({ ok: response.ok ?? false, cli: response.cli, clis: response.clis ?? [] })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  app.post('/clis/custom', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
-
-  app.delete('/clis/:id', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { id } = req.params
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'remove_custom', id })
-      res.json({ ok: response.ok ?? false })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  app.delete('/clis/:id', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
 
   const httpServer = http.createServer(app)
