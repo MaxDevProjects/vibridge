@@ -119,6 +119,8 @@ export class CliRegistry {
   applyExtensionReport(detectedIds: string[]): void {
     const detectedSet = new Set(detectedIds);
     for (const cli of this.clis.values()) {
+      // User-approved tools report their own detection status from VS Code.
+      if (cli.id.startsWith('host-')) continue;
       cli.detected = detectedSet.has(cli.id);
     }
     // If no default is set, pick the first detected one
