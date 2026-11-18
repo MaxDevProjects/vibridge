@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
 import { useQuickReplies } from '../../composables/useQuickReplies'
+import { compactTerminalOutput, terminalConversationKey } from '../../composables/compactTerminalOutput'
 
 let failures = 0
 
@@ -81,6 +82,25 @@ test('useQuickReplies detects yes-no shorthand', () => {
   const result = useQuickReplies('Continue? y/n')
   assert.equal(result.hasChoices, true)
   assert.deepEqual(result.choices.map(choice => choice.value), ['y', 'n'])
+})
+
+test('compactTerminalOutput ignores repeated spinner frames without inventing terminal success', () => {
+  const state = compactTerminalOutput('\u001b[32mWorking...\u001b[0m\r⠁\r⠂\rCreated index.html\n')
+  assert.equal(state.display, 'Created index.html')
+  assert.equal(state.working, false)
+})
+
+test('compactTerminalOutput preserves only the last carriage-return state', () => {
+  const state = compactTerminalOutput('Loading 1%\rLoading 30%\rDONE\n')
+  assert.equal(state.display, 'DONE')
+})
+
+test('threads are isolated even if terminal names match', () => {
+  const first = terminalConversationKey('sess-1', 'agent', 'window-1', 'terminal-1')
+  const second = terminalConversationKey('sess-1', 'agent', 'window-2', 'terminal-1')
+  const third = terminalConversationKey('sess-2', 'agent', 'window-1', 'terminal-1')
+  assert.notEqual(first, second)
+  assert.notEqual(first, third)
 })
 
 test('project path is derived from the live VS Code folder, not the agent identifier', () => {
