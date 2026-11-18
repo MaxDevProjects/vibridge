@@ -45,13 +45,17 @@
       <button class="ml-4 underline" @click="bridge.clearStoredSession()">Effacer</button>
     </div>
 
-    <!-- TARGET SELECTOR -->
+    <!-- TARGET SELECTOR: always anchored to the confirmed VS Code project -->
     <div class="shrink-0 border-b border-border px-3 py-2">
+      <p class="mb-2 text-[10px] text-muted" aria-live="polite">
+        Répondre dans <strong class="text-text">{{ bridge.activeProjectName.value || 'aucun projet synchronisé' }}</strong>
+        <span v-if="bridge.projectTransition.value"> · changement en cours</span>
+      </p>
       <div class="flex gap-1.5 overflow-x-auto">
         <button
           v-for="target in chatTargets"
           :key="target.id"
-          :disabled="target.state === 'new' && creatingTerminal"
+          :disabled="Boolean(bridge.projectTransition.value) || (target.state === 'new' && creatingTerminal)"
           class="shrink-0 text-[10px] uppercase tracking-[0.14em] px-3 py-1.5 font-mono transition-colors disabled:pointer-events-none"
           :style="targetButtonStyle(target)"
           @click="selectChatTarget(target)"
@@ -231,10 +235,14 @@ function setTarget(id: string) {
 }
 
 function selectChatTarget(target: ChatTarget) {
+  if (bridge.projectTransition.value) return
   if (target.state === 'new') {
     const terminalName = nextTerminalName()
     creatingTerminal.value = true
-    bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })
+    if (!bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })) {
+      creatingTerminal.value = false
+      return
+    }
     // Select the terminal once the extension reports its actual identity.
     setTimeout(() => { creatingTerminal.value = false }, 3_000)
     return

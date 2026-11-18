@@ -174,6 +174,10 @@ export class IpcServer {
           activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
         this.broadcast?.({ type: 'ide_snapshot', state: cleared });
         this.forward?.('ide_snapshot', { payload: { state: cleared } });
+        this.projects = [];
+        this.projectsParentDir = '';
+        this.broadcast?.({ type: 'projects_update', projects: [], parentDir: '' });
+        this.forward?.('projects_update', { projects: [], parentDir: '' });
       }
       if (registeredAdapterId && this.adapterOwners.get(registeredAdapterId) === socket) {
         this.adapterOwners.delete(registeredAdapterId);
