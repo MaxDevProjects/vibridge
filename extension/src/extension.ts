@@ -255,6 +255,20 @@ export function activate(context: vscode.ExtensionContext): void {
     } else reportCommand(msg, 'kill_cli', 'rejected', found.ambiguous ? 'ambiguous_terminal' : 'terminal_unavailable');
   });
 
+  // Closing a VS Code window is distinct from killing a terminal.
+  // Host policy must opt in; desktop may still prompt for unsaved files.
+  ipc.on('close_window', (msg: Record<string, unknown>) => {
+    if (typeof msg.windowId !== 'string' || msg.windowId !== windowId) {
+      reportCommand(msg, 'close_window', 'rejected', 'window_mismatch');
+      return;
+    }
+    reportCommand(msg, 'close_window', 'dispatched');
+    void vscode.commands.executeCommand('workbench.action.closeWindow').then(
+      () => { /* Closing may still require desktop confirmation. */ },
+      () => reportCommand(msg, 'close_window', 'rejected', 'window_close_failed'),
+    );
+  });
+
   // Notify agent whenever a terminal is closed (manual or programmatic)
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
