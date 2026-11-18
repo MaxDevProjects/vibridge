@@ -157,8 +157,16 @@ function syncWindows(next: ConnectedWindow[], focused = ''): void {
   windowActivity.value = Object.fromEntries(next.filter(window => window.activity)
     .map(window => [window.id, window.activity!]))
   const saved = import.meta.client ? localStorage.getItem(windowStorageKey()) ?? '' : ''
-  const wanted = [activeWindowId.value, saved, focused, next.find(window => window.connected)?.id ?? '']
-    .find(id => next.some(window => window.id === id)) ?? ''
+  // "Ouvrir ici" may replace the VS Code extension host, creating a new
+  // ephemeral windowId. Switch to the replacement only after its snapshot
+  // confirms the requested folder and the source window has gone offline.
+  const transition = projectTransition.value
+  const sourceStillOnline = transition && next.some(w => w.id === transition.sourceWindowId && w.connected)
+  const replacement = transition && !sourceStillOnline
+    ? next.find(w => w.connected && projectIsActive(w.workspaceFolders[0] ?? '', transition.path))
+    : undefined
+  const wanted = replacement?.id || [activeWindowId.value, saved, focused, next.find(window => window.connected)?.id ?? '']
+    .find(id => next.some(window => window.id === id)) || ''
   if (wanted) selectWindow(wanted)
   else activeWindowId.value = ''
 }
@@ -166,7 +174,7 @@ function syncWindows(next: ConnectedWindow[], focused = ''): void {
 // folder currently being controlled. They must not be used interchangeably.
 const activeProjectPath = computed(() => projectPathFromIde(selectedWindow.value?.ideState ?? agentStatus.value?.ideState))
 const activeProjectName = computed(() => projectName(activeProjectPath.value))
-const projectTransition = ref<{ path: string; requestId: string; startedAt: number } | null>(null)
+const projectTransition = ref<{ path: string; requestId: string; startedAt: number; sourceWindowId: string } | null>(null)
 let projectTransitionTimeout: ReturnType<typeof setTimeout> | null = null
 
 function clearProjectTransition() {
@@ -798,7 +806,8 @@ function requestOpenProject(projectPath: string, newWindow: boolean): boolean {
   if (status.value !== 'connected' || !projectPath.trim() || projectTransition.value) return false
   const sent = send({ type: 'open_project', path: projectPath, newWindow, payload: { projectPath, newWindow } })
   if (!sent || newWindow) return sent
-  projectTransition.value = { path: projectPath, requestId: latestDeliveryId, startedAt: Date.now() }
+  projectTransition.value = { path: projectPath, requestId: latestDeliveryId, startedAt: Date.now(),
+    sourceWindowId: activeWindowId.value }
   projectTransitionTimeout = setTimeout(() => {
     if (!projectTransition.value || !projectIsActive(projectTransition.value.path, projectPath)) return
     // An openFolder dispatch is not proof that a new window became connected.
