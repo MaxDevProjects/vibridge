@@ -42,12 +42,41 @@ jobs:
             docker compose version
             compose() { docker compose -f docker-compose.prod.yml "$@"; }
 
+            # Old releases used a different Compose project name. 'compose rm ui'
+            # cannot remove a container owned by that previous project, while the
+            # fixed container_name 'devbridge-ui' prevents the replacement from starting.
+            # Only migrate a verified legacy UI from this exact checkout directory.
+            remove_legacy_ui_if_owned() {
+              if ! docker container inspect devbridge-ui >/dev/null 2>&1; then
+                return 0
+              fi
+              old_service=$(docker container inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' devbridge-ui)
+              old_root=$(docker container inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' devbridge-ui)
+              old_project=$(docker container inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' devbridge-ui)
+              expected_root=$(pwd -P)
+
+              if [ "$old_service" != "ui" ] || [ "$old_root" != "$expected_root" ]; then
+                echo "Refusing to replace /devbridge-ui: container ownership could not be verified." >&2
+                printf 'Existing project: %s; service: %s; working directory: %s\n' "$old_project" "$old_service" "$old_root" >&2
+                printf 'Expected service: ui; working directory: %s\n' "$expected_root" >&2
+                echo "Inspect this container manually; no other container will be removed." >&2
+                exit 1
+              fi
+
+              printf 'Migrating legacy VibeBridge UI from Compose project %s\n' "$old_project"
+              docker container stop devbridge-ui >/dev/null
+              # Do not pass -v: named volumes and project data must remain untouched.
+              docker container rm devbridge-ui >/dev/null
+            }
+
             deploy_service() {
               service=$1
               compose build "$service"
-              # A failed recreation can leave a renamed container under either Compose version.
-              # Remove only this service's containers and preserve their data mounts.
+              # The current Compose project can remove only containers it owns.
               compose rm --stop --force "$service"
+              if [ "$service" = "ui" ]; then
+                remove_legacy_ui_if_owned
+              fi
               compose up -d --no-build --no-deps "$service"
             }
 
