@@ -1324,11 +1324,16 @@ async function pairFromRoute() {
     ((host || agentUrl) && code.length === 6)
   )
 
-  if (hasExplicitPairing) {
-    bridge.clearStoredSession()
-  } else if (bridge.token.value) {
+  // Pairing URLs are one-use invitations, not bookmarks. Reopening a URL
+  // from an already paired device must NEVER erase its working credential.
+  if (hasExplicitPairing && relayFlag === '1' && routeSessionId
+    && localStorage.getItem('vb:relaySessionId') === routeSessionId
+    && localStorage.getItem('vb:token')
+    && localStorage.getItem('vb:bridgeMode') === 'relay') {
+    await router.replace({ query: { view: targetView || 'mobile' } })
     return
   }
+  if (!hasExplicitPairing && bridge.token.value) return
 
   if (host) pairHost.value = host
   if (port) pairPort.value = port

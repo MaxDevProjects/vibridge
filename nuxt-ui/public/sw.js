@@ -17,7 +17,7 @@ self.addEventListener('push', (event) => {
       icon: '/nuxt-ui/logo.svg',
       badge: '/nuxt-ui/logo.svg',
       data: typeof payload.data === 'object' && payload.data ? payload.data : {},
-      tag: 'vibridge-agent-notification',
+      tag: 'vibridge-' + String(payload.data?.windowId || 'general').slice(0, 70),
       renotify: true,
     }),
   )
@@ -31,10 +31,14 @@ self.addEventListener('notificationclick', (event) => {
       : {}
     const sessionId = typeof notificationData.sessionId === 'string' ? notificationData.sessionId.trim() : ''
     const workspaceId = typeof notificationData.workspaceId === 'string' ? notificationData.workspaceId.trim() : ''
-    const targetUrl = new URL('https://vibridge.clowerstudio.com/')
+    const targetUrl = new URL(self.registration.scope)
 
     if (sessionId) targetUrl.searchParams.set('session', sessionId)
     if (workspaceId) targetUrl.searchParams.set('workspace', workspaceId)
+    const windowId = typeof notificationData.windowId === 'string' ? notificationData.windowId.trim() : ''
+    const terminalId = typeof notificationData.terminalId === 'string' ? notificationData.terminalId.trim() : ''
+    if (/^[a-zA-Z0-9-]{1,80}$/.test(windowId)) targetUrl.searchParams.set('window', windowId)
+    if (/^[a-zA-Z0-9-]{1,90}$/.test(terminalId)) targetUrl.searchParams.set('terminal', terminalId)
 
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     const targetHref = targetUrl.toString()
