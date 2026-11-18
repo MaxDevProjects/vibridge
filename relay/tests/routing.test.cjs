@@ -266,3 +266,31 @@ test('remote file reads and trees are routed only to the selected VS Code window
   assert.equal((await api(base + '&windowId=%20bad!&path=src%2Fmain.ts',
     { token: mobileToken })).status, 400)
 })
+
+
+test('preview capture is routed to the selected workspace and its image never enters relay history', async t => {
+  const { mobile, addAgent, store, session } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const commandReceived = next(agent, msg => msg.type === 'preview_capture')
+  const ack = next(mobile, msg => msg.type === 'message_ack' && msg.request_id === 'capture-1')
+  send(mobile, {
+    type: 'preview_capture', workspace_id: 'editor', windowId: 'window-a',
+    port: 5500, device: 'mobile', request_id: 'capture-1',
+  })
+  const command = await commandReceived
+  assert.equal(command.payload.port, 5500)
+  assert.equal(command.payload.device, 'mobile')
+  assert.equal(command.payload.windowId, 'window-a')
+  send(agent, { type: 'relay_command_ack', request_id: command.request_id, ok: true })
+  assert.equal((await ack).status, 'received')
+
+  const preview = next(mobile, msg => msg.type === 'preview_capture_result')
+  const image = Buffer.from('fake-image-for-relay-test').toString('base64')
+  send(agent, { type: 'preview_capture_result', request_id: 'capture-1', windowId: 'window-a',
+    success: true, mime: 'image/png', image })
+  const result = await preview
+  assert.equal(result.windowId, 'window-a')
+  assert.equal(result.image, image)
+  assert.equal(result.success, true)
+  assert.equal(store.listHistory(session.sessionId).some(msg => msg.type === 'preview_capture_result'), false)
+})
