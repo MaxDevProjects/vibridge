@@ -171,6 +171,14 @@ const scroller = ref<HTMLElement|null>(null)
 const menuOpen = ref(false), actionsOpen = ref(false), projectsOpen = ref(false)
 const confirmRevoke = ref(false), revoking = ref(false), revokeError = ref(false)
 const confirmClose = ref(false)
+const previewOpen = ref(false)
+const previewPort = ref(5500)
+const previewDevice = ref<'mobile'|'desktop'>('mobile')
+const previewBusy = ref(false)
+const previewError = ref('')
+const previewImage = ref('')
+const previewWindowId = ref('')
+let previewTimeout: ReturnType<typeof setTimeout> | null = null
 const availableProjects = ref<Project[]>([])
 const pendingTerminalId = ref('')
 const dic: Record<string,Record<string,string>> = {
@@ -201,7 +209,7 @@ const windowThreads=computed(()=>allThreads.value.filter(item=>item.windowId===a
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
 const canSend=computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && Boolean(bridge.selectedWindow.value?.connected) && bridge.activeWindowId.value===activeThread.value?.windowId && !bridge.projectTransition.value)
 function threadState(state:string,connected:boolean) { return !connected ? t('offline') : state==='attention_possible'?t('attention'):state==='running'?t('running'):state==='finished'?t('finished'):t('connected') }
-function threadPreview(key:string,state:string){const entries=threadsHistory.value[key] ?? []; const last=entries.at(-1);return last?.kind==='output'?compactTerminalOutput(last.raw ?? '').display.slice(-90)||t('outputInProgress'):last?.text.slice(0,90)||threadState(state,true)}
+function threadPreview(key:string,state:string){const entries=threadsHistory.value[key] ?? []; const last=entries.at(-1);return last?.kind==='output'?compactTerminalOutput(last.raw ?? last.text).display.slice(-90)||t('outputInProgress'):last?.text.slice(0,90)||threadState(state,true)}
 function activeKey(){return activeThread.value?.key??''}
 function addEntry(key:string,entry:Entry){
  if(!key)return
@@ -238,7 +246,48 @@ function sendInstruction(){
 }
 function createTerminal(){if(!canSend.value)return;const names=new Set(windowThreads.value.map(t=>t.label));let i=1;while(names.has('DevBridge '+i))i++;const sent=bridge.send({type:'create_terminal',terminalName:'DevBridge '+i});if(sent)closeSheets()}
 function startCli(cli:string){const sent=bridge.send({type:'start_cli',cliId:cli});if(sent){if(activeThread.value)addEntry(activeThread.value.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('launchDispatched')});closeSheets()}}
-function openPreview(){closeSheets();void navigateTo('/preview')}
+function openPreview(){
+  closeSheets()
+  if(!activeThread.value)return
+  bridge.selectWindow(activeThread.value.windowId)
+  previewWindowId.value=activeThread.value.windowId
+  previewError.value=''
+  previewImage.value=''
+  previewOpen.value=true
+}
+function closePreview(){
+  previewOpen.value=false
+  previewBusy.value=false
+  if(previewTimeout){clearTimeout(previewTimeout);previewTimeout=null}
+}
+function requestPreview(){
+  const port=Number(previewPort.value)
+  if(!previewOpen.value || previewBusy.value || !activeThread.value)return
+  if(!Number.isInteger(port)||port<1024||port>65535){
+    previewError.value=lang.value==='fr'?'Port invalide.':'Invalid port.'
+    return
+  }
+  if(!activeThread.value.connected || !bridge.agentStatus.value?.control?.canControl){
+    previewError.value=lang.value==='fr'?'Contrôle distant indisponible.':'Remote control unavailable.'
+    return
+  }
+  bridge.selectWindow(activeThread.value.windowId)
+  previewWindowId.value=activeThread.value.windowId
+  previewError.value=''
+  previewImage.value=''
+  if(!bridge.send({type:'preview_capture',port,device:previewDevice.value})){
+    previewError.value=lang.value==='fr'?'Demande non envoyée. Vérifie la connexion et les autorisations.':'Request not sent. Check connection and permissions.'
+    return
+  }
+  previewBusy.value=true
+  if(previewTimeout)clearTimeout(previewTimeout)
+  previewTimeout=setTimeout(()=>{
+    if(previewBusy.value){
+      previewBusy.value=false
+      previewError.value=lang.value==='fr'?'Réception non confirmée. Pas de nouvel envoi automatique.':'Receipt unconfirmed. No automatic retry.'
+    }
+  },30000)
+}
 function closeSheets(){menuOpen.value=false;actionsOpen.value=false;projectsOpen.value=false}
 function showProjectPicker(){closeSheets();projectsOpen.value=true;availableProjects.value=[];if(bridge.status.value==='connected')bridge.send({type:'list_projects'})}
 function chooseWindow(windowId:string){const next=allThreads.value.find(item=>item.windowId===windowId);closeSheets();if(next)openThread(next);else bridge.selectWindow(windowId)}
@@ -247,6 +296,26 @@ function signOut(){closeSheets();bridge.clearStoredSession();void navigateTo('/s
 function requestWindowClose(){if(!activeThread.value?.connected || !bridge.agentStatus.value?.control?.allowWindowClose)return;confirmClose.value=false;if(bridge.send({type:'close_window'})){activeThread.value=null}}
 async function revokeAccess(){revoking.value=true;revokeError.value=false;const success=await bridge.revokeRelaySession();revoking.value=false;if(success){confirmRevoke.value=false;void navigateTo('/setup')}else revokeError.value=true}
 const off=bridge.onMessage((msg:WsMessage)=>{
+ if(msg.type==='preview_capture_result' && previewOpen.value && previewBusy.value
+   && msg.windowId===previewWindowId.value){
+    previewBusy.value=false
+    if(previewTimeout){clearTimeout(previewTimeout);previewTimeout=null}
+    if(msg.success===true && typeof msg.image==='string' && msg.image.length<=700000){
+      previewImage.value='data:image/png;base64,'+msg.image
+      previewError.value=''
+    }else{
+      const reason=String(msg.error??'preview_failed')
+      const labels:Record<string,string>={
+        preview_port_not_authorized_on_pc:'Port non autorisé dans les paramètres Utilisateur VS Code.',
+        playwright_not_installed_on_pc:'Playwright absent sur le PC.',
+        playwright_chromium_not_installed:'Chromium Playwright absent sur le PC.',
+        preview_capture_failed:'Capture impossible. Vérifie le serveur local et WSL.',
+        preview_busy:'Une capture est déjà en cours.'
+      }
+      previewError.value=labels[reason]??reason
+    }
+    return
+ }
  const key=activeKey(),item=activeThread.value
  if(msg.type==='projects_list'){const payload=msg.payload && typeof msg.payload==='object'?msg.payload as {projects?:Project[]}:{};const projects=Array.isArray(msg.projects)?msg.projects as Project[]:payload.projects;availableProjects.value=Array.isArray(projects)?projects:[];return}
  if(!item || !key)return
@@ -305,7 +374,7 @@ watch(allThreads,(threads)=>{
     if(target)openThread(target)
   }
 },{immediate:true})
-onUnmounted(off)
+onUnmounted(()=>{off();if(previewTimeout)clearTimeout(previewTimeout)})
 useHead({title:'DevBridge | Conversations'})
 </script>
 
