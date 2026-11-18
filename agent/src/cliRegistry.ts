@@ -23,6 +23,14 @@ export interface CliDefinition {
   isCustom: boolean;
 }
 
+export interface HostToolDefinition {
+  id: string;
+  name: string;
+  command: string;
+  args?: string[];
+  detected?: boolean;
+}
+
 interface PersistedConfig {
   defaultCliId: string | null;
   customClis: CliDefinition[];
@@ -118,6 +126,35 @@ export class CliRegistry {
       const first = [...this.clis.values()].find(c => c.detected);
       if (first) first.isDefault = true;
     }
+    this.onChange?.();
+  }
+
+  replaceHostTools(definitions: HostToolDefinition[]): void {
+    // Defined exclusively by the authenticated VS Code extension's User settings.
+    const allowed = new Map<string, CliDefinition>();
+    for (const def of definitions.slice(0, 20)) {
+      if (!def || !/^[a-z][a-z0-9-]{1,63}$/.test(def.id)) continue;
+      if (typeof def.name !== 'string' || !def.name.trim() || def.name.length > 100) continue;
+      if (typeof def.command !== 'string' || !/^[a-zA-Z0-9_.:/\\-]{1,200}$/.test(def.command)) continue;
+      if (def.args && (!Array.isArray(def.args) || def.args.length > 20
+        || !def.args.every(arg => typeof arg === 'string' && arg.length < 200 && !/[\\r\\n]/.test(arg)))) continue;
+      const id = 'host-' + def.id;
+      allowed.set(id, {
+        id,
+        name: def.name.trim(),
+        command: def.command,
+        args: def.args ?? [],
+        checkCommand: def.command,
+        detected: def.detected === true,
+        isDefault: false,
+        isCustom: true,
+      });
+    }
+    for (const id of this.clis.keys()) {
+      if (id.startsWith('host-') && !allowed.has(id)) this.clis.delete(id);
+    }
+    for (const [id, tool] of allowed) this.clis.set(id, tool);
+    this.persist();
     this.onChange?.();
   }
 
