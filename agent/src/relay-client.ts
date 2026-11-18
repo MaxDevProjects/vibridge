@@ -9,6 +9,8 @@ import type { CliRegistry } from './cliRegistry';
 import { routeTerminalMessage } from './terminal-routing';
 import { listProjects } from './projects';
 import { ControlPolicy } from './control-policy';
+import type { PushService } from './push';
+import type { PushSubscription } from 'web-push';
 
 interface RelaySessionState {
   enabled: boolean;
@@ -66,6 +68,7 @@ interface RelayClientOptions {
   queue: MessageQueue;
   cliRegistry?: CliRegistry;
   controlPolicy?: ControlPolicy;
+  push?: PushService;
 }
 
 export class RelayClient {
@@ -570,6 +573,43 @@ export class RelayClient {
       } else {
         respond({ error: 'unknown action' });
       }
+      return;
+    }
+
+    if (type === 'relay_push_request' && typeof msg.request_id === 'string') {
+      const respond = (result: Record<string, unknown>) => {
+        if (this.ws === socket) this.send('relay_push_response', { request_id: msg.request_id, ...result });
+      };
+      const push = this.options.push;
+      if (!push) { respond({ error: 'push service unavailable' }); return; }
+      if (msg.action === 'public_key') { respond({ publicKey: push.getPublicKey() }); return; }
+      if (msg.action === 'subscribe') {
+        const sub = msg.subscription;
+        if (!sub || typeof sub !== 'object' || Array.isArray(sub)) { respond({ error: 'invalid subscription' }); return; }
+        const subscription = sub as Partial<PushSubscription>;
+        if (typeof subscription.endpoint !== 'string' || !subscription.keys
+          || typeof subscription.keys.auth !== 'string' || typeof subscription.keys.p256dh !== 'string') {
+          respond({ error: 'invalid subscription' }); return;
+        }
+        try {
+          const endpoint = new URL(subscription.endpoint);
+          const hostname = endpoint.hostname.toLowerCase();
+          const trusted = ['googleapis.com', 'mozilla.com', 'apple.com', 'windows.com', 'microsoft.com']
+            .some(domain => hostname === domain || hostname.endsWith('.' + domain));
+          if (endpoint.protocol !== 'https:' || !trusted || endpoint.username || endpoint.password) {
+            respond({ error: 'unsupported push endpoint' }); return;
+          }
+          push.subscribe(subscription as PushSubscription);
+          respond({ ok: true });
+        } catch { respond({ error: 'invalid push endpoint' }); }
+        return;
+      }
+      if (msg.action === 'unsubscribe' && typeof msg.endpoint === 'string') {
+        push.unsubscribe(msg.endpoint);
+        respond({ ok: true });
+        return;
+      }
+      respond({ error: 'unsupported push action' });
       return;
     }
 
