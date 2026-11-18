@@ -107,6 +107,10 @@ export class RelayStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN pairing_expires_at INTEGER NOT NULL DEFAULT 0')
       this.db.exec("UPDATE sessions SET pairing_expires_at = MIN(expires_at, created_at + 600000) WHERE status = 'waiting'")
     }
+    const snapshotColumns = this.db.pragma('table_info(workspace_snapshots)') as Array<{ name: string }>
+    if (!snapshotColumns.some(column => column.name === 'control_json')) {
+      this.db.exec('ALTER TABLE workspace_snapshots ADD COLUMN control_json TEXT')
+    }
   }
 
   private makePairingCode(): string {
@@ -435,6 +439,7 @@ export class RelayStore {
         ? payload.previewUrl as string | null
         : previous?.previewUrl ?? null,
       fileTree: payload.fileTree ?? previous?.fileTree,
+      control: payload.control ?? previous?.control,
       adapters: payload.adapters ?? previous?.adapters,
       activeAdapter: typeof payload.activeAdapter === 'string' || payload.activeAdapter === null
         ? payload.activeAdapter as string | null
@@ -443,14 +448,15 @@ export class RelayStore {
     }
     this.db.prepare(`
       INSERT INTO workspace_snapshots (
-        session_id, workspace_id, ide_state_json, preview_url, file_tree_json, adapters_json, active_adapter, timestamp
+        session_id, workspace_id, ide_state_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       ) VALUES (
-        @sessionId, @workspaceId, @ideStateJson, @previewUrl, @fileTreeJson, @adaptersJson, @activeAdapter, @timestamp
+        @sessionId, @workspaceId, @ideStateJson, @previewUrl, @fileTreeJson, @controlJson, @adaptersJson, @activeAdapter, @timestamp
       )
       ON CONFLICT(session_id, workspace_id) DO UPDATE SET
         ide_state_json = excluded.ide_state_json,
         preview_url = excluded.preview_url,
         file_tree_json = excluded.file_tree_json,
+        control_json = excluded.control_json,
         adapters_json = excluded.adapters_json,
         active_adapter = excluded.active_adapter,
         timestamp = excluded.timestamp
@@ -460,6 +466,7 @@ export class RelayStore {
       ideStateJson: next.ideState === undefined ? null : JSON.stringify(next.ideState),
       previewUrl: next.previewUrl ?? null,
       fileTreeJson: next.fileTree === undefined ? null : JSON.stringify(next.fileTree),
+      controlJson: next.control === undefined ? null : JSON.stringify(next.control),
       adaptersJson: next.adapters === undefined ? null : JSON.stringify(next.adapters),
       activeAdapter: next.activeAdapter ?? null,
       timestamp: next.timestamp,
@@ -468,7 +475,7 @@ export class RelayStore {
 
   getWorkspaceSnapshot(sessionId: string, workspaceId: string): WorkspaceSnapshot | null {
     const row = this.db.prepare(`
-      SELECT workspace_id, ide_state_json, preview_url, file_tree_json, adapters_json, active_adapter, timestamp
+      SELECT workspace_id, ide_state_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       FROM workspace_snapshots
       WHERE session_id = ? AND workspace_id = ?
     `).get(sessionId, workspaceId) as Record<string, unknown> | undefined
@@ -478,6 +485,7 @@ export class RelayStore {
       ideState: parseJson(row.ide_state_json as string | null, undefined),
       previewUrl: typeof row.preview_url === 'string' || row.preview_url === null ? row.preview_url as string | null : null,
       fileTree: parseJson(row.file_tree_json as string | null, undefined),
+      control: parseJson(row.control_json as string | null, undefined),
       adapters: parseJson(row.adapters_json as string | null, undefined),
       activeAdapter: typeof row.active_adapter === 'string' || row.active_adapter === null ? row.active_adapter as string | null : null,
       timestamp: Number(row.timestamp),
@@ -486,7 +494,7 @@ export class RelayStore {
 
   listWorkspaceSnapshots(sessionId: string): WorkspaceSnapshot[] {
     const rows = this.db.prepare(`
-      SELECT workspace_id, ide_state_json, preview_url, file_tree_json, adapters_json, active_adapter, timestamp
+      SELECT workspace_id, ide_state_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       FROM workspace_snapshots
       WHERE session_id = ?
       ORDER BY timestamp ASC, workspace_id ASC
@@ -496,6 +504,7 @@ export class RelayStore {
       ideState: parseJson(row.ide_state_json as string | null, undefined),
       previewUrl: typeof row.preview_url === 'string' || row.preview_url === null ? row.preview_url as string | null : null,
       fileTree: parseJson(row.file_tree_json as string | null, undefined),
+      control: parseJson(row.control_json as string | null, undefined),
       adapters: parseJson(row.adapters_json as string | null, undefined),
       activeAdapter: typeof row.active_adapter === 'string' || row.active_adapter === null ? row.active_adapter as string | null : null,
       timestamp: Number(row.timestamp),
