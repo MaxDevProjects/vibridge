@@ -8,7 +8,6 @@ export class CodexCliAdapter extends PtyAdapter {
   readonly id = 'codex-cli';
   readonly label = 'Codex CLI';
   private pending: string[] = [];
-  private trustAnswered = false;
   private ready = false;
 
   constructor(queue: MessageQueue, cwd?: string) {
@@ -28,11 +27,8 @@ export class CodexCliAdapter extends PtyAdapter {
   protected override onDataChunk(data: string): void {
     if (!this.term) return;
 
-    if (!this.trustAnswered && data.includes('Do you trust the contents of this directory?')) {
-      this.trustAnswered = true;
-      this.term.write('1\n');
-      return;
-    }
+    // Directory trust is deliberately left to the human, including remotely.
+    // Never auto-approve a model or tool security prompt.
 
     if (!this.ready && (
       data.includes('To get started, describe a task') ||
