@@ -73,6 +73,10 @@
             Retour
           </button>
         </div>
+        <p class="px-3 py-2 text-[10px] leading-relaxed" style="color:var(--muted)">
+          « Ouvrir ici » change le projet de la fenêtre pilotée. « En parallèle »
+          ouvre une autre fenêtre ; son contrôle dépend de sa connexion à l'agent.
+        </p>
         <p v-if="loadingProjects" class="px-3 py-3 text-[10px] uppercase tracking-[0.16em]" style="color:var(--muted)">
           Chargement…
         </p>

@@ -190,6 +190,17 @@ export class IpcServer {
 
     const registerAdapter = (id: string, label: string) => {
       registeredAdapterId = id;
+      if (this.activeExtension !== socket) {
+        // A different VS Code window took focus. Invalidate previous terminal
+        // identities before accepting the new window's own snapshot.
+        this.ideState = null;
+        this.projects = [];
+        this.projectsParentDir = '';
+        const cleared = { workspaceFolders: [], activeFile: null, activeLanguage: null,
+          activeTerminal: null, activeTerminalId: null, terminals: [], updatedAt: Date.now() };
+        this.forward?.('ide_snapshot', { payload: { state: cleared } });
+        this.forward?.('projects_update', { projects: [], parentDir: '' });
+      }
       this.activeExtension = socket;
       this.adapterOwners.set(id, socket);
       this.adapters.registerIpcAdapter(id, label, (data: unknown) => {
