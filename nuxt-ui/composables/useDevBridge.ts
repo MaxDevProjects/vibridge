@@ -1,3 +1,5 @@
+import { activeProjectPath as projectPathFromIde, projectName, projectIsActive, scopedProjectKey } from './projectContext'
+
 /**
  * useDevBridge — transport composable
  * Supports both local agent mode and relay mode.
@@ -111,6 +113,24 @@ const latencyMs = ref<number | null>(null)
 const relayWorkspaces = ref<ConnectedWorkspace[]>([])
 const relaySessions = ref<RelaySessionListItem[]>([])
 const activeWorkspaceId = ref('')
+// Workspace ID identifies the bridge agent. Project path identifies the VS Code
+// folder currently being controlled. They must not be used interchangeably.
+const activeProjectPath = computed(() => projectPathFromIde(agentStatus.value?.ideState))
+const activeProjectName = computed(() => projectName(activeProjectPath.value))
+const projectTransition = ref<{ path: string; requestId: string; startedAt: number } | null>(null)
+let projectTransitionTimeout: ReturnType<typeof setTimeout> | null = null
+
+function clearProjectTransition() {
+  if (projectTransitionTimeout) clearTimeout(projectTransitionTimeout)
+  projectTransitionTimeout = null
+  projectTransition.value = null
+}
+
+function confirmProjectTransition() {
+  if (projectTransition.value && projectIsActive(activeProjectPath.value, projectTransition.value.path)) {
+    clearProjectTransition()
+  }
+}
 const deliveryNotice = ref<{ status: 'pending' | 'received' | 'error'; text: string } | null>(null)
 const seenRelayEvents = new Set<string>()
 const pendingDelivery = new Map<string, ReturnType<typeof setTimeout>>()
@@ -238,6 +258,7 @@ function setActiveWorkspace(nextWorkspaceId: string) {
       ...agentStatus.value, adapters: [], activeAdapter: null, ideState: null, previewUrl: null, fileTree: undefined,
     }
   }
+  if (activeWorkspaceId.value !== nextWorkspaceId) clearProjectTransition()
   activeWorkspaceId.value = nextWorkspaceId
   relayWorkspaces.value = relayWorkspaces.value.map(workspace => ({
     ...workspace,
@@ -281,6 +302,7 @@ function clearStoredSession() {
   relayWorkspaces.value = []
   relaySessions.value = []
   activeWorkspaceId.value = ''
+  clearProjectTransition()
   mode.value = 'local'
   agentStatus.value = null
   _baseUrl = ''
@@ -360,6 +382,28 @@ function emit(msg: WsMessage) {
   if (normalized.type === 'status_snapshot') {
     const payload = typeof normalized.payload === 'object' && normalized.payload ? normalized.payload as Partial<AgentStatus> : normalized as Partial<AgentStatus>
     applyStatusSnapshot(payload)
+    confirmProjectTransition()
+  }
+
+  // An IDE snapshot is the authoritative signal that VS Code has actually
+  // changed projects. No optimistic label changes on command receipt.
+  if (normalized.type === 'ide_snapshot') {
+    const state = normalized.state
+    if (state && typeof state === 'object' && !Array.isArray(state)) {
+      const previousPath = activeProjectPath.value
+      const ide = state as AgentStatus['ideState']
+      applyStatusSnapshot({ ideState: ide, timestamp: Date.now() })
+      if (previousPath !== activeProjectPath.value && agentStatus.value) {
+        // Never display file content or a preview from the previous project.
+        agentStatus.value = { ...agentStatus.value, fileTree: undefined, previewUrl: null }
+      }
+      confirmProjectTransition()
+    }
+  }
+
+  if (normalized.type === 'command_execution' && normalized.action === 'open_project'
+    && normalized.phase === 'rejected' && normalized.request_id === projectTransition.value?.requestId) {
+    clearProjectTransition()
   }
 
   if (normalized.type === 'peer_status') {
@@ -427,6 +471,9 @@ function handleWsMessage(ev: MessageEvent) {
     clearTimeout(timer)
     pendingDelivery.delete(msg.request_id)
     if (msg.request_id !== latestDeliveryId) return
+    if (msg.status !== 'received' && msg.request_id === projectTransition.value?.requestId) {
+      clearProjectTransition()
+    }
     if (msg.status === 'received') {
       deliveryNotice.value = dispatchedToVsCode.has(msg.request_id)
         ? { status: 'received', text: 'Action transmise à VS Code. Le résultat dans la CLI reste à vérifier.' }
@@ -608,6 +655,10 @@ function send(data: unknown): boolean {
   if (mode.value === 'relay' && activeWorkspaceId.value && typeof frame.workspace_id !== 'string') {
     frame.workspace_id = activeWorkspaceId.value
   }
+  if (projectTransition.value && ['message', 'chat', 'create_terminal', 'start_cli', 'focus_terminal'].includes(String(frame.type))) {
+    deliveryNotice.value = { status: 'error', text: 'Changement de projet en cours : attends la confirmation de VS Code.' }
+    return false
+  }
   if (tracked) {
     if (pendingDelivery.size >= 64) {
       deliveryNotice.value = { status: 'error', text: 'Trop de commandes sont en attente de réception.' }
@@ -626,6 +677,20 @@ function send(data: unknown): boolean {
     }, 7_000))
   }
   ws.send(JSON.stringify(frame))
+  return true
+}
+
+function requestOpenProject(projectPath: string, newWindow: boolean): boolean {
+  if (status.value !== 'connected' || !projectPath.trim() || projectTransition.value) return false
+  const sent = send({ type: 'open_project', path: projectPath, newWindow, payload: { projectPath, newWindow } })
+  if (!sent || newWindow) return sent
+  projectTransition.value = { path: projectPath, requestId: latestDeliveryId, startedAt: Date.now() }
+  projectTransitionTimeout = setTimeout(() => {
+    if (!projectTransition.value || !projectIsActive(projectTransition.value.path, projectPath)) return
+    // An openFolder dispatch is not proof that a new window became connected.
+    clearProjectTransition()
+    deliveryNotice.value = { status: 'error', text: 'VS Code n’a pas confirmé le nouveau projet. Vérifie la fenêtre active avant de réessayer.' }
+  }, 20_000)
   return true
 }
 
@@ -879,8 +944,15 @@ export function useDevBridge() {
     relayWorkspaces: readonly(relayWorkspaces),
     relaySessions: readonly(relaySessions),
     activeWorkspaceId: readonly(activeWorkspaceId),
+    activeProjectPath: readonly(activeProjectPath),
+    activeProjectName: readonly(activeProjectName),
+    projectTransition: readonly(projectTransition),
+    projectContextKey: computed(() => scopedProjectKey(
+      resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value),
+      activeProjectPath.value,
+    )),
     chatHistoryKey: computed(() => token.value
-      ? resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value)
+      ? scopedProjectKey(resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value), activeProjectPath.value)
       : ''),
     activeWorkspace: computed(() => relayWorkspaces.value.find(workspace => workspace.id === activeWorkspaceId.value) ?? null),
 
@@ -897,6 +969,7 @@ export function useDevBridge() {
     fetchAgentStatus,
     fetchRelaySessions,
     setActiveWorkspace,
+    requestOpenProject,
     switchRelaySession,
 
     onMessage(fn: (msg: WsMessage) => void) {

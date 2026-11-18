@@ -1,4 +1,5 @@
 import { resolveChatHistoryKey } from '../../composables/useWorkspaceChatHistory'
+import { activeProjectPath, projectName, projectIsActive, scopedProjectKey } from '../../composables/projectContext'
 import assert from 'node:assert/strict'
 
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
@@ -96,3 +97,18 @@ if (failures > 0) {
   console.log('PASS chat history is isolated by relay session, workspace and local agent')
   console.log('All unit tests passed.')
 }
+
+test('project path is derived from the live VS Code folder, not the agent identifier', () => {
+  assert.equal(activeProjectPath({ workspaceFolders: ['/home/clower/projects/new-project'] }), '/home/clower/projects/new-project')
+  assert.equal(projectName('/home/clower/projects/new-project/'), 'new-project')
+  assert.equal(activeProjectPath({ workspaceFolders: [] }), '')
+  assert.equal(projectIsActive('/home/clower/projects/new-project/', '/home/clower/projects/new-project'), true)
+  assert.equal(projectIsActive('/home/clower/projects/old-project', '/home/clower/projects/new-project'), false)
+})
+
+test('chat and terminal selection storage is isolated between projects', () => {
+  const base = resolveChatHistoryKey('relay', 'https://relay.example', 'session', 'editor')
+  assert.notEqual(scopedProjectKey(base, '/home/projects/a'), scopedProjectKey(base, '/home/projects/b'))
+  assert.equal(scopedProjectKey(base, '/home/projects/a/'), scopedProjectKey(base, '/home/projects/a'))
+  assert.equal(scopedProjectKey('', '/home/projects/a'), '')
+})
