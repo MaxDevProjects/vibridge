@@ -179,11 +179,11 @@ export class IpcServer {
       if (deadline) clearTimeout(deadline);
       const windowId = this.socketWindows.get(socket);
       this.socketWindows.delete(socket);
-      if (windowId && this.windowSockets.get(windowId) === socket) {
+      const wasRegistered = Boolean(windowId && this.windowSockets.get(windowId) === socket);
+      if (wasRegistered && windowId) {
         this.windowSockets.delete(windowId);
         const record = this.windowStates.get(windowId);
         if (record) this.windowStates.set(windowId, { ...record, connected: false, lastSeen: Date.now() });
-        this.publishWindows();
       }
       if (this.activeExtension === socket) {
         this.activeExtension = [...this.windowSockets.values()].at(-1) ?? null;
@@ -198,6 +198,9 @@ export class IpcServer {
           if (this.activeExtension) this.registerActiveAdapter(registeredAdapterId, 'VS Code Extension');
         }
       }
+      // Publish after choosing the new focused window. Otherwise a disconnected
+      // focus ID can be retained in the relay and restored on mobile reload.
+      if (wasRegistered) this.publishWindows();
       this.clients.delete(socket);
       off();
     });
