@@ -226,6 +226,9 @@
             <div class="text-right text-[9px]" style="color:var(--muted)">{{ latencyLabel }}<br><span class="text-[8px]">{{ transportLabel }}</span></div>
           </div>
 
+          <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+            :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
+
           <div class="px-4 mb-4">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
@@ -343,6 +346,8 @@
 
         <!-- CHAT tab -->
         <div v-show="activeTab === 'chat'" class="absolute inset-0 flex flex-col">
+          <WindowStrip :windows="bridge.windows.value" :selected-window-id="bridge.activeWindowId.value"
+            :activity="bridge.windowActivity.value" @select="bridge.selectWindow" />
           <div class="shrink-0 px-4 py-3" style="border-bottom:1px solid var(--border)">
             <WorkspaceSwitcher
               :workspaces="relayWorkspaceOptions"
@@ -1624,11 +1629,16 @@ function selectChatTarget(target: ChatTarget) {
     return
   }
   if (target.kind !== 'launcher') return
-  const isLaunched = Boolean(target.terminalName && Array.isArray(ideState.value?.terminals) && ideState.value?.terminals?.some(
-    terminal => String(terminal?.name ?? '').trim() === target.terminalName
-  ))
-  if (!target.cliId || isLaunched) return
-  launchCli(target.cliId)
+  const existingTerminal = target.terminalName && Array.isArray(ideState.value?.terminals)
+    ? ideState.value.terminals.find(t => t.name === target.terminalName) : null
+  if (existingTerminal) {
+    // CLI is a launcher, not a reply channel. Reply to the actual terminal ID.
+    const terminalId = String(existingTerminal.id ?? existingTerminal.name)
+    setReplyTarget(`terminal:${terminalId}`, true)
+    bridge.send({ type: 'focus_terminal', terminalId, terminalName: existingTerminal.name })
+    return
+  }
+  if (target.cliId) launchCli(target.cliId)
 }
 
 function scheduleChatHistorySave() {
@@ -1739,7 +1749,8 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
     pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
-    if (cliId) setReplyTarget(cliId, true)
+    if (msg.terminalId) setReplyTarget(`terminal:${String(msg.terminalId)}`, true)
+    else pushActivity('sys', 'Terminal créé, en attente de son identifiant réel')
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_created') {
     const terminalName = String(msg.terminalName ?? '')
@@ -1811,6 +1822,10 @@ watch(() => bridge.projectTransition.value, (pending, previous) => {
     delete projectOpening.value[previous.path]
     pushActivity('err', 'Le changement de projet n’a pas été confirmé par VS Code')
   }
+})
+
+watch(() => bridge.activeWindowId.value, () => {
+  if (bridge.status.value === 'connected') void requestProjects()
 })
 
 watch(() => bridge.activeProjectPath.value, (next, previous) => {

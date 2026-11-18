@@ -153,6 +153,8 @@ export function createServer(deps: ServerDeps) {
       activeAdapter: adapters.active(),
       control: controlPolicy.describe(),
       ideState: deps.ipc.getIdeState(),
+      windows: deps.ipc.getWindows(),
+      focusedWindowId: deps.ipc.getFocusedWindowId(),
       previewUrl: adapters.getPreviewUrl() ?? deps.ipc.getPreviewUrl(),
       relay: relay?.getState() ?? null,
       timestamp: Date.now(),

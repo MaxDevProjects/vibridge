@@ -755,7 +755,7 @@ function send(data: unknown): boolean {
     return false
   }
   const scopedToWindow = ['message', 'chat', 'open_project', 'focus_terminal', 'kill_cli',
-    'create_terminal', 'start_cli', 'action', 'notif_response']
+    'create_terminal', 'start_cli', 'action', 'notif_response', 'list_projects', 'get_preview_url']
   if (scopedToWindow.includes(String(frame.type)) && windows.value.length) {
     if (!selectedWindow.value?.connected) {
       deliveryNotice.value = { status: 'error', text: 'Fenêtre VS Code absente ou déconnectée. Choisis une fenêtre connectée.' }
