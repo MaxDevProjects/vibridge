@@ -23,6 +23,7 @@ export class IpcServer {
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
   private previewUrl: string | null = null;
+  private terminalQuestionState = new Map<string, { text: string; notifiedAt: number }>();
   private relayQrUrl: string | null = null;
   private projects: Array<{ name: string; path: string; isActive: boolean }> = [];
   private projectsParentDir = '';
@@ -283,12 +284,44 @@ export class IpcServer {
       case 'terminal_output': {
         const text = String(msg.text ?? '');
         if (!text) break;
+        const tool = String(msg.tool ?? 'vscode-terminal');
+        const terminalId = String(msg.terminalId ?? '');
+        const terminalName = String(msg.terminal ?? '');
         const payload: OutputPayload = {
           type: 'output',
           text,
-          tool: String(msg.tool ?? 'vscode-terminal'),
+          tool,
+          data: { terminalId, terminalName },
         };
         this.queue.emit(payload);
+
+        // Purely heuristic: notify that intervention *may* be required.
+        // Never automatically answer a trust/approval prompt.
+        const key = terminalId || terminalName || tool;
+        const previous = this.terminalQuestionState.get(key) ?? { text: '', notifiedAt: 0 };
+        const plain = (previous.text + text)
+          .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+          .slice(-1000);
+        const now = Date.now();
+        const tail = plain.split(/\r?\n/).slice(-3).join('\n').trim();
+        const requiresAttention = this.detectQuestion(tail) && now - previous.notifiedAt > 60_000;
+        this.terminalQuestionState.set(key, {
+          text: plain,
+          notifiedAt: requiresAttention ? now : previous.notifiedAt,
+        });
+        if (requiresAttention) {
+          const notification = {
+            type: 'notification', text: 'Une intervention pourrait être nécessaire dans ' + (terminalName || 'un terminal'),
+            terminalId, terminalName, tool, isQuestion: true, target: tool,
+          };
+          this.broadcast?.(notification);
+          this.forward?.('notification', notification);
+          void this.push.send({
+            title: 'VibeBridge - intervention possible',
+            body: 'Vérifie le terminal ' + (terminalName || 'actif') + ' depuis VibeBridge.',
+            data: { type: 'question', terminalId, workspaceId: this.workspaceId, sessionId: this.getRelaySessionId() },
+          });
+        }
         break;
       }
       case 'host_clis': {
