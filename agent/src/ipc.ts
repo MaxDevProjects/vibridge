@@ -303,7 +303,7 @@ export class IpcServer {
       }
       case 'cli_started': {
         // Extension confirms terminal was opened
-        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName };
+        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('cli_started', payload);
         break;
@@ -315,14 +315,14 @@ export class IpcServer {
         break;
       }
       case 'terminal_created': {
-        const payload = { type: 'terminal_created', terminalName: msg.terminalName };
+        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('terminal_created', payload);
         break;
       }
       case 'terminal_closed': {
         // Extension reports a terminal was closed (manually or via kill_cli)
-        const payload = { type: 'terminal_closed', terminalName: msg.terminalName };
+        const payload = { type: 'terminal_closed', terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('terminal_closed', payload);
         break;
