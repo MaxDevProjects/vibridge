@@ -172,6 +172,7 @@ const terminals = computed(() =>
   Array.isArray(ideState.value?.terminals) ? ideState.value!.terminals! : []
 )
 const activeTerminalName = computed(() => String(ideState.value?.activeTerminal ?? '').trim())
+const activeTerminalId = computed(() => String(ideState.value?.activeTerminalId ?? '').trim())
 
 const chatTargets = computed<ChatTarget[]>(() => {
   const list: ChatTarget[] = []
@@ -179,15 +180,16 @@ const chatTargets = computed<ChatTarget[]>(() => {
 
   for (const terminal of terminals.value) {
     const terminalName = String((terminal as { name?: string }).name ?? '').trim()
-    if (!terminalName || seen.has(terminalName)) continue
-    seen.add(terminalName)
-    const target = `terminal:${terminalName}`
+    const terminalKey = String((terminal as { id?: string }).id ?? terminalName).trim()
+    if (!terminalName || seen.has(terminalKey)) continue
+    seen.add(terminalKey)
+    const target = `terminal:${terminalKey}`
     list.push({
       id: target,
       label: terminalName,
       target,
       terminalName,
-      state: terminalName === activeTerminalName.value ? 'active' : 'open',
+      state: terminalKey === activeTerminalId.value || (!activeTerminalId.value && terminalName === activeTerminalName.value) ? 'active' : 'open',
       selected: replyTarget.value === target,
     })
   }
@@ -219,7 +221,7 @@ function selectChatTarget(target: ChatTarget) {
     const terminalName = nextTerminalName()
     creatingTerminal.value = true
     bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })
-    setTarget(`terminal:${terminalName}`)
+    // Select the terminal once the extension reports its actual identity.
     setTimeout(() => { creatingTerminal.value = false }, 3_000)
     return
   }
@@ -337,6 +339,9 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'ai_typing') {
     aiTyping.value = true
     currentTool.value = (msg.tool as string) ?? null
+  } else if (msg.type === 'terminal_created') {
+    creatingTerminal.value = false
+    if (msg.terminalId || msg.terminalName) setTarget(`terminal:${String(msg.terminalId ?? msg.terminalName)}`)
   } else if (msg.type === 'terminal_closed') {
     const terminalName = String(msg.terminalName ?? '')
     if (replyTarget.value === `terminal:${terminalName}`) setTarget('__new__')
