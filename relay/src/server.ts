@@ -312,6 +312,26 @@ export function createRelayServer(options: RelayServerOptions) {
     res.json({ pairingCode, qrUrl: buildQrUrl(sessionId, pairingCode) })
   })
 
+  // Browser sign-out is not revocation: invalidate every bearer and live socket.
+  app.delete('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
+    const claims = (req as Request & { claims: SessionClaims }).claims
+    if (claims.sessionId !== req.params.sessionId) {
+      res.status(403).json({ error: 'forbidden' })
+      return
+    }
+    if (!store.revokeSession(claims.sessionId)) {
+      res.status(404).json({ error: 'session already closed' })
+      return
+    }
+    const sessionPeers = peers.get(claims.sessionId)
+    if (sessionPeers) {
+      for (const mobile of sessionPeers.mobiles) mobile.close(4401, 'session revoked')
+      for (const agent of sessionPeers.agents.values()) agent.close(4401, 'session revoked')
+      peers.delete(claims.sessionId)
+    }
+    res.status(204).end()
+  })
+
   app.get('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
     const sessionId = req.params.sessionId
     const claims = (req as Request & { claims?: SessionClaims }).claims!
