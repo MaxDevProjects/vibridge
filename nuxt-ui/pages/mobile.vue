@@ -156,6 +156,7 @@ type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: str
 type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
+const route = useRoute()
 const locale = useState<'fr'|'en'>('mobileLocale', () => 'fr')
 const lang = locale
 const search = ref('')
@@ -197,7 +198,7 @@ const groups=computed(()=>{
 })
 const windowThreads=computed(()=>allThreads.value.filter(item=>item.windowId===activeThread.value?.windowId))
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
-const canSend=computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && Boolean(activeThread.value?.connected) && !bridge.projectTransition.value)
+const canSend=computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && Boolean(bridge.selectedWindow.value?.connected) && bridge.activeWindowId.value===activeThread.value?.windowId && !bridge.projectTransition.value)
 function threadState(state:string,connected:boolean) { return !connected ? t('offline') : state==='attention_possible'?t('attention'):state==='running'?t('running'):state==='finished'?t('finished'):t('connected') }
 function threadPreview(key:string,state:string){const entries=threadsHistory.value[key] ?? []; const last=entries.at(-1);return last?.kind==='output'?compactTerminalOutput(last.raw ?? '').display.slice(-90)||t('outputInProgress'):last?.text.slice(0,90)||threadState(state,true)}
 function activeKey(){return activeThread.value?.key??''}
@@ -228,7 +229,7 @@ function sendInstruction(){
  addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('instructionSent')})
  draft.value=''
 }
-function createTerminal(){if(!canSend.value && !bridge.agentStatus.value?.control?.canControl)return;const names=new Set(windowThreads.value.map(t=>t.label));let i=1;while(names.has('DevBridge '+i))i++;const sent=bridge.send({type:'create_terminal',terminalName:'DevBridge '+i});if(sent)closeSheets()}
+function createTerminal(){if(!canSend.value)return;const names=new Set(windowThreads.value.map(t=>t.label));let i=1;while(names.has('DevBridge '+i))i++;const sent=bridge.send({type:'create_terminal',terminalName:'DevBridge '+i});if(sent)closeSheets()}
 function startCli(cli:string){const sent=bridge.send({type:'start_cli',cliId:cli});if(sent){if(activeThread.value)addEntry(activeThread.value.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('launchDispatched')});closeSheets()}}
 function openPreview(){closeSheets();void navigateTo('/preview')}
 function closeSheets(){menuOpen.value=false;actionsOpen.value=false;projectsOpen.value=false}
@@ -265,7 +266,19 @@ const off=bridge.onMessage((msg:WsMessage)=>{
  }else if(msg.type==='terminal_created' && msg.terminalId){nextTick(()=>{const found=allThreads.value.find(thread=>thread.windowId===item.windowId && thread.terminalId===String(msg.terminalId));if(found)openThread(found)})}
 })
 onMounted(()=>{for(const thread of allThreads.value)loadLog(thread.key)})
-watch(allThreads,(threads)=>{for(const thread of threads)loadLog(thread.key);if(activeThread.value){const updated=threads.find(thread=>thread.key===activeThread.value?.key);if(updated)activeThread.value=updated}},{immediate:true})
+watch(allThreads,(threads)=>{
+  for(const thread of threads)loadLog(thread.key)
+  if(activeThread.value){
+    const updated=threads.find(thread=>thread.key===activeThread.value?.key)
+    if(updated)activeThread.value=updated
+  }
+  const focusWindow=String(route.query.focusWindow??'')
+  const focusTerminal=String(route.query.focusTerminal??'')
+  if(focusWindow && focusTerminal){
+    const target=threads.find(thread=>thread.windowId===focusWindow && thread.terminalId===focusTerminal)
+    if(target)openThread(target)
+  }
+},{immediate:true})
 onUnmounted(off)
 useHead({title:'DevBridge | Conversations'})
 </script>
