@@ -346,6 +346,19 @@ export class IpcServer {
         this.forward?.('command_execution', payload);
         break;
       }
+      case 'preview_capture_result': {
+        const requestId = String(msg.request_id ?? '');
+        if (!windowId || !requestId) break;
+        const image = typeof msg.image === 'string' ? msg.image : '';
+        const success = msg.success === true && image.length > 0 && image.length <= 700000
+          && /^[A-Za-z0-9+/=]+$/.test(image);
+        const payload = { windowId, request_id: requestId, success,
+          image: success ? image : undefined, mime: 'image/png',
+          error: success ? undefined : String(msg.error ?? 'preview_failed').slice(0, 120) };
+        this.broadcast?.({ type: 'preview_capture_result', ...payload });
+        this.forward?.('preview_capture_result', payload);
+        break;
+      }
       case 'terminal_output': {
         const text = String(msg.text ?? '');
         if (!text) break;
