@@ -14,6 +14,7 @@ export class ControlPolicy {
   readonly mode: RemoteMode;
   readonly allowedClis: ReadonlySet<string>;
   readonly allowTerminalClose: boolean;
+  readonly allowWindowClose: boolean;
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
     this.mode = env.VIBRIDGE_REMOTE_MODE === 'control' ? 'control' : 'observe';
@@ -22,6 +23,7 @@ export class ControlPolicy {
         .split(',').map(value => value.trim()).filter(Boolean),
     );
     this.allowTerminalClose = env.VIBRIDGE_ALLOW_TERMINAL_CLOSE === 'true';
+    this.allowWindowClose = env.VIBRIDGE_ALLOW_WINDOW_CLOSE === 'true';
   }
 
   describe() {
@@ -29,6 +31,7 @@ export class ControlPolicy {
       mode: this.mode,
       allowedClis: [...this.allowedClis],
       allowTerminalClose: this.allowTerminalClose,
+      allowWindowClose: this.allowWindowClose,
       canControl: this.mode === 'control',
     };
   }
@@ -48,6 +51,9 @@ export class ControlPolicy {
       return this.allowTerminalClose
         ? { allowed: true }
         : { allowed: false, reason: 'terminal_close_disabled' };
+    }
+    if (type === 'close_window') {
+      return this.allowWindowClose ? { allowed: true } : { allowed: false, reason: 'window_close_disabled' };
     }
     if (['message', 'chat', 'create_terminal', 'focus_terminal', 'open_project', 'adapter_toggle'].includes(type)) {
       return { allowed: true };
