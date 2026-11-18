@@ -354,7 +354,8 @@ export function createServer(deps: ServerDeps) {
         const sendEnter = msg.sendEnter !== false;
         const text = typeof msg.text === 'string' ? msg.text : '';
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
-        const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter);
+        const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter,
+          typeof msg.request_id === 'string' ? msg.request_id : undefined);
         const queued = routed?.queued ?? adapters.send({ text, tool, target });
         if (typeof msg.request_id === 'string') {
           ws.send(JSON.stringify({
