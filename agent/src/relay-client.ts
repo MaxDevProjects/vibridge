@@ -523,7 +523,7 @@ export class RelayClient {
         ? msg.payload as Record<string, unknown> : {};
       let ok = false;
       try {
-        ok = await this.dispatchMobileCommand({ ...params, type, text: msg.text, tool: msg.tool, target: msg.target });
+        ok = await this.dispatchMobileCommand({ ...params, type, text: msg.text, tool: msg.tool, target: msg.target, request_id: msg.request_id });
       } catch (error) {
         this.setError(error);
       }
@@ -642,7 +642,8 @@ export class RelayClient {
         if (typeof msg.text !== 'string' || !msg.text.trim()) return false;
         const target = typeof msg.target === 'string' ? msg.target : undefined;
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
-        const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false);
+        const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false,
+          typeof msg.request_id === 'string' ? msg.request_id : undefined);
         return routed?.queued ?? adapters.send({ text: msg.text, tool, target });
       }
       case 'adapter_toggle':
@@ -665,7 +666,7 @@ export class RelayClient {
         const projects = ipc.getProjects();
         const available = projects.length ? projects : listProjects(workspace.path).projects;
         if (typeof projectPath !== 'string' || !available.some(project => project.path === projectPath)) return false;
-        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true });
+        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true, request_id: msg.request_id });
       }
       case 'list_projects': {
         const projects = ipc.getProjects();
@@ -681,14 +682,16 @@ export class RelayClient {
         return true;
       case 'focus_terminal':
       case 'kill_cli':
-        return typeof msg.terminalName === 'string' && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName });
+        return (typeof msg.terminalName === 'string' || typeof msg.terminalId === 'string')
+          && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName, terminalId: msg.terminalId, request_id: msg.request_id });
       case 'create_terminal':
-        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1' });
+        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1', request_id: msg.request_id });
       case 'start_cli': {
         const cli = typeof msg.cliId === 'string' ? cliRegistry?.getById(msg.cliId) : undefined;
         return !!cli && ipc.sendToExtension({
           type: 'start_cli', cliId: cli.id, command: cli.command, args: cli.args,
           terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
+          request_id: msg.request_id,
         });
       }
       default:
