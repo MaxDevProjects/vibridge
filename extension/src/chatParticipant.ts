@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import type { IpcClient } from './ipcClient';
 import { QuestionDetector } from './questionDetector';
+import { findTerminal } from './terminalIdentity';
 
 export class ChatParticipant {
   private detector = new QuestionDetector();
@@ -20,20 +21,34 @@ export class ChatParticipant {
       const command = String(msg.command ?? '').trim();
       const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
       if (!text) return;
+      const requestId = typeof msg.request_id === 'string' ? msg.request_id : '';
+      const reportExecution = (phase: 'dispatched' | 'rejected', reason?: string) => {
+        if (!requestId) return;
+        this.ipc.send({ type: 'command_execution', request_id: requestId, phase, reason,
+          action: 'message', terminalName });
+      };
 
       const resolved = this.resolveTerminalTarget(target, terminalName);
       if (resolved) {
+        if (resolved.ambiguous) { reportExecution('rejected', 'ambiguous_terminal'); return; }
         if (target.startsWith('terminal:') && !resolved.existed) {
           this.ipc.send({ type: 'terminal_unavailable', terminalName: resolved.terminalName });
+          reportExecution('rejected', 'terminal_unavailable');
           return;
         }
         const fullCommand = command ? (args.length ? `${command} ${args.join(' ')}` : command) : '';
-        const terminal = this.ensureTerminal(resolved.terminalName, fullCommand);
+        const terminal = resolved.terminal ?? this.ensureTerminal(resolved.terminalName, fullCommand);
         terminal.show(true);
         const injectDelay = (resolved.needsBootDelay || (fullCommand && !resolved.existed)) ? 1200 : 0;
         setTimeout(() => {
-          terminal.show(true);
-          this.sendToTerminal(terminal, text, msg.sendEnter !== false);
+          try {
+            terminal.show(true);
+            this.sendToTerminal(terminal, text, msg.sendEnter !== false);
+            // VS Code accepted the input API call. CLI execution is NOT proven.
+            reportExecution('dispatched');
+          } catch {
+            reportExecution('rejected', 'terminal_injection_failed');
+          }
         }, injectDelay);
         this.ipc.send({
           type: 'ide_event',
@@ -47,6 +62,7 @@ export class ChatParticipant {
       }
 
       this.inbox.appendLine(`[${new Date().toLocaleTimeString()}] MOBILE > ${text}`);
+      reportExecution('dispatched');
       this.inbox.show(true);
       this.ipc.send({
         type: 'ide_event',
@@ -152,38 +168,23 @@ export class ChatParticipant {
   private resolveTerminalTarget(
     target: string,
     requestedTerminalName: string,
-  ): { terminalName: string; reportTarget: string; existed: boolean; needsBootDelay: boolean } | null {
-    if (target === 'bash') {
-      const existing = vscode.window.terminals.find((item) => item.name === 'bash');
+  ): { terminalName: string; reportTarget: string; existed: boolean; needsBootDelay: boolean;
+       terminal: vscode.Terminal | null; ambiguous: boolean } | null {
+    if (target === 'bash' || target.startsWith('terminal:') || requestedTerminalName) {
+      const lookupKey = target === 'bash' ? 'bash'
+        : target.startsWith('terminal:') ? target : requestedTerminalName;
+      const match = findTerminal(lookupKey);
+      const fallbackName = target.startsWith('terminal:') ? target.slice('terminal:'.length)
+        : target === 'bash' ? 'bash' : requestedTerminalName;
       return {
-        terminalName: existing?.name ?? 'bash',
-        reportTarget: 'bash',
-        existed: Boolean(existing),
-        needsBootDelay: !existing,
+        terminalName: match.terminal?.name ?? (requestedTerminalName || fallbackName),
+        reportTarget: target || 'terminal:' + fallbackName,
+        existed: Boolean(match.terminal),
+        needsBootDelay: !match.terminal,
+        terminal: match.terminal,
+        ambiguous: match.ambiguous,
       };
     }
-
-    if (target.startsWith('terminal:')) {
-      const terminalName = target.slice('terminal:'.length);
-      const existing = vscode.window.terminals.find((item) => item.name === terminalName);
-      return {
-        terminalName,
-        reportTarget: target,
-        existed: Boolean(existing),
-        needsBootDelay: !existing,
-      };
-    }
-
-    if (requestedTerminalName) {
-      const existing = vscode.window.terminals.find((item) => item.name === requestedTerminalName);
-      return {
-        terminalName: requestedTerminalName,
-        reportTarget: target,
-        existed: Boolean(existing),
-        needsBootDelay: !existing,
-      };
-    }
-
     return null;
   }
 

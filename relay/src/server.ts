@@ -39,10 +39,10 @@ const MOBILE_COMMANDS = new Set([
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'cliId', 'sendEnter',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter',
 ] as const
 
-const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_command_ack'])
+const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
 
 interface PendingAgentRequest {
   socket: AuthenticatedSocket
@@ -384,6 +384,32 @@ export function createRelayServer(options: RelayServerOptions) {
     return typeof req.query.workspaceId === 'string' ? req.query.workspaceId.trim() || undefined : undefined
   }
 
+  // Web Push is registered at the local agent but reachable through the relay.
+  // The relay does not store subscriptions or VAPID secrets.
+  app.get('/push/public-key', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims: SessionClaims }).claims
+    try {
+      const result = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_push_request', { action: 'public_key' })
+      if (result.error) { res.status(502).json({ error: result.error }); return }
+      res.json({ publicKey: result.publicKey ?? '' })
+    } catch { res.status(503).json({ error: 'agent unavailable' }) }
+  })
+  app.post('/push/subscribe', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims: SessionClaims }).claims
+    try {
+      const result = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_push_request', { action: 'subscribe', subscription: req.body })
+      res.status(result.ok === true ? 200 : 400).json(result)
+    } catch { res.status(503).json({ error: 'agent unavailable' }) }
+  })
+  app.post('/push/unsubscribe', requireSessionAuth(['mobile']), async (req, res) => {
+    const claims = (req as Request & { claims: SessionClaims }).claims
+    if (typeof req.body?.endpoint !== 'string') { res.status(400).json({ error: 'endpoint required' }); return }
+    try {
+      const result = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_push_request', { action: 'unsubscribe', endpoint: req.body.endpoint })
+      res.status(result.ok === true ? 200 : 400).json(result)
+    } catch { res.status(503).json({ error: 'agent unavailable' }) }
+  })
+
   // ── CLI Registry proxy (forwarded to agent via WebSocket) ──────────
   app.get('/clis', requireSessionAuth(['mobile']), async (req, res) => {
     const claims = (req as Request & { claims?: SessionClaims }).claims!
@@ -512,7 +538,8 @@ export function createRelayServer(options: RelayServerOptions) {
   ): Promise<Record<string, unknown>> {
     const target = resolveTargetAgent(sessionId, workspaceId)
     if (!target) throw new Error('workspace unavailable')
-    const responseType = type === 'relay_file_request' ? 'relay_file_response' : 'relay_clis_response'
+    const responseType = type === 'relay_file_request' ? 'relay_file_response'
+      : type === 'relay_push_request' ? 'relay_push_response' : 'relay_clis_response'
     return requestFromAgent(target, responseType, { type, ...payload, workspace_id: target.workspaceId })
   }
 
@@ -749,7 +776,7 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'state', 'isQuestion', 'direction', 'clis']
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),

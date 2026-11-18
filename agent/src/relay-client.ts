@@ -8,6 +8,9 @@ import type { WorkspaceIdentity } from './workspace';
 import type { CliRegistry } from './cliRegistry';
 import { routeTerminalMessage } from './terminal-routing';
 import { listProjects } from './projects';
+import { ControlPolicy } from './control-policy';
+import type { PushService } from './push';
+import type { PushSubscription } from 'web-push';
 
 interface RelaySessionState {
   enabled: boolean;
@@ -64,6 +67,8 @@ interface RelayClientOptions {
   ipc: IpcServer;
   queue: MessageQueue;
   cliRegistry?: CliRegistry;
+  controlPolicy?: ControlPolicy;
+  push?: PushService;
 }
 
 export class RelayClient {
@@ -207,6 +212,7 @@ export class RelayClient {
         previewUrl: this.options.adapters.getPreviewUrl(),
         fileTree: fileTreeNode.children ?? [],
         relay: this.getState(),
+        control: (this.options.controlPolicy ?? new ControlPolicy()).describe(),
         timestamp: Date.now(),
       },
     });
@@ -517,7 +523,7 @@ export class RelayClient {
         ? msg.payload as Record<string, unknown> : {};
       let ok = false;
       try {
-        ok = await this.dispatchMobileCommand({ ...params, type, text: msg.text, tool: msg.tool, target: msg.target });
+        ok = await this.dispatchMobileCommand({ ...params, type, text: msg.text, tool: msg.tool, target: msg.target, request_id: msg.request_id });
       } catch (error) {
         this.setError(error);
       }
@@ -536,6 +542,10 @@ export class RelayClient {
       };
       if (!registry) {
         respond({ error: 'no registry', clis: [] });
+        return;
+      }
+      if (action !== 'list' && action !== 'detect') {
+        respond({ error: 'CLI configuration is only allowed on the host', ok: false });
         return;
       }
       if (action === 'list') {
@@ -566,6 +576,43 @@ export class RelayClient {
       return;
     }
 
+    if (type === 'relay_push_request' && typeof msg.request_id === 'string') {
+      const respond = (result: Record<string, unknown>) => {
+        if (this.ws === socket) this.send('relay_push_response', { request_id: msg.request_id, ...result });
+      };
+      const push = this.options.push;
+      if (!push) { respond({ error: 'push service unavailable' }); return; }
+      if (msg.action === 'public_key') { respond({ publicKey: push.getPublicKey() }); return; }
+      if (msg.action === 'subscribe') {
+        const sub = msg.subscription;
+        if (!sub || typeof sub !== 'object' || Array.isArray(sub)) { respond({ error: 'invalid subscription' }); return; }
+        const subscription = sub as Partial<PushSubscription>;
+        if (typeof subscription.endpoint !== 'string' || !subscription.keys
+          || typeof subscription.keys.auth !== 'string' || typeof subscription.keys.p256dh !== 'string') {
+          respond({ error: 'invalid subscription' }); return;
+        }
+        try {
+          const endpoint = new URL(subscription.endpoint);
+          const hostname = endpoint.hostname.toLowerCase();
+          const trusted = ['googleapis.com', 'mozilla.com', 'apple.com', 'windows.com', 'microsoft.com']
+            .some(domain => hostname === domain || hostname.endsWith('.' + domain));
+          if (endpoint.protocol !== 'https:' || !trusted || endpoint.username || endpoint.password) {
+            respond({ error: 'unsupported push endpoint' }); return;
+          }
+          push.subscribe(subscription as PushSubscription);
+          respond({ ok: true });
+        } catch { respond({ error: 'invalid push endpoint' }); }
+        return;
+      }
+      if (msg.action === 'unsubscribe' && typeof msg.endpoint === 'string') {
+        push.unsubscribe(msg.endpoint);
+        respond({ ok: true });
+        return;
+      }
+      respond({ error: 'unsupported push action' });
+      return;
+    }
+
     if (type === 'relay_file_request' && typeof msg.request_id === 'string') {
       const filePath = typeof msg.path === 'string' ? msg.path : '';
       const ideState = this.options.ipc.getIdeState();
@@ -584,13 +631,19 @@ export class RelayClient {
 
   private async dispatchMobileCommand(msg: Record<string, unknown>): Promise<boolean> {
     const { adapters, ipc, cliRegistry, workspace } = this.options;
+    const decision = (this.options.controlPolicy ?? new ControlPolicy()).authorize(String(msg.type ?? ''), msg);
+    if (!decision.allowed) {
+      this.send('action_rejected', { action: String(msg.type ?? ''), reason: decision.reason });
+      return false;
+    }
     switch (msg.type) {
       case 'chat':
       case 'message': {
         if (typeof msg.text !== 'string' || !msg.text.trim()) return false;
         const target = typeof msg.target === 'string' ? msg.target : undefined;
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
-        const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false);
+        const routed = routeTerminalMessage(ipc, cliRegistry, msg.text, target, msg.sendEnter !== false,
+          typeof msg.request_id === 'string' ? msg.request_id : undefined);
         return routed?.queued ?? adapters.send({ text: msg.text, tool, target });
       }
       case 'adapter_toggle':
@@ -613,7 +666,7 @@ export class RelayClient {
         const projects = ipc.getProjects();
         const available = projects.length ? projects : listProjects(workspace.path).projects;
         if (typeof projectPath !== 'string' || !available.some(project => project.path === projectPath)) return false;
-        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true });
+        return ipc.sendToExtension({ type: 'open_project', projectPath, newWindow: msg.newWindow === true, request_id: msg.request_id });
       }
       case 'list_projects': {
         const projects = ipc.getProjects();
@@ -629,14 +682,16 @@ export class RelayClient {
         return true;
       case 'focus_terminal':
       case 'kill_cli':
-        return typeof msg.terminalName === 'string' && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName });
+        return (typeof msg.terminalName === 'string' || typeof msg.terminalId === 'string')
+          && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName, terminalId: msg.terminalId, request_id: msg.request_id });
       case 'create_terminal':
-        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1' });
+        return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1', request_id: msg.request_id });
       case 'start_cli': {
         const cli = typeof msg.cliId === 'string' ? cliRegistry?.getById(msg.cliId) : undefined;
         return !!cli && ipc.sendToExtension({
           type: 'start_cli', cliId: cli.id, command: cli.command, args: cli.args,
           terminalName: cliRegistry?.getTerminalName(cli.id) ?? `DevBridge ${cli.name}`,
+          request_id: msg.request_id,
         });
       }
       default:

@@ -14,6 +14,7 @@ const { MessageQueue } = require('../agent/dist/queue')
 const { IpcServer } = require('../agent/dist/ipc')
 const { AuthService } = require('../agent/dist/auth')
 const { FileService } = require('../agent/dist/files')
+const { ControlPolicy } = require('../agent/dist/control-policy')
 const { IpcClient } = require('../extension/dist/ipcClient')
 
 test('the mobile sends to the correct VS Code IPC client before and after relay reconnection', { timeout: 15_000 }, async () => {
@@ -52,6 +53,7 @@ test('the mobile sends to the correct VS Code IPC client before and after relay 
   const agent = new RelayClient({
     internalUrl: base, publicUrl: base, sessionLabel: workspace.name, workspaceFolders: [directory],
     workspace, adapters, ipc, queue, files: new FileService(directory),
+    controlPolicy: new ControlPolicy({ VIBRIDGE_REMOTE_MODE: 'control' }),
   })
   let mobile
   try {

@@ -55,6 +55,7 @@ export interface WorkspaceSnapshot {
   ideState?: unknown
   previewUrl?: string | null
   fileTree?: unknown
+  control?: unknown
   adapters?: unknown
   activeAdapter?: string | null
   timestamp: number

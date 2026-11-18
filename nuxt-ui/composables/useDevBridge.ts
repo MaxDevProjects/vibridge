@@ -43,8 +43,10 @@ interface WorkspaceSnapshot {
   ideState?: AgentStatus['ideState']
   previewUrl?: string | null
   fileTree?: unknown
+  control?: AgentStatus['control']
   adapters?: AgentStatus['adapters']
   activeAdapter?: string | null
+  control?: AgentStatus['control']
   timestamp: number
 }
 
@@ -71,11 +73,13 @@ export interface AgentStatus {
     activeFile?: string | null
     activeLanguage?: string | null
     activeTerminal?: string | null
-    terminals?: Array<{ name: string; shellIntegration?: boolean; cwd?: string | null }>
+    activeTerminalId?: string | null
+    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null }>
     updatedAt?: number
   } | null
   previewUrl?: string | null
   fileTree?: unknown
+  control?: { mode: 'observe' | 'control'; canControl: boolean; allowedClis: string[]; allowTerminalClose: boolean }
   relay?: RelayState | null
   timestamp: number
 }
@@ -111,6 +115,7 @@ const deliveryNotice = ref<{ status: 'pending' | 'received' | 'error'; text: str
 const seenRelayEvents = new Set<string>()
 const pendingDelivery = new Map<string, ReturnType<typeof setTimeout>>()
 let latestDeliveryId = ''
+const dispatchedToVsCode = new Set<string>()
 let connectGeneration = 0
 let connectDeadline: ReturnType<typeof setTimeout> | undefined
 const listeners = new Set<(msg: WsMessage) => void>()
@@ -318,6 +323,7 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
     ideState: snapshot.ideState ?? agentStatus.value?.ideState ?? null,
     previewUrl: snapshot.previewUrl ?? agentStatus.value?.previewUrl ?? null,
     fileTree: snapshot.fileTree ?? agentStatus.value?.fileTree,
+    control: snapshot.control ?? agentStatus.value?.control,
     relay: snapshot.relay ?? agentStatus.value?.relay ?? null,
     timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : Date.now(),
   }
@@ -331,6 +337,19 @@ function emit(msg: WsMessage) {
     if (seenRelayEvents.has(normalized.id)) return
     seenRelayEvents.add(normalized.id)
     if (seenRelayEvents.size > 256) seenRelayEvents.delete(seenRelayEvents.values().next().value!)
+  }
+
+  if (normalized.type === 'command_execution' && typeof normalized.request_id === 'string') {
+    const id = normalized.request_id;
+    if (normalized.phase === 'dispatched') {
+      dispatchedToVsCode.add(id);
+      if (dispatchedToVsCode.size > 128) dispatchedToVsCode.delete(dispatchedToVsCode.values().next().value!);
+    }
+    if (id === latestDeliveryId) {
+      deliveryNotice.value = normalized.phase === 'dispatched'
+        ? { status: 'received', text: 'Action transmise à VS Code. Le résultat dans la CLI reste à vérifier.' }
+        : { status: 'error', text: 'Action refusée par VS Code : ' + String(normalized.reason ?? 'erreur inconnue') };
+    }
   }
 
   if (normalized.type === 'terminal_unavailable') {
@@ -409,7 +428,9 @@ function handleWsMessage(ev: MessageEvent) {
     pendingDelivery.delete(msg.request_id)
     if (msg.request_id !== latestDeliveryId) return
     if (msg.status === 'received') {
-      deliveryNotice.value = { status: 'received', text: 'Reçu par l’agent' }
+      deliveryNotice.value = dispatchedToVsCode.has(msg.request_id)
+        ? { status: 'received', text: 'Action transmise à VS Code. Le résultat dans la CLI reste à vérifier.' }
+        : { status: 'received', text: 'Reçu par l’agent, exécution VS Code non confirmée' }
     } else if (msg.status === 'unconfirmed') {
       deliveryNotice.value = { status: 'error', text: 'Réception inconnue. Vérifie la commande dans VS Code avant de la renvoyer.' }
     } else {
@@ -664,6 +685,7 @@ async function fetchRelayStatus() {
           ? selectedSnapshot.previewUrl
           : agentStatus.value?.previewUrl ?? null,
         fileTree: selectedSnapshot.fileTree ?? agentStatus.value?.fileTree,
+        control: selectedSnapshot.control ?? agentStatus.value?.control,
         timestamp: typeof selectedSnapshot.timestamp === 'number' ? selectedSnapshot.timestamp : Date.now(),
       })
     }

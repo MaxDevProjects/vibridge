@@ -1,3 +1,4 @@
+import { getTerminalId, findTerminal } from './terminalIdentity';
 /**
  * DevBridge VS Code Extension — Main activation
  */
@@ -98,6 +99,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   ipc = new IpcClient(target);
   ipc.connect();
+  const reportCommand = (msg: Record<string, unknown>, action: string,
+    phase: 'dispatched' | 'rejected', reason?: string, terminal?: vscode.Terminal) => {
+    if (typeof msg.request_id !== 'string') return;
+    ipc?.send({ type: 'command_execution', request_id: msg.request_id, action, phase,
+      reason, terminalName: terminal?.name, terminalId: terminal ? getTerminalId(terminal) : undefined });
+  };
 
   let pendingSetupInFlight: string | undefined;
   const flushPendingSetupToken = () => {
@@ -153,6 +160,9 @@ export function activate(context: vscode.ExtensionContext): void {
       'vscode.openFolder',
       vscode.Uri.file(projectPath),
       { forceNewWindow: newWindow },
+    ).then(
+      () => reportCommand(msg, 'open_project', 'dispatched'),
+      () => reportCommand(msg, 'open_project', 'rejected', 'open_project_failed'),
     );
   });
 
@@ -162,20 +172,24 @@ export function activate(context: vscode.ExtensionContext): void {
     const command = String(msg.command ?? '');
     const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
     const cliId = String(msg.cliId ?? '');
-    if (!command) return;
+    if (!command) { reportCommand(msg, 'start_cli', 'rejected', 'missing_command'); return; }
 
     const cwd = resolveWorkspaceCwd();
     const fullCmd = args.length ? `${command} ${args.join(' ')}` : command;
 
-    const existing = vscode.window.terminals.find(t => t.name === terminalName);
+    const matches = vscode.window.terminals.filter(t => t.name === terminalName);
+    if (matches.length > 1) { reportCommand(msg, 'start_cli', 'rejected', 'ambiguous_terminal'); return; }
+    const existing = matches[0];
     if (existing) {
       existing.show(true);
-      ipc!.send({ type: 'cli_started', cliId, terminalName });
+      ipc!.send({ type: 'cli_started', cliId, terminalName, terminalId: getTerminalId(existing) });
+      reportCommand(msg, 'start_cli', 'dispatched', undefined, existing);
     } else {
       const terminal = vscode.window.createTerminal({ name: terminalName, cwd });
       terminal.show(true);
       terminal.sendText(fullCmd, true);
-      ipc!.send({ type: 'cli_started', cliId, terminalName });
+      ipc!.send({ type: 'cli_started', cliId, terminalName, terminalId: getTerminalId(terminal) });
+      reportCommand(msg, 'start_cli', 'dispatched', undefined, terminal);
     }
   });
 
@@ -183,30 +197,38 @@ export function activate(context: vscode.ExtensionContext): void {
   ipc.on('create_terminal', (msg: Record<string, unknown>) => {
     const terminalName = String(msg.terminalName ?? 'DevBridge 1');
     const cwd = resolveWorkspaceCwd();
-    const existing = vscode.window.terminals.find(t => t.name === terminalName);
-    const terminal = existing ?? vscode.window.createTerminal({ name: terminalName, cwd });
+    const matches = vscode.window.terminals.filter(t => t.name === terminalName);
+    if (matches.length > 1) { reportCommand(msg, 'create_terminal', 'rejected', 'ambiguous_terminal'); return; }
+    const terminal = matches[0] ?? vscode.window.createTerminal({ name: terminalName, cwd });
     terminal.show(true);
-    ipc!.send({ type: 'terminal_created', terminalName });
+    ipc!.send({ type: 'terminal_created', terminalName, terminalId: getTerminalId(terminal) });
+    reportCommand(msg, 'create_terminal', 'dispatched', undefined, terminal);
   });
 
   // Handle focus_terminal from agent: focus an existing terminal by name
   ipc.on('focus_terminal', (msg: Record<string, unknown>) => {
     const terminalName = String(msg.terminalName ?? '');
-    const terminal = vscode.window.terminals.find(t => t.name === terminalName);
-    if (terminal) terminal.show(true);
+    const found = findTerminal(String(msg.terminalId ?? terminalName));
+    if (found.terminal && !found.ambiguous) {
+      found.terminal.show(true);
+      reportCommand(msg, 'focus_terminal', 'dispatched', undefined, found.terminal);
+    } else reportCommand(msg, 'focus_terminal', 'rejected', found.ambiguous ? 'ambiguous_terminal' : 'terminal_unavailable');
   });
 
   // Handle kill_cli from agent: close the named terminal
   ipc.on('kill_cli', (msg: Record<string, unknown>) => {
     const terminalName = String(msg.terminalName ?? '');
-    const terminal = vscode.window.terminals.find(t => t.name === terminalName);
-    if (terminal) terminal.dispose();
+    const found = findTerminal(String(msg.terminalId ?? terminalName));
+    if (found.terminal && !found.ambiguous) {
+      reportCommand(msg, 'kill_cli', 'dispatched', undefined, found.terminal);
+      found.terminal.dispose();
+    } else reportCommand(msg, 'kill_cli', 'rejected', found.ambiguous ? 'ambiguous_terminal' : 'terminal_unavailable');
   });
 
   // Notify agent whenever a terminal is closed (manual or programmatic)
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
-      ipc?.send({ type: 'terminal_closed', terminalName: terminal.name });
+      ipc?.send({ type: 'terminal_closed', terminalName: terminal.name, terminalId: getTerminalId(terminal) });
     })
   );
 
@@ -279,20 +301,19 @@ export function activate(context: vscode.ExtensionContext): void {
         pwaUrl = `http://devbridge.local:8080/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
       }
 
-      // Show in a WebView panel with a QR code (via qrserver.com CDN)
+      // Keep pairing secrets on the user's own devices. Never send the URL to a QR CDN.
       const panel = vscode.window.createWebviewPanel(
-        'devbridgeQR',
-        'DevBridge — QR Pairing',
-        vscode.ViewColumn.One,
-        { enableScripts: false }
+        'devbridgeQR', 'DevBridge - Secure Pairing', vscode.ViewColumn.One, { enableScripts: false }
       );
-      const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(pwaUrl)}`;
-      panel.webview.html = `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:monospace;display:flex;flex-direction:column;align-items:center;padding:40px;gap:24px">
-        <h2 style="margin:0">VibeBridge — Scan to connect</h2>
-        <img src="${qrSrc}" width="260" height="260" style="border-radius:8px" />
-        <p style="font-size:12px;opacity:.6;word-break:break-all;max-width:400px;text-align:center">${pwaUrl}</p>
-        <p style="font-size:11px;opacity:.4">Or enter the IP manually in the VibeBridge app</p>
+      const escapeHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      panel.webview.html = `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;padding:40px;gap:22px">
+        <h2 style="margin:0">VibeBridge - Secure pairing</h2>
+        <p>Le QR externe est désactivé pour protéger les secrets d'appairage. Ouvre ce lien sur ton téléphone.</p>
+        <code style="overflow-wrap:anywhere;max-width:500px;user-select:all">${escapeHtml(pwaUrl)}</code>
+        <p>Code : <strong>${escapeHtml(code)}</strong></p>
       </body></html>`;
+      await vscode.env.clipboard.writeText(pwaUrl);
+      void vscode.window.showInformationMessage('Lien d’appairage copié. Colle-le sur ton téléphone pour te connecter.');
     })
   );
 

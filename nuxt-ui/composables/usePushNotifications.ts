@@ -39,6 +39,12 @@ function resolveAgentBaseUrl(): string {
   return `http://${host}:${port}`
 }
 
+function pushApiUrl(baseUrl: string, path: string): string {
+  const bridge = useDevBridge()
+  const workspace = bridge.mode.value === 'relay' ? bridge.activeWorkspaceId.value : ''
+  return baseUrl + path + (workspace ? '?workspaceId=' + encodeURIComponent(workspace) : '')
+}
+
 function authHeaders(): HeadersInit {
   const bridge = useDevBridge()
   const token = bridge.token.value
@@ -73,7 +79,7 @@ async function refresh() {
 }
 
 async function fetchPublicKey(baseUrl: string): Promise<string> {
-  const res = await fetch(`${baseUrl}/push/public-key`, {
+  const res = await fetch(pushApiUrl(baseUrl, '/push/public-key'), {
     headers: {
       ...authHeaders(),
       'Cache-Control': 'no-store',
@@ -127,7 +133,7 @@ async function subscribe(): Promise<boolean> {
       applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
     })
 
-    const res = await fetch(`${baseUrl}/push/subscribe`, {
+    const res = await fetch(pushApiUrl(baseUrl, '/push/subscribe'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -172,7 +178,7 @@ async function unsubscribe(): Promise<boolean> {
 
     const baseUrl = resolveAgentBaseUrl()
     if (baseUrl) {
-      await fetch(`${baseUrl}/push/unsubscribe`, {
+      await fetch(pushApiUrl(baseUrl, '/push/unsubscribe'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

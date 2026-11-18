@@ -17,6 +17,7 @@ import type { CliRegistry } from './cliRegistry';
 import type { WorkspaceIdentity } from './workspace';
 import { routeTerminalMessage } from './terminal-routing';
 import { listProjects } from './projects';
+import { ControlPolicy } from './control-policy';
 
 interface ServerDeps {
   PORT: number;
@@ -29,11 +30,18 @@ interface ServerDeps {
   relay?: RelayClient | null;
   cliRegistry?: CliRegistry;
   workspace: WorkspaceIdentity;
+  controlPolicy?: ControlPolicy;
 }
 
 export function createServer(deps: ServerDeps) {
   const { queue, push, files, adapters, auth, relay } = deps;
   const cliRegistry = deps.cliRegistry;
+  const controlPolicy = deps.controlPolicy ?? new ControlPolicy();
+  const controlOnly = (action: string) => (req: Request, res: Response, next: NextFunction) => {
+    const decision = controlPolicy.authorize(action, req.body ?? {});
+    if (!decision.allowed) { res.status(403).json({ error: decision.reason }); return; }
+    next();
+  };
 
   const app = express();
   app.use(cors({ origin: '*' }));
@@ -143,6 +151,7 @@ export function createServer(deps: ServerDeps) {
       ok: true,
       adapters: adapters.list(),
       activeAdapter: adapters.active(),
+      control: controlPolicy.describe(),
       ideState: deps.ipc.getIdeState(),
       previewUrl: adapters.getPreviewUrl() ?? deps.ipc.getPreviewUrl(),
       relay: relay?.getState() ?? null,
@@ -167,7 +176,7 @@ export function createServer(deps: ServerDeps) {
     res.json({ path: filePath, content });
   });
 
-  app.post('/message', requireAuth, (req, res) => {
+  app.post('/message', requireAuth, controlOnly('message'), (req, res) => {
     const { text, tool, target } = req.body as { text: string; tool?: string; target?: string };
     const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target);
     if (routed) {
@@ -178,7 +187,7 @@ export function createServer(deps: ServerDeps) {
     res.status(queued ? 200 : 503).json({ queued });
   });
 
-  app.post('/terminal/send', requireAuth, (req, res) => {
+  app.post('/terminal/send', requireAuth, controlOnly('message'), (req, res) => {
     const { message, target, sendEnter } = req.body as { message?: string; target?: string; sendEnter?: boolean };
     const text = String(message ?? '').trim();
     if (!text) {
@@ -193,7 +202,7 @@ export function createServer(deps: ServerDeps) {
     res.status(routed.queued ? 200 : 503).json({ ok: routed.queued, target: routed.target });
   });
 
-  app.post('/action', requireAuth, async (req, res) => {
+  app.post('/action', requireAuth, controlOnly('action'), async (req, res) => {
     const { action, args } = req.body as { action: string; args?: string[] };
     try {
       await adapters.runAction(action, args ?? []);
@@ -219,14 +228,14 @@ export function createServer(deps: ServerDeps) {
     res.json({ clis: cliRegistry.getAll() });
   });
 
-  app.post('/clis/default', requireAuth, (req, res) => {
+  app.post('/clis/default', requireAuth, controlOnly('configure_cli'), (req, res) => {
     const { id } = req.body as { id: string };
     if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
     const ok = cliRegistry.setDefault(id);
     res.json({ ok, clis: cliRegistry.getAll() });
   });
 
-  app.post('/clis/custom', requireAuth, (req, res) => {
+  app.post('/clis/custom', requireAuth, controlOnly('configure_cli'), (req, res) => {
     const { name, command, args } = req.body as { name: string; command: string; args?: string[] };
     if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
     if (!name || !command) { res.status(400).json({ error: 'name and command required' }); return; }
@@ -234,7 +243,7 @@ export function createServer(deps: ServerDeps) {
     res.json({ ok: true, cli, clis: cliRegistry.getAll() });
   });
 
-  app.delete('/clis/:id', requireAuth, (req, res) => {
+  app.delete('/clis/:id', requireAuth, controlOnly('configure_cli'), (req, res) => {
     const { id } = req.params as { id: string };
     if (!cliRegistry) { res.status(503).json({ error: 'no registry' }); return; }
     const ok = cliRegistry.removeCustom(id);
@@ -246,7 +255,7 @@ export function createServer(deps: ServerDeps) {
     res.json(listProjects(deps.workspace.path));
   });
 
-  app.post('/projects/open', requireAuth, (req, res) => {
+  app.post('/projects/open', requireAuth, controlOnly('open_project'), (req, res) => {
     const { projectPath, newWindow } = req.body as { projectPath?: string; newWindow?: boolean };
     if (!projectPath) { res.status(400).json({ error: 'projectPath required' }); return; }
     const listing = listProjects(deps.workspace.path);
@@ -332,13 +341,21 @@ export function createServer(deps: ServerDeps) {
         return;
       }
 
+      const decision = controlPolicy.authorize(msg.type, msg);
+      if (!decision.allowed) {
+        ws.send(JSON.stringify({ type: 'action_rejected', action: msg.type, reason: decision.reason }));
+        if (typeof msg.request_id === 'string') ws.send(JSON.stringify({ type: 'message_ack', request_id: msg.request_id, status: 'rejected', reason: decision.reason }));
+        return;
+      }
+
       // Route message to active adapter (or directly to VS Code for terminal targets)
       if (msg.type === 'message' || msg.type === 'chat') {
         const target = typeof msg.target === 'string' ? msg.target : undefined;
         const sendEnter = msg.sendEnter !== false;
         const text = typeof msg.text === 'string' ? msg.text : '';
         const tool = typeof msg.tool === 'string' ? msg.tool : undefined;
-        const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter);
+        const routed = routeTerminalMessage(deps.ipc, cliRegistry, text, target, sendEnter,
+          typeof msg.request_id === 'string' ? msg.request_id : undefined);
         const queued = routed?.queued ?? adapters.send({ text, tool, target });
         if (typeof msg.request_id === 'string') {
           ws.send(JSON.stringify({

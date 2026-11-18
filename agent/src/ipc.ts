@@ -266,6 +266,20 @@ export class IpcServer {
         this.forward?.('ide_event', payload);
         break;
       }
+      case 'command_execution': {
+        const payload = {
+          request_id: typeof msg.request_id === 'string' ? msg.request_id : '',
+          action: msg.action,
+          phase: msg.phase,
+          reason: msg.reason,
+          terminalId: msg.terminalId,
+          terminalName: msg.terminalName,
+        };
+        if (!payload.request_id || !['dispatched', 'rejected'].includes(String(payload.phase))) break;
+        this.broadcast?.({ type: 'command_execution', ...payload });
+        this.forward?.('command_execution', payload);
+        break;
+      }
       case 'terminal_output': {
         const text = String(msg.text ?? '');
         if (!text) break;
@@ -289,7 +303,7 @@ export class IpcServer {
       }
       case 'cli_started': {
         // Extension confirms terminal was opened
-        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName };
+        const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('cli_started', payload);
         break;
@@ -301,14 +315,14 @@ export class IpcServer {
         break;
       }
       case 'terminal_created': {
-        const payload = { type: 'terminal_created', terminalName: msg.terminalName };
+        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('terminal_created', payload);
         break;
       }
       case 'terminal_closed': {
         // Extension reports a terminal was closed (manually or via kill_cli)
-        const payload = { type: 'terminal_closed', terminalName: msg.terminalName };
+        const payload = { type: 'terminal_closed', terminalName: msg.terminalName, terminalId: msg.terminalId };
         this.broadcast?.(payload);
         this.forward?.('terminal_closed', payload);
         break;
