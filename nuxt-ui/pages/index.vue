@@ -384,31 +384,38 @@
             <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color:var(--muted)">
               Dans {{ bridge.activeProjectName.value || 'aucun projet synchronisé' }} · Réponse vers {{ replyTargetLabel }}
             </div>
-            <div class="flex gap-2 overflow-x-auto pb-2 mb-2">
-              <button
-                v-for="target in chatTargets"
-                :key="target.id"
-                :disabled="Boolean(bridge.projectTransition.value) || target.state === 'starting'"
-                class="shrink-0 min-w-[9rem] text-left px-3 py-2 disabled:pointer-events-none"
-                :style="targetButtonStyle(target)"
-                @click="selectChatTarget(target)"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-[10px] uppercase tracking-[0.14em] font-mono">{{ targetButtonLabel(target) }}</span>
-                  <span class="text-[8px] uppercase tracking-[0.12em]" style="color:var(--muted)">{{ targetSupportLabel(target) }}</span>
-                </div>
-                <div class="mt-1 text-[9px]" style="color:var(--muted)">{{ target.caption }}</div>
-              </button>
-              <button
-                :disabled="creatingTerminal || Boolean(bridge.projectTransition.value)"
-                class="shrink-0 w-10 flex items-center justify-center text-lg disabled:opacity-30"
-                style="border:1px dashed var(--border);color:var(--muted);background:none"
-                title="Nouveau terminal"
-                @click="createNewTerminal"
-              >
-                +
-              </button>
+            <div class="flex items-center gap-2 mb-2">
+              <label for="vibridge-terminal" class="shrink-0 text-[10px]" style="color:var(--muted)">Terminal</label>
+              <select id="vibridge-terminal"
+                :value="terminalTargets.some(t => t.id === replyTarget) ? replyTarget : ''"
+                :disabled="Boolean(bridge.projectTransition.value)"
+                class="min-w-0 flex-1 px-2 py-2 text-[11px] outline-none"
+                style="background:var(--surface);color:var(--text);border:1px solid var(--border)"
+                @change="chooseTerminalFromSelect">
+                <option value="">Choisir un terminal…</option>
+                <option v-for="target in terminalTargets" :key="target.id" :value="target.id">
+                  {{ target.label }} · {{ target.caption }}
+                </option>
+              </select>
+              <button :disabled="creatingTerminal || Boolean(bridge.projectTransition.value)"
+                class="shrink-0 px-3 py-2 text-xs disabled:opacity-30"
+                style="border:1px solid var(--border);color:var(--text)"
+                title="Créer un terminal dans cette fenêtre"
+                @click="createNewTerminal">+ Terminal</button>
             </div>
+            <details class="mb-3 text-[10px]" style="color:var(--muted)">
+              <summary class="cursor-pointer py-1">Lancer un outil (Codex, AGY, Claude…)</summary>
+              <div class="flex flex-wrap gap-2 pt-2">
+                <button v-for="cli in cliList.filter(cli => cli.detected)" :key="cli.id"
+                  :disabled="Boolean(cliLaunching[cli.id]) || Boolean(bridge.projectTransition.value)"
+                  class="px-3 py-2 text-[10px] disabled:opacity-30"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  @click="launchCli(cli.id)">
+                  {{ cliLaunching[cli.id] ? 'Démarrage…' : cli.name }}
+                </button>
+                <span v-if="!cliList.some(cli => cli.detected)">Aucun outil détecté</span>
+              </div>
+            </details>
             <div class="flex gap-2 items-end">
             <button class="w-10 h-10 flex items-center justify-center text-base shrink-0" style="border:1px solid var(--border);color:var(--muted)">🎤</button>
             <button class="w-10 h-10 flex items-center justify-center text-base shrink-0" style="border:1px solid var(--border);color:var(--muted)">📎</button>
@@ -786,10 +793,8 @@ function targetButtonStyle(target: ChatTarget) {
 
 function isChatTargetId(value: unknown) {
   const id = String(value ?? '').trim()
-  return id === 'bash'
-    || id === 'chat:devbridge'
-    || id.startsWith('terminal:')
-    || cliList.value.some(cli => cli.id === id)
+  return id.startsWith('terminal:')
+    && terminalTargets.value.some(terminal => terminal.id === id)
 }
 
 function killCli(terminalName: string) {
@@ -1445,14 +1450,15 @@ function setAiTyping(value: boolean) {
 const creatingTerminal = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const REPLY_TARGET_KEY = 'vb:chatTarget'
-const replyTarget = ref('chat:devbridge')
+const replyTarget = ref('')
+const pendingTerminalSelection = ref('')
 function targetStorageKey(): string {
   return `${REPLY_TARGET_KEY}:${bridge.projectContextKey.value}`
 }
 const replyTargetPinned = ref(false)
 const replyTargetLabel = computed(() => {
-  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  return target ? `${target.label} · ${target.caption}` : 'Terminal VS Code'
+  const target = terminalTargets.value.find((item) => item.id === replyTarget.value)
+  return target ? `${target.label} · ${target.caption}` : 'aucun terminal sélectionné'
 })
 const chatTargets = computed<ChatTarget[]>(() => {
   const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
@@ -1476,59 +1482,22 @@ const chatTargets = computed<ChatTarget[]>(() => {
     })
   }
 
-  if (!seenTerminalNames.has('bash')) {
-    targets.push({
-      id: 'bash',
-      label: 'bash',
-      caption: 'ouvre un terminal VS Code',
-      support: 'direct',
-      kind: 'terminal',
-      terminalName: 'bash',
-      state: replyTarget.value === 'bash' ? 'active' : 'idle',
-    })
-  }
-
-  targets.push({
-    id: 'chat:devbridge',
-    label: 'DevBridge Chat',
-    caption: 'canal VS Code',
-    support: 'vscode',
-    kind: 'vscode',
-    state: replyTarget.value === 'chat:devbridge' ? 'active' : 'idle',
-  })
-
-  for (const cli of cliList.value) {
-    const terminalName = `DevBridge ${cli.name}`
-    const isLaunched = terminals.some(terminal => String(terminal?.name ?? '').trim() === terminalName)
-    const isStarting = Boolean(cliLaunching.value[cli.id])
-    targets.push({
-      id: cli.id,
-      label: cliButtonName(cli),
-      caption: isLaunched ? `terminal prêt · ${terminalName}` : `lance ${cli.command}`,
-      support: 'launcher',
-      kind: 'launcher',
-      terminalName,
-      cliId: cli.id,
-      state: isStarting ? 'starting' : (replyTarget.value === cli.id && isLaunched ? 'active' : 'idle'),
-    })
-  }
+  // Only existing terminal instances are valid reply channels.
+  // CLI launchers are actions, displayed separately in the composer.
   return targets
 })
 
-const selectedChatTargetReady = computed(() => {
-  if (bridge.projectTransition.value) return false
-  const terminals = Array.isArray(ideState.value?.terminals) ? ideState.value?.terminals : []
-  const target = chatTargets.value.find((item) => item.id === replyTarget.value)
-  if (!target) return false
-  if (target.id === 'bash' || target.id === 'chat:devbridge') return true
-  if (target.kind === 'terminal') {
-    if (target.id === 'bash') return true
-    return terminals.some(terminal => `terminal:${String(terminal.id ?? terminal.name)}` === target.id)
-  }
-  return Boolean(target.state !== 'starting' && target.terminalName && terminals.some(
-    terminal => String(terminal?.name ?? '').trim() === target.terminalName
-  ))
-})
+const terminalTargets = computed(() => chatTargets.value.filter(target => target.kind === 'terminal'
+  && target.id.startsWith('terminal:')))
+
+const selectedChatTargetReady = computed(() => Boolean(!bridge.projectTransition.value
+  && terminalTargets.value.some(target => target.id === replyTarget.value)))
+
+function chooseTerminalFromSelect(event: Event) {
+  const chosen = (event.target as HTMLSelectElement).value
+  if (!terminalTargets.value.some(target => target.id === chosen)) return
+  setReplyTarget(chosen, true)
+}
 
 const filteredChatMessages = computed(() => {
   const target = replyTarget.value
@@ -1754,14 +1723,14 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
     pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
-    if (msg.terminalId) setReplyTarget(`terminal:${String(msg.terminalId)}`, true)
+    if (msg.terminalId) pendingTerminalSelection.value = `terminal:${String(msg.terminalId)}`
     else pushActivity('sys', 'Terminal créé, en attente de son identifiant réel')
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_created') {
     const terminalName = String(msg.terminalName ?? '')
     creatingTerminal.value = false
     pushActivity('sys', `✓ Terminal ${terminalName} créé`)
-    if (terminalName) setReplyTarget(`terminal:${String(msg.terminalId ?? terminalName)}`, true)
+    if (msg.terminalId) pendingTerminalSelection.value = `terminal:${String(msg.terminalId)}`
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_closed') {
     pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)
@@ -1801,10 +1770,14 @@ watch(() => bridge.status.value, (next) => {
   }
 }, { immediate: true })
 
-watch(chatTargets, (targets) => {
-  if (!targets.some((target) => target.id === replyTarget.value)) {
+watch(terminalTargets, (targets) => {
+  if (pendingTerminalSelection.value && targets.some(t => t.id === pendingTerminalSelection.value)) {
+    setReplyTarget(pendingTerminalSelection.value, true)
+    pendingTerminalSelection.value = ''
+  }
+  if (replyTarget.value && !targets.some(t => t.id === replyTarget.value)) {
     replyTargetPinned.value = false
-    setReplyTarget('chat:devbridge')
+    replyTarget.value = ''
   }
 }, { immediate: true })
 
@@ -1812,7 +1785,7 @@ watch(() => bridge.projectContextKey.value, (scope) => {
   replyTargetPinned.value = false
   const saved = import.meta.client && scope ? localStorage.getItem(targetStorageKey()) : null
   const activeId = bridge.agentStatus.value?.ideState?.activeTerminalId
-  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : 'chat:devbridge')
+  replyTarget.value = saved || (activeId ? `terminal:${activeId}` : '')
 }, { immediate: true })
 
 watch(() => bridge.projectTransition.value, (pending, previous) => {
