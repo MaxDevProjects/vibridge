@@ -1439,17 +1439,18 @@ const chatTargets = computed<ChatTarget[]>(() => {
 
   for (const terminal of terminals) {
     const terminalName = String(terminal?.name ?? '').trim()
-    if (!terminalName || seenTerminalNames.has(terminalName)) continue
-    seenTerminalNames.add(terminalName)
+    const terminalKey = String(terminal?.id ?? terminalName).trim()
+    if (!terminalName || !terminalKey || seenTerminalNames.has(terminalKey)) continue
+    seenTerminalNames.add(terminalKey)
     const cwd = typeof terminal?.cwd === 'string' ? terminal.cwd : ''
     targets.push({
-      id: `terminal:${terminalName}`,
+      id: `terminal:${terminalKey}`,
       label: terminalName,
       caption: cwd ? `terminal direct · ${lastPathSegment(cwd)}` : 'terminal direct',
       support: 'direct',
       kind: 'terminal',
       terminalName,
-      state: replyTarget.value === `terminal:${terminalName}` ? 'active' : 'idle',
+      state: replyTarget.value === `terminal:${terminalKey}` ? 'active' : 'idle',
     })
   }
 
@@ -1590,7 +1591,7 @@ function createNewTerminal() {
   const terminalName = `DevBridge ${idx}`
   creatingTerminal.value = true
   bridge.send({ type: 'create_terminal', terminalName, payload: { terminalName } })
-  setReplyTarget(`terminal:${terminalName}`, true)
+  // Wait for terminal_created with its actual instance ID before selecting it.
   setTimeout(() => { creatingTerminal.value = false }, 3_000)
 }
 
@@ -1598,7 +1599,9 @@ function selectChatTarget(target: ChatTarget) {
   if (target.state === 'starting') return
   setReplyTarget(target.id, true)
   if (target.kind === 'terminal' && target.terminalName) {
-    bridge.send({ type: 'focus_terminal', terminalName: target.terminalName, payload: { terminalName: target.terminalName } })
+    bridge.send({ type: 'focus_terminal', terminalName: target.terminalName,
+      terminalId: target.id.startsWith('terminal:') ? target.id.slice('terminal:'.length) : undefined,
+      payload: { terminalName: target.terminalName } })
     return
   }
   if (target.kind !== 'launcher') return
@@ -1721,7 +1724,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     const terminalName = String(msg.terminalName ?? '')
     creatingTerminal.value = false
     pushActivity('sys', `✓ Terminal ${terminalName} créé`)
-    if (terminalName) setReplyTarget(`terminal:${terminalName}`, true)
+    if (terminalName) setReplyTarget(`terminal:${String(msg.terminalId ?? terminalName)}`, true)
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
   } else if (msg.type === 'terminal_closed') {
     pushActivity('sys', `Terminal fermé : ${String(msg.terminalName ?? '')}`)
