@@ -12,6 +12,7 @@ import { AuthService } from './auth';
 import { RelayClient } from './relay-client';
 import { CliRegistry } from './cliRegistry';
 import { resolveWorkspaceIdentity } from './workspace';
+import { ControlPolicy } from './control-policy';
 
 const PORT = parseInt(process.env.AGENT_PORT ?? '3333', 10);
 const IPC_SOCK = process.env.IPC_SOCK_PATH ?? '/tmp/devbridge/ipc.sock';
@@ -28,6 +29,8 @@ async function main() {
 
   const queue = new MessageQueue();
   const auth = new AuthService();
+  const controlPolicy = new ControlPolicy();
+  console.log('[Control] Remote mode:', controlPolicy.mode);
   const push = new PushService(DATA_DIR);
   const files = new FileService(PROJECT_ROOT, process.env.PROJECT_HOST_ROOT);
   const adapters = new AdapterManager(queue);
@@ -61,10 +64,11 @@ async function main() {
       ipc,
       queue,
       cliRegistry,
+      controlPolicy,
     })
     : null;
 
-  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry, workspace });
+  const { httpServer } = createServer({ PORT, queue, push, files, adapters, ipc, auth, relay, cliRegistry, workspace, controlPolicy });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[DevBridge Agent] HTTP + WS listening on :${PORT}`);
