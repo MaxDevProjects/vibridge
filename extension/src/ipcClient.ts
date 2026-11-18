@@ -21,7 +21,7 @@ export class IpcClient extends EventEmitter {
   private shouldConnect = false;
   private _connected = false;
 
-  constructor(private target: IpcTarget) {
+  constructor(private target: IpcTarget, readonly windowId: string = 'legacy') {
     super();
   }
 
@@ -47,7 +47,7 @@ export class IpcClient extends EventEmitter {
       this._connected = true;
       this.reconnectDelay = 1_000;
       console.log('[IPC] Connected to agent');
-      this._send({ type: 'register', tool: 'vscode', label: 'VS Code Extension' });
+      this._send({ type: 'register', tool: 'vscode', label: 'VS Code Extension', windowId: this.windowId });
       this.emit('connected');
     };
     sock.once('connect', () => {
@@ -115,7 +115,7 @@ export class IpcClient extends EventEmitter {
       console.warn('[IPC] Not connected — message dropped');
       return;
     }
-    this._send(data);
+    this._send({ ...(data as Record<string, unknown>), windowId: this.windowId });
   }
 
   private _send(data: unknown): void {
