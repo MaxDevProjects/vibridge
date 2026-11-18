@@ -39,7 +39,7 @@ const MOBILE_COMMANDS = new Set([
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'cliId', 'sendEnter',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
@@ -776,7 +776,7 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'state', 'isQuestion', 'direction', 'clis']
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),
