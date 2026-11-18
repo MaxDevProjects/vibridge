@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import type { IpcClient } from './ipcClient';
+import { getTerminalId } from './terminalIdentity';
 
 interface TerminalInfo {
+  id: string;
   name: string;
   shellIntegration: boolean;
   cwd: string | null;
@@ -12,6 +14,7 @@ interface IdeSnapshot {
   activeFile: string | null;
   activeLanguage: string | null;
   activeTerminal: string | null;
+  activeTerminalId: string | null;
   terminals: TerminalInfo[];
   updatedAt: number;
 }
@@ -37,7 +40,7 @@ export class IdeReporter {
         this.sendSnapshot();
       }),
       vscode.window.onDidCloseTerminal((terminal) => {
-        this.terminalCwds.delete(terminal.name);
+        this.terminalCwds.delete(getTerminalId(terminal));
         this.sendEvent('terminal_closed', { name: terminal.name, target: `terminal:${terminal.name}` });
         this.sendSnapshot();
       }),
@@ -50,11 +53,12 @@ export class IdeReporter {
         const terminalName = event.terminal.name;
         const cwd = event.execution.cwd?.fsPath ?? null;
         if (cwd) {
-          this.terminalCwds.set(terminalName, cwd);
+          this.terminalCwds.set(getTerminalId(event.terminal), cwd);
         }
         this.sendEvent('terminal_command_started', {
           terminal: terminalName,
-          target: `terminal:${terminalName}`,
+          terminalId: getTerminalId(event.terminal),
+          target: `terminal:${getTerminalId(event.terminal)}`,
           commandLine,
           cwd,
         });
@@ -63,7 +67,7 @@ export class IdeReporter {
       vscode.window.onDidEndTerminalShellExecution((event) => {
         const cwd = event.execution.cwd?.fsPath ?? null;
         if (cwd) {
-          this.terminalCwds.set(event.terminal.name, cwd);
+          this.terminalCwds.set(getTerminalId(event.terminal), cwd);
         }
         this.sendEvent('terminal_command_finished', {
           terminal: event.terminal.name,
@@ -110,10 +114,12 @@ export class IdeReporter {
       activeFile: vscode.window.activeTextEditor?.document.uri.fsPath ?? null,
       activeLanguage: vscode.window.activeTextEditor?.document.languageId ?? null,
       activeTerminal: vscode.window.activeTerminal?.name ?? null,
+      activeTerminalId: vscode.window.activeTerminal ? getTerminalId(vscode.window.activeTerminal) : null,
       terminals: vscode.window.terminals.map((terminal) => ({
+        id: getTerminalId(terminal),
         name: terminal.name,
         shellIntegration: Boolean(terminal.shellIntegration),
-        cwd: this.terminalCwds.get(terminal.name) ?? null,
+        cwd: this.terminalCwds.get(getTerminalId(terminal)) ?? null,
       })),
       updatedAt: Date.now(),
     };
