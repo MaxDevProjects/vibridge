@@ -20,6 +20,20 @@ export interface WsMessage {
   [key: string]: unknown
 }
 
+export interface ConnectedWindow {
+  id: string
+  connected: boolean
+  workspaceFolders: string[]
+  ideState?: AgentStatus['ideState']
+  lastSeen: number
+}
+
+export interface WindowActivity {
+  state: 'idle' | 'running' | 'finished' | 'attention_possible'
+  terminalId?: string
+  updatedAt: number
+}
+
 export interface ConnectedWorkspace {
   id: string
   name: string
@@ -45,6 +59,8 @@ interface WorkspaceSnapshot {
   ideState?: AgentStatus['ideState']
   previewUrl?: string | null
   fileTree?: unknown
+  windows?: ConnectedWindow[]
+  focusedWindowId?: string
   control?: AgentStatus['control']
   adapters?: AgentStatus['adapters']
   activeAdapter?: string | null
@@ -81,6 +97,8 @@ export interface AgentStatus {
   } | null
   previewUrl?: string | null
   fileTree?: unknown
+  windows?: ConnectedWindow[]
+  focusedWindowId?: string
   control?: { mode: 'observe' | 'control'; canControl: boolean; allowedClis: string[]; allowTerminalClose: boolean }
   relay?: RelayState | null
   timestamp: number
@@ -113,9 +131,37 @@ const latencyMs = ref<number | null>(null)
 const relayWorkspaces = ref<ConnectedWorkspace[]>([])
 const relaySessions = ref<RelaySessionListItem[]>([])
 const activeWorkspaceId = ref('')
+const windows = ref<ConnectedWindow[]>([])
+const activeWindowId = ref('')
+const windowActivity = ref<Record<string, WindowActivity>>({})
+const selectedWindow = computed(() => windows.value.find(window => window.id === activeWindowId.value) ?? null)
+function windowStorageKey(): string {
+  return `vb:selectedWindow:${relaySessionId.value}:${activeWorkspaceId.value}`
+}
+function selectWindow(windowId: string): void {
+  const next = windows.value.find(window => window.id === windowId)
+  if (!next) return
+  const previous = selectedWindow.value
+  activeWindowId.value = windowId
+  if (import.meta.client) localStorage.setItem(windowStorageKey(), windowId)
+  if (agentStatus.value) {
+    agentStatus.value = { ...agentStatus.value,
+      ideState: next.ideState ?? null,
+      fileTree: previous?.id === windowId ? agentStatus.value.fileTree : undefined,
+      previewUrl: previous?.id === windowId ? agentStatus.value.previewUrl : null }
+  }
+}
+function syncWindows(next: ConnectedWindow[], focused = ''): void {
+  windows.value = next
+  const saved = import.meta.client ? localStorage.getItem(windowStorageKey()) ?? '' : ''
+  const wanted = [activeWindowId.value, saved, focused, next.find(window => window.connected)?.id ?? '']
+    .find(id => next.some(window => window.id === id)) ?? ''
+  if (wanted) selectWindow(wanted)
+  else activeWindowId.value = ''
+}
 // Workspace ID identifies the bridge agent. Project path identifies the VS Code
 // folder currently being controlled. They must not be used interchangeably.
-const activeProjectPath = computed(() => projectPathFromIde(agentStatus.value?.ideState))
+const activeProjectPath = computed(() => projectPathFromIde(selectedWindow.value?.ideState ?? agentStatus.value?.ideState))
 const activeProjectName = computed(() => projectName(activeProjectPath.value))
 const projectTransition = ref<{ path: string; requestId: string; startedAt: number } | null>(null)
 let projectTransitionTimeout: ReturnType<typeof setTimeout> | null = null
@@ -258,7 +304,12 @@ function setActiveWorkspace(nextWorkspaceId: string) {
       ...agentStatus.value, adapters: [], activeAdapter: null, ideState: null, previewUrl: null, fileTree: undefined,
     }
   }
-  if (activeWorkspaceId.value !== nextWorkspaceId) clearProjectTransition()
+  if (activeWorkspaceId.value !== nextWorkspaceId) {
+    clearProjectTransition()
+    activeWindowId.value = ''
+    windows.value = []
+    windowActivity.value = {}
+  }
   activeWorkspaceId.value = nextWorkspaceId
   relayWorkspaces.value = relayWorkspaces.value.map(workspace => ({
     ...workspace,
@@ -302,6 +353,9 @@ function clearStoredSession() {
   relayWorkspaces.value = []
   relaySessions.value = []
   activeWorkspaceId.value = ''
+  activeWindowId.value = ''
+  windows.value = []
+  windowActivity.value = {}
   clearProjectTransition()
   mode.value = 'local'
   agentStatus.value = null
@@ -349,6 +403,9 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
     relay: snapshot.relay ?? agentStatus.value?.relay ?? null,
     timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : Date.now(),
   }
+  if (Array.isArray(snapshot.windows)) {
+    syncWindows(snapshot.windows, snapshot.focusedWindowId)
+  }
 }
 
 function emit(msg: WsMessage) {
@@ -374,7 +431,38 @@ function emit(msg: WsMessage) {
     }
   }
 
-  if (normalized.type === 'terminal_unavailable') {
+  if (normalized.type === 'windows_update' && Array.isArray(normalized.windows)) {
+    syncWindows(normalized.windows as ConnectedWindow[], typeof normalized.focusedWindowId === 'string' ? normalized.focusedWindowId : '')
+    if (projectTransition.value) confirmProjectTransition()
+  }
+
+  // Activity is tracked per window even when another project is selected.
+  if (normalized.windowId && typeof normalized.windowId === 'string') {
+    const id = normalized.windowId
+    if (normalized.type === 'ide_event') {
+      const kind = String(normalized.kind ?? '')
+      const previous = windowActivity.value[id]
+      if (kind === 'terminal_command_started') {
+        windowActivity.value = { ...windowActivity.value, [id]: {
+          state: 'running', terminalId: String(normalized.terminalId ?? ''),
+          updatedAt: Date.now(),
+        } }
+      } else if (kind === 'terminal_command_finished' && previous?.state !== 'attention_possible') {
+        windowActivity.value = { ...windowActivity.value, [id]: {
+          state: 'finished', terminalId: String(normalized.terminalId ?? ''),
+          updatedAt: Date.now(),
+        } }
+      }
+    }
+    if (normalized.type === 'notification') {
+      windowActivity.value = { ...windowActivity.value, [id]: {
+        state: 'attention_possible', terminalId: String(normalized.terminalId ?? ''),
+        updatedAt: Date.now(),
+      } }
+    }
+  }
+
+  if (normalized.type === 'terminal_unavailable' && (!normalized.windowId || normalized.windowId === activeWindowId.value)) {
     latestDeliveryId = ''
     deliveryNotice.value = { status: 'error', text: 'Le terminal sélectionné a été fermé dans VS Code.' }
   }
@@ -392,7 +480,15 @@ function emit(msg: WsMessage) {
     if (state && typeof state === 'object' && !Array.isArray(state)) {
       const previousPath = activeProjectPath.value
       const ide = state as AgentStatus['ideState']
-      applyStatusSnapshot({ ideState: ide, timestamp: Date.now() })
+      const eventWindowId = typeof normalized.windowId === 'string' ? normalized.windowId : ''
+      if (eventWindowId) {
+        windows.value = windows.value.map(window => window.id === eventWindowId
+          ? { ...window, ideState: ide, workspaceFolders: ide?.workspaceFolders ?? [], lastSeen: Date.now() }
+          : window)
+      }
+      if (!eventWindowId || eventWindowId === activeWindowId.value) {
+        applyStatusSnapshot({ ideState: ide, timestamp: Date.now() })
+      }
       if (previousPath !== activeProjectPath.value && agentStatus.value) {
         // Never display file content or a preview from the previous project.
         agentStatus.value = { ...agentStatus.value, fileTree: undefined, previewUrl: null }
@@ -452,6 +548,12 @@ function emit(msg: WsMessage) {
     }
   }
 
+  // Outputs from other windows may update badges, but must never enter the
+  // selected window's conversation or be mistaken for its tool's response.
+  const scoped = ['output', 'chat_response', 'ai_message', 'notification',
+    'ide_event', 'command_execution', 'terminal_closed', 'terminal_created', 'cli_started']
+  if (normalized.windowId && activeWindowId.value
+    && normalized.windowId !== activeWindowId.value && scoped.includes(normalized.type)) return
   listeners.forEach((fn) => fn(normalized))
 }
 
@@ -652,6 +754,15 @@ function send(data: unknown): boolean {
     if (tracked) deliveryNotice.value = { status: 'error', text: 'ViBridge est déconnecté. La commande n’a pas été envoyée.' }
     return false
   }
+  const scopedToWindow = ['message', 'chat', 'open_project', 'focus_terminal', 'kill_cli',
+    'create_terminal', 'start_cli', 'action', 'notif_response']
+  if (scopedToWindow.includes(String(frame.type)) && windows.value.length) {
+    if (!selectedWindow.value?.connected) {
+      deliveryNotice.value = { status: 'error', text: 'Fenêtre VS Code absente ou déconnectée. Choisis une fenêtre connectée.' }
+      return false
+    }
+    frame.windowId = activeWindowId.value
+  }
   if (mode.value === 'relay' && activeWorkspaceId.value && typeof frame.workspace_id !== 'string') {
     frame.workspace_id = activeWorkspaceId.value
   }
@@ -746,6 +857,8 @@ async function fetchRelayStatus() {
           ? selectedSnapshot.activeAdapter
           : agentStatus.value?.activeAdapter ?? null,
         ideState: selectedSnapshot.ideState ?? agentStatus.value?.ideState ?? null,
+        windows: Array.isArray(selectedSnapshot.windows) ? selectedSnapshot.windows : undefined,
+        focusedWindowId: selectedSnapshot.focusedWindowId,
         previewUrl: typeof selectedSnapshot.previewUrl === 'string' || selectedSnapshot.previewUrl === null
           ? selectedSnapshot.previewUrl
           : agentStatus.value?.previewUrl ?? null,
@@ -809,7 +922,7 @@ async function fetchLocalStatus() {
       headers: { Authorization: `Bearer ${token.value}` },
     })
     if (!res.ok) return
-    agentStatus.value = await res.json() as AgentStatus
+    applyStatusSnapshot(await res.json() as AgentStatus)
   } catch {
     // ignore transient local fetch errors
   }
@@ -868,6 +981,8 @@ async function pairRelay(baseUrl: string, sessionId: string, pairingCode: string
     disconnect()
     authError.value = null
     agentStatus.value = null
+    windows.value = []
+    activeWindowId.value = ''
     mode.value = 'relay'
     relayUrl.value = normalizedBaseUrl
     relaySessionId.value = sessionId
@@ -921,6 +1036,8 @@ export function useDevBridge() {
     disconnect()
     authError.value = null
     agentStatus.value = null
+    windows.value = []
+    activeWindowId.value = ''
     relaySessionId.value = sessionId
     token.value = nextToken
     relayWorkspaces.value = []
@@ -944,15 +1061,20 @@ export function useDevBridge() {
     relayWorkspaces: readonly(relayWorkspaces),
     relaySessions: readonly(relaySessions),
     activeWorkspaceId: readonly(activeWorkspaceId),
+    windows: readonly(windows),
+    activeWindowId: readonly(activeWindowId),
+    selectedWindow: readonly(selectedWindow),
+    windowActivity: readonly(windowActivity),
+    selectWindow,
     activeProjectPath: readonly(activeProjectPath),
     activeProjectName: readonly(activeProjectName),
     projectTransition: readonly(projectTransition),
     projectContextKey: computed(() => scopedProjectKey(
       resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value),
-      activeProjectPath.value,
+      activeWindowId.value || activeProjectPath.value,
     )),
     chatHistoryKey: computed(() => token.value
-      ? scopedProjectKey(resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value), activeProjectPath.value)
+      ? scopedProjectKey(resolveChatHistoryKey(mode.value, mode.value === 'relay' ? relayUrl.value : activeUrl.value, relaySessionId.value, activeWorkspaceId.value), activeWindowId.value || activeProjectPath.value)
       : ''),
     activeWorkspace: computed(() => relayWorkspaces.value.find(workspace => workspace.id === activeWorkspaceId.value) ?? null),
 
