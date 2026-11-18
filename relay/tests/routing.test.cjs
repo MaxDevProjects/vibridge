@@ -165,3 +165,23 @@ test('extension dispatch evidence is distinct from agent receipt', async t => {
   assert.equal(event.payload.terminalId, 'terminal-123')
   assert.equal(store.listHistory(session.sessionId).some(entry => entry.type === 'command_execution'), true)
 })
+
+
+test('duplicate command IDs cannot trigger another execution', async t => {
+  const { mobile, addAgent } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  let count = 0
+  agent.on('message', raw => { if (JSON.parse(raw).type === 'message') count++ })
+  const command = next(agent, msg => msg.type === 'message')
+  const firstAck = next(mobile, msg => msg.type === 'message_ack' && msg.request_id === 'repeatable')
+  send(mobile, { type: 'message', workspace_id: 'editor', target: 'terminal:Codex',
+    request_id: 'repeatable', text: 'do this only once' })
+  const delivered = await command
+  send(agent, { type: 'relay_command_ack', request_id: delivered.request_id, ok: true })
+  assert.equal((await firstAck).status, 'received')
+  const duplicate = next(mobile, msg => msg.type === 'message_ack' && msg.request_id === 'repeatable')
+  send(mobile, { type: 'message', workspace_id: 'editor', target: 'terminal:Codex',
+    request_id: 'repeatable', text: 'do this only once' })
+  assert.equal((await duplicate).status, 'unconfirmed')
+  assert.equal(count, 1)
+})
