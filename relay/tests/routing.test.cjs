@@ -185,3 +185,29 @@ test('duplicate command IDs cannot trigger another execution', async t => {
   assert.equal((await duplicate).status, 'unconfirmed')
   assert.equal(count, 1)
 })
+
+test('VS Code project and terminal snapshots remain current on relay reconnect', async t => {
+  const { mobile, addAgent, store, session, api, mobileToken } = await connectedDevice(t)
+  const agent = await addAgent('editor')
+  const state = {
+    workspaceFolders: ['/home/dev/projects/second-project'],
+    activeTerminal: 'bash',
+    activeTerminalId: 'terminal-new',
+    terminals: [{ id: 'terminal-new', name: 'bash' }],
+    updatedAt: Date.now(),
+  }
+  const incoming = next(mobile, msg => msg.type === 'ide_snapshot' && msg.workspaceId === 'editor')
+  send(agent, { type: 'ide_snapshot', payload: { state } })
+  assert.deepEqual((await incoming).payload.state.workspaceFolders, state.workspaceFolders)
+  const snapshot = store.getWorkspaceSnapshot(session.sessionId, 'editor')
+  assert.deepEqual(snapshot?.ideState?.workspaceFolders, state.workspaceFolders)
+  assert.equal(snapshot?.ideState?.activeTerminalId, 'terminal-new')
+  const response = await (await api('/api/relay/sessions/' + session.sessionId, { token: mobileToken })).json()
+  assert.equal(response.workspaceSnapshots.find(s => s.workspaceId === 'editor')?.ideState?.activeTerminalId, 'terminal-new')
+
+  const projectUpdate = next(mobile, msg => msg.type === 'projects_update' && msg.workspaceId === 'editor')
+  send(agent, { type: 'projects_update', projects: [
+    { name: 'second-project', path: '/home/dev/projects/second-project', isActive: true },
+  ], parentDir: '/home/dev/projects' })
+  assert.equal((await projectUpdate).payload.projects[0].isActive, true)
+})

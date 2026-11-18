@@ -759,7 +759,7 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis']
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'projects', 'parentDir']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),
@@ -785,6 +785,20 @@ export function createRelayServer(options: RelayServerOptions) {
           updateWorkspaceSnapshot(sessionId, ws.workspaceId, payload as Record<string, unknown>)
           sendWorkspaceEvent(sessionId, { type: 'status_snapshot', workspaceId: ws.workspaceId, payload })
           return
+        }
+      }
+
+      // VS Code reports the actual opened folder independently from periodic
+      // agent snapshots. Persist this live context so reconnecting phones see
+      // the correct project and terminal list without waiting for a refresh.
+      if (msg.type === 'ide_snapshot' && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const state = (payload as Record<string, unknown>).state
+        if (state && typeof state === 'object' && !Array.isArray(state)) {
+          const ide = state as Record<string, unknown>
+          store.upsertWorkspaceSnapshot(sessionId, ws.workspaceId, {
+            ideState: ide,
+            timestamp: typeof ide.updatedAt === 'number' ? ide.updatedAt : Date.now(),
+          })
         }
       }
 
