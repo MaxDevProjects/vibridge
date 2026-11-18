@@ -38,6 +38,11 @@ const allowedHosts = new Set(['127.0.0.1', 'localhost'])
       if (allowed) await route.continue()
       else await route.abort('blockedbyclient')
     })
+    // Browser WebSockets are not handled by HTTP route interception.
+    // A static screenshot does not need HMR or arbitrary WebSocket traffic.
+    if (typeof context.routeWebSocket === 'function') {
+      await context.routeWebSocket('**/*', route => route.close())
+    }
     const page = await context.newPage()
     await page.goto(origin + '/', { waitUntil: 'domcontentloaded', timeout: 10000 })
     const image = await page.screenshot({ type: 'png', animations: 'disabled', timeout: 10000 })
