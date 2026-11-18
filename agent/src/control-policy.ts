@@ -52,6 +52,8 @@ export class ControlPolicy {
         ? { allowed: true }
         : { allowed: false, reason: 'terminal_close_disabled' };
     }
+    // Preview is restricted further by the extension's user-level port allowlist.
+    if (type === 'preview_capture') return { allowed: true };
     if (type === 'close_window') {
       return this.allowWindowClose ? { allowed: true } : { allowed: false, reason: 'window_close_disabled' };
     }
