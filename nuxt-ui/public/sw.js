@@ -31,7 +31,7 @@ self.addEventListener('notificationclick', (event) => {
       : {}
     const sessionId = typeof notificationData.sessionId === 'string' ? notificationData.sessionId.trim() : ''
     const workspaceId = typeof notificationData.workspaceId === 'string' ? notificationData.workspaceId.trim() : ''
-    const targetUrl = new URL(self.registration.scope)
+    const targetUrl = new URL('/', self.registration.scope)
 
     if (sessionId) targetUrl.searchParams.set('session', sessionId)
     if (workspaceId) targetUrl.searchParams.set('workspace', workspaceId)

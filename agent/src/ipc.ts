@@ -253,6 +253,7 @@ export class IpcServer {
           tool: msg.tool,
           target: msg.target,
           direction: msg.direction,
+          windowId,
         };
         this.broadcast?.(payload);
         this.forward?.('ai_message', payload);
@@ -265,6 +266,7 @@ export class IpcServer {
               text,
               sessionId: this.getRelaySessionId(),
               workspaceId: this.workspaceId,
+              windowId,
             },
           });
         }
