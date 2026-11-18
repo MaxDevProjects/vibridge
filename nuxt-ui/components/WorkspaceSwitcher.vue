@@ -46,24 +46,11 @@
           <span>+</span>
           <span class="truncate flex-1">Ouvrir un projet</span>
         </button>
-        <template v-if="projects.length">
-          <div class="px-3 py-2" style="border-top:1px solid var(--border)">
-            <p class="text-[9px] uppercase tracking-[0.16em]" style="color:var(--muted)">Projets voisins</p>
-          </div>
-          <button
-            v-for="project in projects"
-            :key="project.path"
-            class="w-full flex items-center gap-2 px-3 py-2 text-left text-[10px] uppercase tracking-[0.16em] transition-colors hover:bg-surface disabled:opacity-40"
-            :style="isCurrentProject(project) ? 'color:var(--text)' : 'color:var(--muted)'"
-            :disabled="isCurrentProject(project) || Boolean(projectOpening[project.path])"
-            @click="openListedProject(project.path, false)"
-          >
-            <span>{{ isCurrentProject(project) ? '●' : '○' }}</span>
-            <span class="truncate flex-1">{{ project.name }}</span>
-            <span v-if="isCurrentProject(project)" class="text-[9px]">actif</span>
-            <span v-else class="text-[9px]">ouvrir</span>
-          </button>
-        </template>
+        <p v-if="projects.length" class="px-3 py-2 text-[10px] normal-case tracking-normal"
+          style="color:var(--muted)">
+          {{ projects.length }} projet(s) disponible(s). Choisis « Ouvrir un projet »
+          pour sélectionner « Ici » ou « En parallèle ».
+        </p>
       </template>
 
       <template v-else>

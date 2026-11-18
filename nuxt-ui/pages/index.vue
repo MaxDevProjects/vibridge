@@ -97,17 +97,24 @@
                 <span class="truncate">{{ proj.name }}</span>
               </span>
               <span v-if="projectIsActive(proj.path, bridge.activeProjectPath.value)" class="text-[9px] uppercase tracking-[0.1em] shrink-0 ml-2" style="color:var(--muted)">actif</span>
-              <button
-                v-else
-                :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
-                class="text-[9px] uppercase tracking-widest px-2 py-1 shrink-0 ml-2 transition-colors disabled:opacity-40"
-                :style="projectOpening[proj.path] === 'done'
-                  ? 'border:1px solid var(--dot-green);color:var(--dot-green);background:none'
-                  : 'border:1px solid var(--border);color:var(--text);background:none'"
-                @click="openProject(proj.path, proj.name)"
-              >
-                {{ projectOpening[proj.path] && projectOpening[proj.path] !== 'done' ? 'Ouverture…' : projectOpening[proj.path] === 'done' ? 'Ouvert ✓' : 'Ouvrir →' }}
-              </button>
+              <div class="flex shrink-0 items-center gap-1 ml-2">
+                <button v-if="!projectIsActive(proj.path, bridge.activeProjectPath.value)"
+                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
+                  class="text-[9px] px-2 py-1 disabled:opacity-40"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  title="Remplacer le dossier de la fenêtre VS Code sélectionnée"
+                  @click="openProject(proj.path, proj.name, false)">
+                  {{ projectOpening[proj.path] === 'replace' ? 'Ouverture…' : 'Ouvrir ici' }}
+                </button>
+                <button
+                  :disabled="Boolean(projectOpening[proj.path]) && projectOpening[proj.path] !== 'done'"
+                  class="text-[9px] px-2 py-1 disabled:opacity-40"
+                  style="border:1px solid var(--border);color:var(--text)"
+                  title="Créer une autre fenêtre VS Code sans fermer celle-ci"
+                  @click="openProject(proj.path, proj.name, true)">
+                  {{ projectOpening[proj.path] === 'parallel' ? 'Ouverture…' : 'En parallèle' }}
+                </button>
+              </div>
             </div>
             <p v-if="!projectsList.length" class="text-[11px] px-7 py-4" style="color:var(--muted)">— Non connecté —</p>
           </div>
