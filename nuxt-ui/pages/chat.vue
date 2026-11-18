@@ -324,7 +324,22 @@ const offMessage = bridge.onMessage((msg: WsMessage) => {
     const msgWorkspaceId = typeof msg.workspaceId === 'string' ? msg.workspaceId : ''
     if (msgWorkspaceId && msgWorkspaceId !== bridge.activeWorkspaceId.value) return
   }
-  if (msg.type === 'chat_response' || msg.type === 'ai_message') {
+  if (msg.type === 'output' && typeof msg.text === 'string' && msg.text) {
+    // Never show a different terminal's output as a reply to the current one.
+    const source = typeof msg.tool === 'string' ? msg.tool : '';
+    if (source.startsWith('terminal:') && source !== replyTarget.value) return;
+    aiTyping.value = false;
+    const now = nowTs();
+    const last = messages.value.at(-1);
+    if (last?.direction === 'ai' && last.tool === source && now - last.ts < 1500) {
+      last.text += msg.text;
+      last.ts = now;
+    } else {
+      messages.value.push({ id: String(now), text: msg.text, direction: 'ai', tool: source, ts: now });
+    }
+    saveWorkspaceChatHistory(activeWorkspaceKey.value, messages.value);
+    scrollToBottom();
+  } else if (msg.type === 'chat_response' || msg.type === 'ai_message') {
     aiTyping.value = false
     currentTool.value = null
     messages.value.push({

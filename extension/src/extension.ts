@@ -127,8 +127,35 @@ export function activate(context: vscode.ExtensionContext): void {
     else void vscode.window.showWarningMessage('ViBridge n’a pas pu associer cet espace de travail. Relance la configuration depuis le navigateur.');
   });
 
+  const reportHostTools = async () => {
+    // User scope only. A cloned repository's .vscode/settings.json is not trusted
+    // to declare programs that the mobile device may launch.
+    const raw = vscode.workspace.getConfiguration('devbridge').inspect<unknown[]>('hostTools')?.globalValue;
+    const allowed = Array.isArray(raw) ? raw.slice(0, 20) : [];
+    const definitions = await Promise.all(allowed.map(async value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+      const tool = value as { id?: unknown; name?: unknown; command?: unknown; args?: unknown };
+      if (typeof tool.id !== 'string' || !/^[a-z][a-z0-9-]{1,63}$/.test(tool.id)
+        || typeof tool.name !== 'string' || typeof tool.command !== 'string'
+        || !/^[a-zA-Z0-9_.:\/\\-]{1,200}$/.test(tool.command)
+        || (tool.args !== undefined && (!Array.isArray(tool.args) || !tool.args.every(arg => typeof arg === 'string')))) return null;
+      let detected = false;
+      try {
+        const check = process.platform === 'win32' ? `where ${tool.command}` : `command -v ${tool.command}`;
+        await execAsync(check, { timeout: 3000 });
+        detected = true;
+      } catch { /* Host tool may not yet be installed. */ }
+      return { id: tool.id, name: tool.name, command: tool.command, args: tool.args ?? [], detected };
+    }));
+    if (ipc?.isConnected()) ipc.send({ type: 'host_clis', definitions: definitions.filter(Boolean) });
+  };
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (event.affectsConfiguration('devbridge.hostTools')) void reportHostTools();
+  }));
+
   // Detect installed CLIs and report projects on each connection
   ipc.on('connected', () => {
+    void reportHostTools();
     detectInstalledClis().then((detected) => {
       ipc!.send({ type: 'cli_report', detected });
     }).catch((err: unknown) => {

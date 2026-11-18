@@ -1622,14 +1622,14 @@ function scheduleChatHistorySave() {
   }, 180)
 }
 
-function pushStreamingOutput(text: string, tool?: string) {
-  appendAiMessage(text, tool, true)
+function pushStreamingOutput(text: string, tool?: string, target?: string) {
+  appendAiMessage(text, tool, true, target)
   debouncedLoadPreviewUrl()
   nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
 }
 
-function queueOutputChunk(text: string, tool?: string) {
-  pushStreamingOutput(text, tool)
+function queueOutputChunk(text: string, tool?: string, target?: string) {
+  pushStreamingOutput(text, tool, target)
 }
 
 // WS
@@ -1651,7 +1651,8 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
     nextTick(() => { if (chatScroll.value) chatScroll.value.scrollTop = chatScroll.value.scrollHeight })
   } else if (msg.type === 'output' && msg.text) {
     setAiTyping(false)
-    queueOutputChunk(msg.text, msg.tool as string)
+    const tool = typeof msg.tool === 'string' ? msg.tool : undefined
+    queueOutputChunk(msg.text, tool, tool?.startsWith('terminal:') ? tool : undefined)
   } else if (msg.type === 'adapter_exit') {
     setAiTyping(false)
     pushActivity('err', `${String(msg.tool ?? 'adapter')} exited`)

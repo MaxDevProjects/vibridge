@@ -62,7 +62,7 @@ export class IdeReporter {
           commandLine,
           cwd,
         });
-        this.streamExecutionOutput(event.terminal.name, event.execution);
+        this.streamExecutionOutput(event.terminal, event.execution);
       }),
       vscode.window.onDidEndTerminalShellExecution((event) => {
         const cwd = event.execution.cwd?.fsPath ?? null;
@@ -144,7 +144,7 @@ export class IdeReporter {
   }
 
   private async streamExecutionOutput(
-    terminalName: string,
+    terminal: vscode.Terminal,
     execution: vscode.TerminalShellExecution
   ): Promise<void> {
     try {
@@ -152,8 +152,9 @@ export class IdeReporter {
         if (!chunk || !this.ipc.isConnected()) continue;
         this.ipc.send({
           type: 'terminal_output',
-          tool: `terminal:${terminalName}`,
-          terminal: terminalName,
+          tool: `terminal:${getTerminalId(terminal)}`,
+          terminal: terminal.name,
+          terminalId: getTerminalId(terminal),
           text: chunk,
         });
       }

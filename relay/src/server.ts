@@ -57,6 +57,7 @@ export function createRelayServer(options: RelayServerOptions) {
   const { auth, store, publicBaseUrl, uiBaseUrl, sessionTtlMs } = options
   const peers = new Map<string, SessionPeers>()
   const pendingAgentRequests = new Map<string, PendingAgentRequest>()
+  const recentCommands = new Map<string, number>()
 
   app.use((_req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -439,42 +440,16 @@ export function createRelayServer(options: RelayServerOptions) {
     }
   })
 
-  app.post('/clis/default', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { id } = req.body as { id: string }
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'set_default', id })
-      res.json({ ok: response.ok ?? false, clis: response.clis ?? [] })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  // CLI executable definitions and defaults are host-owned. The public relay
+  // must never be able to reconfigure which commands a workstation trusts.
+  app.post('/clis/default', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
-
-  app.post('/clis/custom', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { name, command, args } = req.body as { name?: unknown; command?: unknown; args?: unknown }
-    if (typeof name !== 'string' || !name.trim() || typeof command !== 'string' || !command.trim()
-      || (args !== undefined && (!Array.isArray(args) || !args.every(arg => typeof arg === 'string')))) {
-      res.status(400).json({ error: 'valid name, command and args required' })
-      return
-    }
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'add_custom', name, command, args })
-      res.json({ ok: response.ok ?? false, cli: response.cli, clis: response.clis ?? [] })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  app.post('/clis/custom', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
-
-  app.delete('/clis/:id', requireSessionAuth(['mobile']), async (req, res) => {
-    const claims = (req as Request & { claims?: SessionClaims }).claims!
-    const { id } = req.params
-    try {
-      const response = await requestAgentPayload(claims.sessionId, requestedWorkspace(req), 'relay_clis_request', { action: 'remove_custom', id })
-      res.json({ ok: response.ok ?? false })
-    } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'agent unavailable' })
-    }
+  app.delete('/clis/:id', requireSessionAuth(['mobile']), (_req, res) => {
+    res.status(403).json({ error: 'CLI configuration must be changed in VS Code User settings' })
   })
 
   const httpServer = http.createServer(app)
@@ -649,6 +624,21 @@ export function createRelayServer(options: RelayServerOptions) {
     }
     const agent = resolveTargetAgent(sessionId, typeof requested === 'string' ? requested.trim() : undefined)
     if (!agent) return reply('rejected', 'workspace_unavailable')
+    const readOnly = type === 'list_projects' || type === 'get_preview_url' || type === 'get_pairing_code'
+    if (!readOnly) {
+      if (!id) return reply('rejected', 'request_id_required')
+      const key = sessionId + ':' + id
+      if (recentCommands.has(key)) return reply('unconfirmed', 'duplicate_request_not_replayed')
+      // Register before forwarding: duplicate submissions are never silently re-executed.
+      recentCommands.set(key, Date.now())
+      if (recentCommands.size > 4_096) {
+        const cutoff = Date.now() - 15 * 60_000
+        for (const [request, at] of recentCommands) {
+          if (at < cutoff) recentCommands.delete(request)
+        }
+        if (recentCommands.size > 4_096) recentCommands.delete(recentCommands.keys().next().value!)
+      }
+    }
 
     const original = msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload)
       ? msg.payload as Record<string, unknown>
