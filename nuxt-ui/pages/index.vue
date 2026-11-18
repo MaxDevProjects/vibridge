@@ -1408,7 +1408,9 @@ const pendingNotifs = ref<NotifItem[]>([])
 function removeNotif(id: string) { pendingNotifs.value = pendingNotifs.value.filter(n => n.id !== id) }
 function handleNotif(id: string, action: 'validate' | 'refuse') {
   const n = pendingNotifs.value.find(x => x.id === id)
-  if (!bridge.send({ type: 'notif_response', id, action })) return
+  // This heuristic notification is not a structured CLI approval.
+  activeTab.value = 'chat'
+  return
   removeNotif(id)
   activity.value.unshift({ id: Date.now().toString(), ts: Date.now(), tag: action === 'validate' ? 'user' : 'sys', text: `${action === 'validate' ? 'Validé' : 'Refusé'} — ${n?.text.slice(0, 60) ?? ''}` })
 }
@@ -1417,8 +1419,7 @@ function handleNotif(id: string, action: 'validate' | 'refuse') {
 const quickActions = computed(() => [
   { icon: '⌨', label: 'Nouvelle instruction', action: () => { activeTab.value = 'chat' } },
   { icon: '▣', label: 'Preview app', action: previewUrl.value ? () => { activeTab.value = 'preview' } : undefined },
-  { icon: '⤴', label: actionBusy.value.git ? 'Git push…' : 'Git push', action: () => { void runAgentAction('git', ['push']) } },
-  { icon: '◎', label: actionBusy.value.npm ? 'Tests…' : 'Run tests', action: () => { void runAgentAction('npm', ['test']) } },
+  // Generic remote shell actions are forbidden by host policy: do not show unusable buttons.
   { icon: '⚙', label: 'Paramètres',           action: () => { void router.push('/settings') } },
 ])
 
@@ -1743,7 +1744,7 @@ const offMsg = bridge.onMessage((msg: WsMessage) => {
   } else if (msg.type === 'cli_started') {
     const cliId = String(msg.cliId ?? '')
     cliLaunching.value[cliId] = false
-    pushActivity('sys', `✓ ${String(msg.terminalName ?? cliId)} prêt`)
+    pushActivity('sys', `Commande de lancement transmise : ${String(msg.terminalName ?? cliId)}. État CLI à confirmer.`)
     if (msg.terminalId) pendingTerminalSelection.value = `terminal:${String(msg.terminalId)}`
     else pushActivity('sys', 'Terminal créé, en attente de son identifiant réel')
     if (activeTab.value !== 'chat') activeTab.value = 'chat'
@@ -1871,6 +1872,10 @@ watch(() => bridge.status.value, (status) => {
 }, { immediate: true })
 
 onMounted(() => {
+  if (window.matchMedia('(max-width: 767px)').matches) {
+    void navigateTo('/mobile')
+    return
+  }
   clientReady.value = true
   // Always use the configured mDNS hostname for the QR code URL so it works
   // even when the desktop operator accessed the UI via a raw IP address.

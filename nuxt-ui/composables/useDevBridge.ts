@@ -100,7 +100,7 @@ export interface AgentStatus {
   fileTree?: unknown
   windows?: ConnectedWindow[]
   focusedWindowId?: string
-  control?: { mode: 'observe' | 'control'; canControl: boolean; allowedClis: string[]; allowTerminalClose: boolean }
+  control?: { mode: 'observe' | 'control'; canControl: boolean; allowedClis: string[]; allowTerminalClose: boolean; allowWindowClose?: boolean }
   relay?: RelayState | null
   timestamp: number
 }
@@ -353,6 +353,10 @@ function removeRelayWorkspace(workspaceId: string) {
 
 function clearStoredSession() {
   if (import.meta.server) return
+  // This only signs out the browser. Server-side revocation is a separate operation.
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(RELAY_SESSION_TOKEN_STORAGE_KEY + ':')) localStorage.removeItem(key)
+  }
   localStorage.removeItem('vb:bridgeMode')
   localStorage.removeItem('vb:token')
   localStorage.removeItem('vb:relayUrl')
@@ -374,6 +378,23 @@ function clearStoredSession() {
   activeUrl.value = ''
   latencyMs.value = null
   disconnect()
+}
+
+/** Only claim revocation when the relay confirms invalidation. */
+async function revokeRelaySession(): Promise<boolean> {
+  if (mode.value !== 'relay' || !relaySessionId.value || !token.value) return false
+  try {
+    const res = await fetch(`${inferRelayUrl()}/api/relay/sessions/${encodeURIComponent(relaySessionId.value)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (res.status !== 204) return false
+    clearStoredSession()
+    return true
+  } catch {
+    return false
+  }
 }
 
 function normalizeIncoming(msg: WsMessage): WsMessage {
@@ -752,7 +773,7 @@ function disconnect() {
 
 const RELAY_COMMANDS_WITH_FEEDBACK = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
-  'open_project', 'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli',
+  'open_project', 'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
 ])
 
 function send(data: unknown): boolean {
@@ -766,7 +787,7 @@ function send(data: unknown): boolean {
     return false
   }
   const scopedToWindow = ['message', 'chat', 'open_project', 'focus_terminal', 'kill_cli',
-    'create_terminal', 'start_cli', 'action', 'notif_response', 'list_projects', 'get_preview_url']
+    'create_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'list_projects', 'get_preview_url']
   if (scopedToWindow.includes(String(frame.type)) && windows.value.length) {
     if (!selectedWindow.value?.connected) {
       deliveryNotice.value = { status: 'error', text: 'Fenêtre VS Code absente ou déconnectée. Choisis une fenêtre connectée.' }
@@ -1100,6 +1121,7 @@ export function useDevBridge() {
     pairRelay,
     connectWithToken,
     clearStoredSession,
+    revokeRelaySession,
     fetchAgentStatus,
     fetchRelaySessions,
     setActiveWorkspace,

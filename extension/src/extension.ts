@@ -1,4 +1,5 @@
 import { getTerminalId, findTerminal } from './terminalIdentity';
+import { captureLocalPreview } from './localPreview';
 /**
  * DevBridge VS Code Extension — Main activation
  */
@@ -253,6 +254,40 @@ export function activate(context: vscode.ExtensionContext): void {
       reportCommand(msg, 'kill_cli', 'dispatched', undefined, found.terminal);
       found.terminal.dispose();
     } else reportCommand(msg, 'kill_cli', 'rejected', found.ambiguous ? 'ambiguous_terminal' : 'terminal_unavailable');
+  });
+
+  // A capture request only accepts the exact owner window and a user-approved
+  // localhost port. Playwright runs locally, never on the public relay.
+  let previewBusy = false;
+  ipc.on('preview_capture', (msg: Record<string, unknown>) => {
+    const requestId = typeof msg.request_id === 'string' ? msg.request_id : '';
+    if (!requestId) return;
+    const respond = (success: boolean, image?: string, error?: string) =>
+      ipc?.send({ type: 'preview_capture_result', request_id: requestId, success,
+        mime: 'image/png', image, error });
+    if (msg.windowId !== windowId) { respond(false, undefined, 'window_mismatch'); return; }
+    if (previewBusy) { respond(false, undefined, 'preview_busy'); return; }
+    const port = Number(msg.port);
+    const device = msg.device === 'desktop' ? 'desktop' : 'mobile';
+    previewBusy = true;
+    void captureLocalPreview(port, device).then(
+      image => respond(true, image),
+      error => respond(false, undefined, error instanceof Error ? error.message : 'preview_failed'),
+    ).finally(() => { previewBusy = false; });
+  });
+
+  // Closing a VS Code window is distinct from killing a terminal.
+  // Host policy must opt in; desktop may still prompt for unsaved files.
+  ipc.on('close_window', (msg: Record<string, unknown>) => {
+    if (typeof msg.windowId !== 'string' || msg.windowId !== windowId) {
+      reportCommand(msg, 'close_window', 'rejected', 'window_mismatch');
+      return;
+    }
+    reportCommand(msg, 'close_window', 'dispatched');
+    void vscode.commands.executeCommand('workbench.action.closeWindow').then(
+      () => { /* Closing may still require desktop confirmation. */ },
+      () => reportCommand(msg, 'close_window', 'rejected', 'window_close_failed'),
+    );
   });
 
   // Notify agent whenever a terminal is closed (manual or programmatic)

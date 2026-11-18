@@ -34,12 +34,12 @@ interface SessionPeers {
 const MOBILE_COMMANDS = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
   'open_project', 'list_projects', 'get_preview_url', 'get_pairing_code',
-  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli',
+  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
 ])
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
@@ -310,6 +310,26 @@ export function createRelayServer(options: RelayServerOptions) {
     }
     pairingAttempts.delete(sessionId)
     res.json({ pairingCode, qrUrl: buildQrUrl(sessionId, pairingCode) })
+  })
+
+  // Browser sign-out is not revocation: invalidate every bearer and live socket.
+  app.delete('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
+    const claims = (req as Request & { claims: SessionClaims }).claims
+    if (claims.sessionId !== req.params.sessionId) {
+      res.status(403).json({ error: 'forbidden' })
+      return
+    }
+    if (!store.revokeSession(claims.sessionId)) {
+      res.status(404).json({ error: 'session already closed' })
+      return
+    }
+    const sessionPeers = peers.get(claims.sessionId)
+    if (sessionPeers) {
+      for (const mobile of sessionPeers.mobiles) mobile.close(4401, 'session revoked')
+      for (const agent of sessionPeers.agents.values()) agent.close(4401, 'session revoked')
+      peers.delete(claims.sessionId)
+    }
+    res.status(204).end()
   })
 
   app.get('/api/relay/sessions/:sessionId', requireSessionAuth(['mobile', 'agent']), (req, res) => {
@@ -832,6 +852,24 @@ export function createRelayServer(options: RelayServerOptions) {
           windows, focusedWindowId, timestamp: Date.now(),
         })
         sendWorkspaceEvent(sessionId, { type: 'windows_update', workspaceId: ws.workspaceId, windows, focusedWindowId })
+        return
+      }
+      if (msg.type === 'preview_capture_result') {
+        // A screenshot is an ephemeral sensitive image. Forward only to this
+        // session's mobile clients, do not insert into message_history/SQLite.
+        const image = typeof msg.image === 'string' ? msg.image : ''
+        const success = msg.success === true && image.length > 0 && image.length <= 700000
+          && /^[A-Za-z0-9+/=]+$/.test(image)
+        sendWorkspaceEvent(sessionId, {
+          type: 'preview_capture_result',
+          workspaceId: ws.workspaceId,
+          windowId: typeof msg.windowId === 'string' ? msg.windowId : '',
+          request_id: String(msg.request_id ?? ''),
+          success,
+          image: success ? image : undefined,
+          mime: 'image/png',
+          error: success ? undefined : String(msg.error ?? 'preview_failed').slice(0, 120),
+        })
         return
       }
       if (msg.type === 'projects_update') {

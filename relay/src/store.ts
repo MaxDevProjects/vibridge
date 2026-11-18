@@ -235,6 +235,14 @@ export class RelayStore {
     return this.getSession(sessionId)
   }
 
+  /** Permanently invalidate both agent and mobile credentials for the session. */
+  revokeSession(sessionId: string): boolean {
+    const result = this.db.prepare(
+      "UPDATE sessions SET status = 'closed', mobile_token = NULL, agent_token = '', pairing_expires_at = 0 WHERE id = ? AND status <> 'closed'"
+    ).run(sessionId)
+    return result.changes === 1
+  }
+
   getSession(sessionId: string, includeHistory = true) {
     const row = this.db.prepare(`
       SELECT id, workspace_id, pairing_code, status, created_at, expires_at, label, workspace_folders_json, agent_token, mobile_token

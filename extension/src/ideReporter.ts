@@ -71,7 +71,8 @@ export class IdeReporter {
         }
         this.sendEvent('terminal_command_finished', {
           terminal: event.terminal.name,
-          target: `terminal:${event.terminal.name}`,
+          terminalId: getTerminalId(event.terminal),
+          target: `terminal:${getTerminalId(event.terminal)}`,
           commandLine: event.execution.commandLine.value,
           cwd,
         });

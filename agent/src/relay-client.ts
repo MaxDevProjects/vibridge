@@ -654,7 +654,7 @@ export class RelayClient {
     const windows = ipc.getWindows().filter(window => window.connected);
     // A mobile must always choose its target when multiple VS Code windows exist.
     const scopedActions = ['chat', 'message', 'open_project', 'focus_terminal',
-      'kill_cli', 'create_terminal', 'start_cli', 'action', 'notif_response'];
+      'kill_cli', 'create_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response'];
     if (scopedActions.includes(String(msg.type))
       && (!windows.length || (windowId
         ? !windows.some(window => window.id === windowId)
@@ -716,6 +716,16 @@ export class RelayClient {
       case 'kill_cli':
         return (typeof msg.terminalName === 'string' || typeof msg.terminalId === 'string')
           && ipc.sendToExtension({ type: msg.type, terminalName: msg.terminalName, terminalId: msg.terminalId, request_id: msg.request_id, windowId });
+      case 'preview_capture': {
+        const port = Number(msg.port);
+        if (!windowId || !Number.isInteger(port) || port < 1024 || port > 65535) return false;
+        if (msg.device !== 'mobile' && msg.device !== 'desktop') return false;
+        return ipc.sendToExtension({ type: 'preview_capture', port, device: msg.device,
+          request_id: msg.request_id, windowId });
+      }
+      case 'close_window':
+        // Never allow a vague fallback to the last focused VS Code window.
+        return Boolean(windowId) && ipc.sendToExtension({ type: 'close_window', request_id: msg.request_id, windowId });
       case 'create_terminal':
         return ipc.sendToExtension({ type: msg.type, terminalName: String(msg.terminalName ?? '').trim() || 'DevBridge 1', request_id: msg.request_id, windowId });
       case 'start_cli': {

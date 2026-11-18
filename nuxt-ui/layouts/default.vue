@@ -4,6 +4,7 @@
 
     <!-- ── Global top bar ─────────────────────── -->
     <header
+      v-if="!isMobileConversation"
       class="fixed top-0 left-0 right-0 h-14 z-50 flex items-center justify-between px-4 sm:px-6"
       style="background:color-mix(in srgb, var(--bg) 88%, transparent);border-bottom:1px solid var(--border);backdrop-filter:blur(12px)"
     >
@@ -67,7 +68,7 @@
     </div>
 
     <!-- ── Content ──────────────────────────────── -->
-    <main class="flex-1 pt-14 overflow-hidden relative z-10">
+    <main class="flex-1 overflow-hidden relative z-10" :class="isMobileConversation ? '' : 'pt-14'">
       <slot :active-view="activeView" />
     </main>
 
@@ -88,6 +89,7 @@ const views = [
 ]
 
 const isSetupRoute = computed(() => route.path.startsWith('/setup'))
+const isMobileConversation = computed(() => route.path === '/mobile')
 
 function setView(v: 'both' | 'pc' | 'mobile') {
   activeView.value = v

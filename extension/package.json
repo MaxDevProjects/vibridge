@@ -94,6 +94,17 @@
           "default": "split",
           "markdownDescription": "How DevBridge sends text to VS Code terminals. `paste` uses a single `sendText(text, true)`. `split` sends the text first, then a separate Enter keypress. `split` is more reliable for TUIs like Codex."
         },
+        "devbridge.previewPorts": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+          "description": "Ports localhost que ce PC autorise explicitement pour les captures Playwright distantes. Configurer uniquement dans les paramètres Utilisateur VS Code, exemple [5500]."
+        },
+        "devbridge.previewPlaywrightModule": {
+          "type": "string",
+          "default": "playwright",
+          "description": "Chemin local du module Playwright installé sur le PC (ou 'playwright' s'il est accessible au Node de l'extension). Paramètre Utilisateur uniquement."
+        },
         "devbridge.pwaUrl": {
           "type": "string",
           "default": "",

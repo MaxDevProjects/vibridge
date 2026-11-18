@@ -116,3 +116,23 @@ test('remote command deduplication survives relay restarts and remains session-s
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+
+test('mobile revocation closes sockets and invalidates both credentials', async t => {
+  const { api, create, pair, dial } = await fixture(t)
+  const first = await create()
+  const second = await create()
+  const { mobileToken } = await (await pair(first)).json()
+  const { mobileToken: secondToken } = await (await pair(second)).json()
+  const socket = await dial()
+  const accepted = once(socket, 'message')
+  socket.send(JSON.stringify({ type: 'auth', token: mobileToken }))
+  assert.equal(JSON.parse((await accepted)[0]).type, 'auth_ok')
+  assert.equal((await api('/api/relay/sessions/' + second.sessionId, { token: mobileToken, method: 'DELETE' })).status, 403)
+  const closed = once(socket, 'close')
+  assert.equal((await api('/api/relay/sessions/' + first.sessionId, { token: mobileToken, method: 'DELETE' })).status, 204)
+  assert.equal((await closed)[0], 4401)
+  assert.equal((await api('/workspaces', { token: mobileToken })).status, 401)
+  assert.equal((await api('/workspaces', { token: first.agentToken })).status, 401)
+  assert.equal((await api('/workspaces', { token: secondToken })).status, 200)
+})
