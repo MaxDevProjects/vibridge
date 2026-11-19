@@ -29,7 +29,7 @@
   </section>
 </template>
 <script setup lang="ts">
-export interface CliSessionListing {id:string;cliId:'codex'|'claude-code';title:string;updatedAt:number}
+interface CliSessionListing {id:string;cliId:'codex'|'claude-code';title:string;updatedAt:number}
 defineProps<{sessions:CliSessionListing[];loading:boolean;error:string;canResume:boolean}>()
 const emit=defineEmits<{close:[];refresh:[];resume:[session:CliSessionListing]}>()
 function date(at:number):string{
