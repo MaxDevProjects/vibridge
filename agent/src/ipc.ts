@@ -489,6 +489,15 @@ export class IpcServer {
         this.broadcast?.({ type: 'clis_update', clis });
         break;
       }
+      case 'terminal_interpret_result': {
+        const payload={windowId,request_id:msg.request_id,
+          terminalId:typeof msg.terminalId==='string'?msg.terminalId.slice(0,80):'',
+          ok:msg.ok===true,readout:msg.readout,
+          error:typeof msg.error==='string'?msg.error.slice(0,100):undefined};
+        this.broadcast?.({type:'terminal_interpret_result',...payload});
+        this.forward?.('terminal_interpret_result',payload);
+        break;
+      }
       case 'cli_sessions_result': {
         // Only the authenticated extension that owns windowId may respond.
         const sessions=Array.isArray(msg.sessions) ? msg.sessions.slice(0,30) : [];
