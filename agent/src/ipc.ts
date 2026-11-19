@@ -489,6 +489,15 @@ export class IpcServer {
         this.broadcast?.({ type: 'clis_update', clis });
         break;
       }
+      case 'cli_sessions_result': {
+        // Only the authenticated extension that owns windowId may respond.
+        const sessions=Array.isArray(msg.sessions) ? msg.sessions.slice(0,30) : [];
+        const payload={windowId,request_id:msg.request_id,sessions,
+          error:typeof msg.error==='string'?msg.error.slice(0,80):undefined};
+        this.broadcast?.({type:'cli_sessions_result',...payload});
+        this.forward?.('cli_sessions_result',payload);
+        break;
+      }
       case 'cli_started': {
         // Extension confirms terminal was opened
         const payload = { type: 'cli_started', cliId: msg.cliId, terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
