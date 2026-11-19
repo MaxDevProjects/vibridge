@@ -61,8 +61,8 @@
     </div>
     <Transition name="vb-toast">
       <div v-if="toast && !notificationOpen" :key="toast.id" class="vb-small-toast"
-        :class="toast.status==='error'?'vb-small-toast-error':'vb-small-toast-info'" role="status">
-        <span class="vb-toast-indicator" aria-hidden="true">{{ toast.status==='error'?'!':'✓' }}</span>
+        :class="toast.status==='error'?'vb-small-toast-error':toast.status==='attention'?'vb-small-toast-warning':'vb-small-toast-info'" role="status">
+        <span class="vb-toast-indicator" aria-hidden="true">{{ toast.status==='error'?'!':toast.status==='attention'?'?':'✓' }}</span>
         <span class="vb-toast-text">{{ toast.text }}</span>
         <button type="button" aria-label="Masquer la notification" @click="toast=null">×</button>
       </div>
@@ -75,7 +75,7 @@
       <div v-if="!notificationHistory.length" class="vb-notification-empty">Aucune notification récente.</div>
       <ol v-else>
         <li v-for="item in notificationHistory" :key="item.id">
-          <span :class="item.status==='error'?'vb-notice-error':'vb-notice-ok'">{{ item.status==='error'?'!':'✓' }}</span>
+          <span :class="item.status==='error'?'vb-notice-error':'vb-notice-ok'">{{ item.status==='error'?'!':item.status==='attention'?'?':'✓' }}</span>
           <div><p>{{ item.text }}</p><small>{{ new Date(item.at).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) }}</small></div>
         </li>
       </ol>
@@ -103,7 +103,7 @@ const colorMode = useColorMode()
 const activeView = useViewMode()
 const route = useRoute()
 const { notice } = useBridgeDeliveryNotice()
-type DisplayNotice = { id:number; text:string; status:'received'|'error'; at:number }
+type DisplayNotice = { id:number; text:string; status:'received'|'error'|'attention'; at:number }
 const toast=ref<DisplayNotice|null>(null)
 const notificationOpen=ref(false)
 const notificationHistory=ref<DisplayNotice[]>([])
@@ -131,7 +131,26 @@ watch(notice, value=>{
 
 })
 watch(notificationOpen,open=>{if(open){unreadNotifications.value=0;toast.value=null}})
-onUnmounted(()=>{if(toastDismissTimer)clearTimeout(toastDismissTimer);if(pendingNoticeTimer)clearTimeout(pendingNoticeTimer)})
+// Heuristic questions are an information signal only; the host delays them.
+// Keep them in the same inbox as delivery notices, never as approval cards.
+let stopNotifications:(()=>void)|null=null
+onMounted(()=>{
+ stopNotifications=bridge.onMessage(message=>{
+  if(message.type!=='notification'||message.isQuestion!==true)return
+  const raw=typeof message.text==='string'?message.text:'Intervention peut-être nécessaire'
+  const text=raw.slice(0,140)
+  if(notificationHistory.value.some(item=>item.text===text&&Date.now()-item.at<300000))return
+  const item:DisplayNotice={id:++sequence,text,status:'attention',at:Date.now()}
+  notificationHistory.value=[item,...notificationHistory.value].slice(0,25)
+  if(notificationOpen.value)return
+  unreadNotifications.value=Math.min(25,unreadNotifications.value+1)
+  toast.value=item
+  if(toastDismissTimer)clearTimeout(toastDismissTimer)
+  toastDismissTimer=setTimeout(()=>{if(toast.value?.id===item.id)toast.value=null},5500)
+ })
+})
+
+onUnmounted(()=>{stopNotifications?.();if(toastDismissTimer)clearTimeout(toastDismissTimer);if(pendingNoticeTimer)clearTimeout(pendingNoticeTimer)})
 const bridge = useDevBridge()
 
 const views = [
@@ -162,6 +181,8 @@ function toggleColorMode() {
 .vb-small-toast{position:fixed;right:12px;top:calc(64px + env(safe-area-inset-top));z-index:56;width:min(306px,calc(100vw - 24px));display:flex;gap:10px;align-items:flex-start;padding:11px 12px;background:color-mix(in srgb,var(--surface) 88%,white 12%);border:1px solid var(--border-bright);border-left:3px solid var(--accent);box-shadow:0 9px 28px rgba(0,0,0,.3);color:var(--text);font:11px/1.5 "DM Mono",monospace}
 .vb-small-toast-error{border-left-color:var(--dot-red)}
 .vb-small-toast-info{border-left-color:var(--dot-green)}
+.vb-small-toast-warning{border-left-color:var(--dot-amber)}
+.vb-small-toast-warning .vb-toast-indicator{color:var(--dot-amber)}
 .vb-toast-indicator{font-weight:700;color:var(--accent)}
 .vb-small-toast-error .vb-toast-indicator{color:var(--dot-red)}
 .vb-toast-text{flex:1;min-width:0;overflow-wrap:anywhere}
