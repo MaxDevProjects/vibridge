@@ -7,6 +7,7 @@ interface TerminalInfo {
   name: string;
   shellIntegration: boolean;
   cwd: string | null;
+  processId?: number;
 }
 
 interface IdeSnapshot {
@@ -22,6 +23,7 @@ interface IdeSnapshot {
 export class IdeReporter {
   private disposables: vscode.Disposable[] = [];
   private terminalCwds = new Map<string, string>();
+  private snapshotVersion = 0;
 
   constructor(private ipc: IpcClient) {}
 
@@ -133,10 +135,33 @@ export class IdeReporter {
 
   private sendSnapshot(): void {
     if (!this.ipc.isConnected()) return;
-    this.ipc.send({
-      type: 'ide_snapshot',
-      ...this.snapshot(),
-    });
+    const version = ++this.snapshotVersion;
+    const initial = this.snapshot();
+    // Keep the immediate snapshot so new terminals remain responsive.
+    this.ipc.send({ type: 'ide_snapshot', ...initial });
+
+    // A restored VS Code terminal can keep its OS process after the extension
+    // host restarts, even though the terminal UUID changes. Publish the PID
+    // separately to let the phone match only the SAME running process.
+    const terminals = [...vscode.window.terminals];
+    if (!terminals.length) return;
+    void Promise.all(terminals.map(async terminal => {
+      try {
+        const processId = await terminal.processId;
+        return { id: getTerminalId(terminal), processId };
+      } catch {
+        return { id: getTerminalId(terminal), processId: undefined };
+      }
+    })).then(results => {
+      if (!this.ipc.isConnected() || version !== this.snapshotVersion) return;
+      const current = this.snapshot();
+      const byId = new Map(results.filter(item => Number.isSafeInteger(item.processId) && Number(item.processId) > 0)
+        .map(item => [item.id, item.processId!]));
+      if (!current.terminals.some(item => byId.has(item.id))) return;
+      this.ipc.send({ type: 'ide_snapshot', ...current, terminals: current.terminals.map(item => ({
+        ...item, processId: byId.get(item.id),
+      })) });
+    }).catch(() => { /* process IDs are optional */ });
   }
 
   private sendEvent(kind: string, payload: Record<string, unknown>): void {
