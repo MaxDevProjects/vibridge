@@ -10,6 +10,7 @@ export interface TerminalThreadIdentity {
   processId?: number
   connected: boolean
   recoveredTo?: string
+  lastSeen?: number
 }
 
 export function findRestorableThread<T extends TerminalThreadIdentity>(
@@ -24,10 +25,12 @@ export function findRestorableThread<T extends TerminalThreadIdentity>(
     && other.label === current.label
     && other.processId === current.processId
   if (live.filter(matches).length !== 1) return null
+  const now = Date.now()
   const candidates = known.filter(previous =>
     previous.key !== current.key
     && matches(previous)
-    && !previous.connected
+    && !live.some(thread => thread.key === previous.key)
+    && (!previous.lastSeen || now - previous.lastSeen < 24 * 60 * 60 * 1000)
     && !previous.recoveredTo
     && hasHistory(previous.key),
   )
