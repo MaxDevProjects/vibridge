@@ -271,16 +271,21 @@
             />
           </div>
 
-          <!-- Notif cards -->
-          <TransitionGroup name="notif" tag="div" class="px-4 space-y-3 mb-1">
-            <NotifCard
-              v-for="n in pendingNotifs" :key="n.id"
-              :text="n.text" :tool="n.tool" :ts="n.ts"
-              @validate="handleNotif(n.id, 'validate')"
-              @refuse="handleNotif(n.id, 'refuse')"
-              @ignore="removeNotif(n.id)"
-            />
-          </TransitionGroup>
+          <!-- Heuristic attention is NOT a structured approval. -->
+          <section v-if="pendingNotifs.length" class="mx-4 my-2" style="border:1px solid var(--border-bright)">
+            <button type="button" class="w-full flex justify-between items-center px-3 py-3 text-[11px]"
+              style="background:var(--surface);color:var(--text)" :aria-expanded="showPossibleAlerts" @click="showPossibleAlerts=!showPossibleAlerts">
+              <span>⚠ {{pendingNotifs.length}} intervention(s) possibles, non confirmées</span>
+              <span>{{showPossibleAlerts?'⌃':'⌄'}}</span>
+            </button>
+            <ol v-if="showPossibleAlerts" class="max-h-48 overflow-auto" style="border-top:1px solid var(--border)">
+              <li v-for="n in pendingNotifs" :key="n.id" class="flex gap-2 p-3 text-[11px]" style="border-bottom:1px solid var(--border)">
+                <span class="flex-1">{{n.text}}</span>
+                <button type="button" class="underline" @click="activeTab='chat';showPossibleAlerts=false">Voir terminal</button>
+                <button type="button" aria-label="Ignorer l'alerte" @click="removeNotif(n.id)">×</button>
+              </li>
+            </ol>
+          </section>
 
           <!-- Quick actions -->
           <div class="px-4 mt-3">
@@ -1478,6 +1483,7 @@ const mobileTabs = [
 // Notifications
 interface NotifItem { id: string; text: string; tool: string; ts: number }
 const pendingNotifs = ref<NotifItem[]>([])
+const showPossibleAlerts=ref(false)
 
 function removeNotif(id: string) { pendingNotifs.value = pendingNotifs.value.filter(n => n.id !== id) }
 function handleNotif(id: string, action: 'validate' | 'refuse') {
