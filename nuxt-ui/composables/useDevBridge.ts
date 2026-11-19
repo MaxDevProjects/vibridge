@@ -826,7 +826,7 @@ function disconnect() {
 
 const RELAY_COMMANDS_WITH_FEEDBACK = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
-  'open_project', 'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture', 'cli_sessions_request', 'cli_resume',
+  'open_project', 'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture', 'cli_sessions_request', 'cli_resume', 'terminal_interpret',
 ])
 
 function send(data: unknown): boolean {
@@ -840,7 +840,7 @@ function send(data: unknown): boolean {
     return false
   }
   const scopedToWindow = ['message', 'chat', 'open_project', 'focus_terminal', 'kill_cli',
-    'create_terminal', 'reopen_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'list_projects', 'get_preview_url', 'cli_sessions_request', 'cli_resume']
+    'create_terminal', 'reopen_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'list_projects', 'get_preview_url', 'cli_sessions_request', 'cli_resume', 'terminal_interpret']
   if (scopedToWindow.includes(String(frame.type)) && windows.value.length) {
     if (!selectedWindow.value?.connected) {
       deliveryNotice.value = { status: 'error', text: 'Fenêtre VS Code absente ou déconnectée. Choisis une fenêtre connectée.' }
