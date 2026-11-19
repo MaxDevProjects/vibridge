@@ -38,7 +38,7 @@ export class ControlPolicy {
 
   authorize(type: string, fields: Record<string, unknown> = {}): AuthorizationResult {
     // Read-only operations remain usable when control is disabled.
-    if (['list_projects', 'get_preview_url', 'cli_sessions_request'].includes(type)) return { allowed: true };
+    if (['list_projects', 'get_preview_url', 'cli_sessions_request', 'terminal_interpret'].includes(type)) return { allowed: true };
     if (this.mode !== 'control') return { allowed: false, reason: 'remote_control_disabled' };
 
     if (type === 'start_cli') {
