@@ -514,7 +514,7 @@ function chooseQuickAction(action:PaletteAction){
  const direct=action.kind==='read' || ['help','status','context'].some(x=>action.command==='/'+x)
  paletteOpen.value=false
  if(direct){
-  sendTextToCurrentTerminal(action.command)
+  if(sendTextToCurrentTerminal(action.command) && draft.value.startsWith('/'))draft.value=''
  }else{
   draft.value=action.command
  }
@@ -694,6 +694,13 @@ function syncThreadArchive(threads:Thread[]): void {
 }
 
 watch(draft,saveDraft)
+watch(draft,(text,previous)=>{
+ // Typing '/' offers the contextual catalog without running or injecting anything.
+ if(text.startsWith('/') && !previous.startsWith('/')){
+  paletteOpen.value=true;filesOpen.value=false;actionFilter.value=''
+ }
+ if(text.startsWith('/')&&paletteOpen.value)actionFilter.value=text.slice(1).trim()
+})
 function onScroll(){const el=scroller.value;if(el)nearBottom.value=el.scrollHeight-el.scrollTop-el.clientHeight<90}
 function scrollBottom(){if(scroller.value)scroller.value.scrollTop=scroller.value.scrollHeight}
 function timeLabel(ts:number){return new Date(ts).toLocaleTimeString(lang.value==='fr'?'fr-FR':'en-GB',{hour:'2-digit',minute:'2-digit'})}
