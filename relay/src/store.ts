@@ -127,6 +127,9 @@ export class RelayStore {
     if (!snapshotColumns.some(column => column.name === 'focused_window_id')) {
       this.db.exec('ALTER TABLE workspace_snapshots ADD COLUMN focused_window_id TEXT')
     }
+    if (!snapshotColumns.some(column => column.name === 'activities_json')) {
+      this.db.exec('ALTER TABLE workspace_snapshots ADD COLUMN activities_json TEXT')
+    }
   }
 
   /** Reserve an action ID before forwarding it. Never release on timeout or failure:
@@ -474,6 +477,7 @@ export class RelayStore {
       workspaceId,
       ideState: payload.ideState ?? previous?.ideState,
       windows: Array.isArray(payload.windows) ? payload.windows : previous?.windows,
+      activities: Array.isArray(payload.activities) ? payload.activities : previous?.activities,
       focusedWindowId: typeof payload.focusedWindowId === 'string'
         ? payload.focusedWindowId : previous?.focusedWindowId,
       previewUrl: typeof payload.previewUrl === 'string' || payload.previewUrl === null
@@ -489,14 +493,15 @@ export class RelayStore {
     }
     this.db.prepare(`
       INSERT INTO workspace_snapshots (
-        session_id, workspace_id, ide_state_json, windows_json, focused_window_id, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
+        session_id, workspace_id, ide_state_json, windows_json, focused_window_id, activities_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       ) VALUES (
-        @sessionId, @workspaceId, @ideStateJson, @windowsJson, @focusedWindowId, @previewUrl, @fileTreeJson, @controlJson, @adaptersJson, @activeAdapter, @timestamp
+        @sessionId, @workspaceId, @ideStateJson, @windowsJson, @focusedWindowId, @activitiesJson, @previewUrl, @fileTreeJson, @controlJson, @adaptersJson, @activeAdapter, @timestamp
       )
       ON CONFLICT(session_id, workspace_id) DO UPDATE SET
         ide_state_json = excluded.ide_state_json,
         windows_json = excluded.windows_json,
         focused_window_id = excluded.focused_window_id,
+        activities_json = excluded.activities_json,
         preview_url = excluded.preview_url,
         file_tree_json = excluded.file_tree_json,
         control_json = excluded.control_json,
@@ -509,6 +514,7 @@ export class RelayStore {
       ideStateJson: next.ideState === undefined ? null : JSON.stringify(next.ideState),
       windowsJson: next.windows === undefined ? null : JSON.stringify(next.windows),
       focusedWindowId: next.focusedWindowId ?? null,
+      activitiesJson: next.activities === undefined ? null : JSON.stringify(next.activities),
       previewUrl: next.previewUrl ?? null,
       fileTreeJson: next.fileTree === undefined ? null : JSON.stringify(next.fileTree),
       controlJson: next.control === undefined ? null : JSON.stringify(next.control),
@@ -520,7 +526,7 @@ export class RelayStore {
 
   getWorkspaceSnapshot(sessionId: string, workspaceId: string): WorkspaceSnapshot | null {
     const row = this.db.prepare(`
-      SELECT workspace_id, ide_state_json, windows_json, focused_window_id, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
+      SELECT workspace_id, ide_state_json, windows_json, focused_window_id, activities_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       FROM workspace_snapshots
       WHERE session_id = ? AND workspace_id = ?
     `).get(sessionId, workspaceId) as Record<string, unknown> | undefined
@@ -530,6 +536,7 @@ export class RelayStore {
       ideState: parseJson(row.ide_state_json as string | null, undefined),
       windows: parseJson(row.windows_json as string | null, undefined),
       focusedWindowId: typeof row.focused_window_id === 'string' ? row.focused_window_id : undefined,
+      activities: parseJson(row.activities_json as string | null, undefined),
       previewUrl: typeof row.preview_url === 'string' || row.preview_url === null ? row.preview_url as string | null : null,
       fileTree: parseJson(row.file_tree_json as string | null, undefined),
       control: parseJson(row.control_json as string | null, undefined),
@@ -541,7 +548,7 @@ export class RelayStore {
 
   listWorkspaceSnapshots(sessionId: string): WorkspaceSnapshot[] {
     const rows = this.db.prepare(`
-      SELECT workspace_id, ide_state_json, windows_json, focused_window_id, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
+      SELECT workspace_id, ide_state_json, windows_json, focused_window_id, activities_json, preview_url, file_tree_json, control_json, adapters_json, active_adapter, timestamp
       FROM workspace_snapshots
       WHERE session_id = ?
       ORDER BY timestamp ASC, workspace_id ASC
@@ -551,6 +558,7 @@ export class RelayStore {
       ideState: parseJson(row.ide_state_json as string | null, undefined),
       windows: parseJson(row.windows_json as string | null, undefined),
       focusedWindowId: typeof row.focused_window_id === 'string' ? row.focused_window_id : undefined,
+      activities: parseJson(row.activities_json as string | null, undefined),
       previewUrl: typeof row.preview_url === 'string' || row.preview_url === null ? row.preview_url as string | null : null,
       fileTree: parseJson(row.file_tree_json as string | null, undefined),
       control: parseJson(row.control_json as string | null, undefined),
