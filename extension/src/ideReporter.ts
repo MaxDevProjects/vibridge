@@ -50,6 +50,12 @@ export class IdeReporter {
         this.sendEvent('terminal_active_changed', { name: terminal?.name ?? null, target: terminal ? `terminal:${terminal.name}` : null });
         this.sendSnapshot();
       }),
+      // Shell integration often activates AFTER the initial terminal snapshot.
+      // Without this event the phone can keep an incorrect "not detected"
+      // warning even while executions are being captured correctly.
+      vscode.window.onDidChangeTerminalShellIntegration(() => {
+        this.sendSnapshot();
+      }),
       vscode.window.onDidStartTerminalShellExecution((event) => {
         const commandLine = event.execution.commandLine.value;
         const terminalName = event.terminal.name;
