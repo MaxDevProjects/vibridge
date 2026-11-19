@@ -33,7 +33,7 @@ export class IpcServer {
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
   private previewUrl: string | null = null;
-  private terminalQuestionState = new Map<string, { text: string; notifiedAt: number }>();
+  private terminalQuestionState = new Map<string, { text: string; notifiedAt: number; candidateSince: number; hits: number }>();
   private relayQrUrl: string | null = null;
   private projects: Array<{ name: string; path: string; isActive: boolean }> = [];
   private projectsParentDir = '';
@@ -421,17 +421,32 @@ export class IpcServer {
         // Purely heuristic: notify that intervention *may* be required.
         // Never automatically answer a trust/approval prompt.
         const key = `${windowId ?? 'unknown'}:${terminalId || terminalName || tool}`;
-        const previous = this.terminalQuestionState.get(key) ?? { text: '', notifiedAt: 0 };
+        const previous = this.terminalQuestionState.get(key) ?? {
+          text: '', notifiedAt: 0, candidateSince: 0, hits: 0,
+        };
         const plain = (previous.text + text)
           .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
           .slice(-1000);
         const now = Date.now();
         const tail = plain.split(/\r?\n/).slice(-3).join('\n').trim();
-        const requiresAttention = this.detectQuestion(tail) && now - previous.notifiedAt > 60_000;
+        const question = this.detectQuestion(tail);
+        // A terminal might *print* a question in its logs without waiting for
+        // any reply. Require at least two observations and 15 s of persistence.
+        // Also rate-limit per terminal for five minutes; this is NOT a structured
+        // permission/approval event.
+        const candidateSince = question ? (previous.candidateSince || now) : 0;
+        const hits = question ? Math.min(8, previous.hits + 1) : 0;
+        const requiresAttention = question && hits >= 2
+          && now - candidateSince >= 15_000 && now - previous.notifiedAt >= 300_000;
         this.terminalQuestionState.set(key, {
-          text: plain,
+          text: plain, candidateSince: requiresAttention ? 0 : candidateSince,
+          hits: requiresAttention ? 0 : hits,
           notifiedAt: requiresAttention ? now : previous.notifiedAt,
         });
+        if (this.terminalQuestionState.size > 200) {
+          const oldest = this.terminalQuestionState.keys().next().value;
+          if (oldest) this.terminalQuestionState.delete(oldest);
+        }
         if (requiresAttention) {
           if (windowId) {
             const record = this.windowStates.get(windowId);
