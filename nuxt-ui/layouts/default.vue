@@ -83,7 +83,7 @@
     </section>
 
     <!-- Control permissions are enforced on the local agent, not in this UI. -->
-    <div v-if="!isSetupRoute && !isPairingDisplay && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe' && !isMobileConversation
+    <div v-if="!isSetupRoute && !isPairingDisplay && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe' && !isMobileConversation"
       class="fixed left-4 right-4 bottom-4 z-40 p-3 text-xs"
       style="background:var(--surface);border:1px solid var(--border-bright);color:var(--text)"
       role="status">
