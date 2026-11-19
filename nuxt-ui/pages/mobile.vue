@@ -192,6 +192,8 @@
           <button :disabled="!canCreateMonitored" :title="t('newMonitoredTerminal')" @click="requestNewMonitoredTerminal">+</button>
         </div>
         <div class="mb-type-row">
+          <button class="mb-quick-trigger" type="button" :aria-expanded="sessionsOpen"
+            aria-label="Reprendre une session Codex ou Claude" @click="showCliSessions">↶</button>
           <button class="mb-quick-trigger" type="button" :aria-expanded="paletteOpen"
             aria-label="Afficher les actions rapides" @click="paletteOpen=!paletteOpen;filesOpen=false">⚡</button>
           <button class="mb-quick-trigger" type="button" :aria-expanded="filesOpen"
@@ -214,6 +216,11 @@
       </div>
     </section>
 
+    <div v-if="sessionsOpen" class="mb-files-overlay" @click.self="sessionsOpen=false">
+      <CliSessionsPicker :sessions="savedCliSessions" :loading="sessionsLoading"
+        :error="sessionsError" :can-resume="canResumeSession"
+        @close="sessionsOpen=false" @refresh="refreshCliSessions" @resume="resumeSavedSession" />
+    </div>
     <div v-if="filesOpen" class="mb-files-overlay" @click.self="filesOpen=false">
       <WorkspaceFilePicker v-if="activeThread"
         :window-id="activeThread.windowId" :context="cliContext" :can-control="canSend"
@@ -322,6 +329,53 @@ const draft = ref('')
 const expandedRaw = ref<Record<string,boolean>>({})
 const paletteOpen=ref(false)
 const filesOpen=ref(false)
+type SavedCliSession={id:string;cliId:'codex'|'claude-code';title:string;updatedAt:number}
+const sessionsOpen=ref(false)
+const sessionsLoading=ref(false)
+const sessionsError=ref('')
+const savedCliSessions=ref<SavedCliSession[]>([])
+let sessionListTimeout:ReturnType<typeof setTimeout>|null=null
+const canResumeSession=computed(()=>bridge.status.value==='connected'
+  && Boolean(bridge.agentStatus.value?.control?.canControl)
+  && Boolean(activeThread.value?.connected&&bridge.activeWindowId.value===activeThread.value.windowId
+    && bridge.selectedWindow.value?.connected&&!bridge.projectTransition.value))
+function sessionCacheKey(){
+  return 'vb:sessions:'+JSON.stringify([bridge.relaySessionId.value,
+    bridge.activeWorkspaceId.value,activeThread.value?.windowId])
+}
+function showCliSessions(){
+ if(!activeThread.value)return
+ sessionsOpen.value=true;filesOpen.value=false;paletteOpen.value=false
+ savedCliSessions.value=[]
+ if(import.meta.client){
+  try{
+    const cached=JSON.parse(localStorage.getItem(sessionCacheKey())||'[]')
+    if(Array.isArray(cached))savedCliSessions.value=cached.slice(0,30)
+  }catch{}
+ }
+ refreshCliSessions()
+}
+function refreshCliSessions(){
+ if(!activeThread.value||bridge.status.value!=='connected'){
+  sessionsLoading.value=false;sessionsError.value='Poste indisponible, affichage du cache local.';return
+ }
+ if(sessionListTimeout)clearTimeout(sessionListTimeout)
+ sessionsLoading.value=true;sessionsError.value=''
+ if(!bridge.send({type:'cli_sessions_request'})){
+  sessionsLoading.value=false;sessionsError.value='Demande de lecture non transmise.';return
+ }
+ sessionListTimeout=setTimeout(()=>{
+  if(sessionsLoading.value){sessionsLoading.value=false;sessionsError.value='Le poste n’a pas confirmé la liste des sessions. Réessaie.'}
+ },18000)
+}
+function resumeSavedSession(session:SavedCliSession){
+ if(!canResumeSession.value || !savedCliSessions.value.some(s=>s.id===session.id&&s.cliId===session.cliId))return
+ if(!bridge.send({type:'cli_resume',cliId:session.cliId,sessionId:session.id})){
+  sessionsError.value='Demande de reprise non transmise.';return
+ }
+ sessionsOpen.value=false
+ // Wait for a new terminal_created from VS Code; an ACK is not proof of a successful resume.
+}
 const contextOverride=ref<'auto'|CliContext>('auto')
 const terminalCliIds=ref<Record<string,string>>({})
 const actionFilter=ref('')
@@ -528,6 +582,7 @@ function openThread(item:Thread){
  mobileView.value='conversation'
  paletteOpen.value=false
  filesOpen.value=false
+ sessionsOpen.value=false
  actionFilter.value=''
  if(import.meta.client) {
   const stored=localStorage.getItem('vb:terminal-context:'+item.key)
@@ -719,6 +774,25 @@ const off=bridge.onMessage((msg:WsMessage)=>{
     }
     return
  }
+ if(msg.type==='cli_sessions_result' && sessionsOpen.value && activeThread.value
+   && msg.windowId===activeThread.value.windowId){
+   if(sessionListTimeout)clearTimeout(sessionListTimeout)
+   sessionListTimeout=null;sessionsLoading.value=false
+   const valid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+   const list=Array.isArray(msg.sessions)?msg.sessions:[]
+   savedCliSessions.value=list.slice(0,30).flatMap(value=>{
+     if(!value||typeof value!=='object')return []
+     const session=value as Record<string,unknown>
+     if(typeof session.id!=='string'||!valid.test(session.id)
+       ||(session.cliId!=='codex'&&session.cliId!=='claude-code'))return []
+     return [{id:session.id,cliId:session.cliId as 'codex'|'claude-code',
+       title:typeof session.title==='string'?session.title.slice(0,85):'Session',
+       updatedAt:typeof session.updatedAt==='number'?session.updatedAt:0}]
+   })
+   if(import.meta.client)try{localStorage.setItem(sessionCacheKey(),JSON.stringify(savedCliSessions.value))}catch{}
+   sessionsError.value=typeof msg.error==='string'?msg.error:''
+   return
+ }
  if(msg.type==='projects_list'){
   const payload=msg.payload && typeof msg.payload==='object'?msg.payload as {projects?:Project[]}: {}
   const projects=Array.isArray(msg.projects)?msg.projects as Project[]:payload.projects
@@ -819,6 +893,7 @@ onUnmounted(()=>{
  if(import.meta.client)document.removeEventListener('visibilitychange',handleMobileVisibility)
  off();offTerminal()
  if(previewTimeout)clearTimeout(previewTimeout)
+ if(sessionListTimeout)clearTimeout(sessionListTimeout)
 })
 useHead({title:'DevBridge | Conversations'})
 </script>
