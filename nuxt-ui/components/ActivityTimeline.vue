@@ -1,9 +1,11 @@
 <template>
-  <details class="activity-panel" :aria-label="lang === 'fr' ? 'Activité observée' : 'Observed activity'">
+  <details class="activity-panel" :class="{compact}" :aria-label="lang === 'fr' ? 'Activité observée' : 'Observed activity'">
     <summary class="activity-toggle">
       <span class="activity-icon" aria-hidden="true">☷</span>
       <span class="activity-heading">
-        <strong>{{ lang === 'fr' ? 'Étapes observées' : 'Observed steps' }}</strong>
+        <strong>{{ compact
+          ? (lang === 'fr' ? 'Commandes et preuves' : 'Commands and evidence')
+          : (lang === 'fr' ? 'Étapes observées' : 'Observed steps') }}</strong>
         <small>{{ summary }}</small>
       </span>
       <span class="activity-chevron" aria-hidden="true">⌄</span>
@@ -34,8 +36,8 @@
 import { computed } from 'vue'
 import type { ActivityItem, ActivityStatus } from '~/composables/useDevBridge'
 
-const props = withDefaults(defineProps<{ items: ActivityItem[]; lang?: 'fr' | 'en' }>(), {
-  lang: 'fr',
+const props = withDefaults(defineProps<{ items: ActivityItem[]; lang?: 'fr' | 'en'; compact?: boolean }>(), {
+  lang: 'fr', compact: false,
 })
 
 const summary = computed(() => {
@@ -78,6 +80,9 @@ function statusLabel(item: ActivityItem): string {
 
 <style scoped>
 .activity-panel{margin:7px 15px 4px;border:1px solid var(--border-bright);background:var(--surface);font-family:monospace;flex:0 0 auto;min-width:0}
+.activity-panel.compact{margin:14px 0 0;border-color:var(--border);background:transparent}
+.activity-panel.compact .activity-toggle{min-height:45px;padding:9px 10px}
+.activity-panel.compact .activity-icon{width:25px;height:25px;flex-basis:25px;font-size:16px}
 .activity-toggle{display:flex;align-items:center;gap:11px;min-height:57px;padding:11px 13px;cursor:pointer;list-style:none;user-select:none;-webkit-tap-highlight-color:transparent}
 .activity-toggle::-webkit-details-marker{display:none}
 .activity-toggle::marker{content:''}

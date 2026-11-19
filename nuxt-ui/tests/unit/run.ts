@@ -9,6 +9,7 @@ import { useQuickReplies } from '../../composables/useQuickReplies'
 import { compactTerminalOutput, terminalConversationKey } from '../../composables/compactTerminalOutput'
 import { findRestorableThread } from '../../utils/mobileThreadRecovery'
 import { routeTerminalEvent } from '../../utils/routeTerminalEvent'
+import { computeReentrySummary } from '../../utils/mobileReentry'
 import { extractObservedTerminalNotes } from '../../utils/observedTerminalNotes'
 
 let failures = 0
@@ -289,6 +290,57 @@ test('terminal notes keep no synthesized completion and exclude obvious secrets'
   assert.ok(!notes.some(note=>note.text.includes('Build réussi')))
   assert.deepEqual(extractObservedTerminalNotes('Working...'),[])
   assert.deepEqual(extractObservedTerminalNotes(''),[])
+})
+
+
+test('reentry stays invisible on first visit and when no new evidence arrived', () => {
+  const entries = [{ ts: 200, kind: 'output' as const }]
+  assert.equal(computeReentrySummary(0, entries), null)
+  assert.equal(computeReentrySummary(200, entries), null)
+  assert.equal(computeReentrySummary(250, entries), null)
+})
+
+test('reentry counts only outputs received after the last visit, never previous user messages', () => {
+  const entries = [
+    { ts: 100, kind: 'output' as const },
+    { ts: 210, kind: 'user' as const },
+    { ts: 250, kind: 'output' as const },
+    { ts: 300, kind: 'status' as const },
+    { ts: 350, kind: 'output' as const },
+  ]
+  const summary=computeReentrySummary(200,entries)
+  assert.equal(summary?.outputCount,2)
+  assert.equal(summary?.verifiedCount,0)
+  assert.equal(summary?.attentionCount,0)
+  assert.equal(summary?.latestAt,350)
+})
+
+test('reentry distinguishes fresh verified technical evidence from old or unverified activity', () => {
+  const activity = {
+    updatedAt: 400,
+    items: [
+      {kind:'build',status:'confirmed',updatedAt:150},
+      {kind:'test',status:'confirmed',updatedAt:350},
+      {kind:'test',status:'failed',updatedAt:390},
+      {kind:'attention',status:'attention',updatedAt:400},
+      {kind:'output',status:'observed',updatedAt:400},
+    ],
+  }
+  const summary=computeReentrySummary(300,[],activity)
+  assert.equal(summary?.outputCount,0)
+  assert.equal(summary?.verifiedCount,1)
+  assert.equal(summary?.attentionCount,2)
+  assert.equal(summary?.latestAt,400)
+  assert.equal(computeReentrySummary(400,[],activity),null)
+})
+
+test('reentry never invents success from a CLI claim or a merely observed output', () => {
+  const summary=computeReentrySummary(500,[],{
+    updatedAt:600,
+    items:[{kind:'command',status:'observed',updatedAt:600}],
+  })
+  assert.equal(summary?.verifiedCount,0)
+  assert.equal(summary?.attentionCount,0)
 })
 
 if (failures > 0) {
