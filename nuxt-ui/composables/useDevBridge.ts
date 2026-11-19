@@ -201,6 +201,7 @@ const dispatchedToVsCode = new Set<string>()
 let connectGeneration = 0
 let connectDeadline: ReturnType<typeof setTimeout> | undefined
 const listeners = new Set<(msg: WsMessage) => void>()
+const workspaceTerminalListeners = new Set<(msg: WsMessage) => void>()
 
 let ws: WebSocket | null = null
 let retryDelay = 1_000
@@ -583,6 +584,13 @@ function emit(msg: WsMessage) {
     if (payload) {
       applyStatusSnapshot({ relay: payload, timestamp: Date.now() })
     }
+  }
+
+  // The mobile inbox needs events from ALL live windows to update each
+  // terminal's own thread. Session/workspace checks above still apply.
+  // The ordinary listeners keep their selected-window isolation.
+  if (['output', 'ide_event', 'notification', 'command_execution'].includes(normalized.type)) {
+    workspaceTerminalListeners.forEach(fn => fn(normalized))
   }
 
   // Outputs from other windows may update badges, but must never enter the
@@ -1136,6 +1144,10 @@ export function useDevBridge() {
     onMessage(fn: (msg: WsMessage) => void) {
       listeners.add(fn)
       return () => listeners.delete(fn)
+    },
+    onWorkspaceTerminalMessage(fn: (msg: WsMessage) => void) {
+      workspaceTerminalListeners.add(fn)
+      return () => workspaceTerminalListeners.delete(fn)
     },
   }
 }
