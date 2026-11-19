@@ -1,5 +1,24 @@
 <template>
   <div class="flex overflow-hidden" style="height:calc(100dvh - 3rem)">
+    <!-- The QR opens the root on phones too. Complete the exchange before /mobile. -->
+    <div v-if="mobilePairingState !== 'idle'" class="fixed inset-0 z-[80] flex items-center justify-center px-6"
+      style="background:var(--bg);color:var(--text)">
+      <section class="w-full max-w-md text-center">
+        <p class="text-[10px] uppercase tracking-[0.25em] mb-6" style="color:var(--accent)">ViBridge / Connexion mobile</p>
+        <h1 class="font-display text-2xl font-light mb-4">Ton espace de travail, sur ton téléphone.</h1>
+        <p v-if="mobilePairingState === 'connecting'" role="status" class="text-sm" style="color:var(--text-mid)">
+          Appairage avec le relais en cours…
+        </p>
+        <template v-else>
+          <p role="alert" class="text-sm leading-6" style="color:var(--dot-red)">
+            {{ pairError || 'Appairage impossible. Génère un nouveau QR depuis VS Code.' }}
+          </p>
+          <p class="text-xs mt-4 leading-5" style="color:var(--text-mid)">
+            Un QR est temporaire et ne peut être utilisé qu'une fois. Reviens dans VS Code et relance « DevBridge: Show QR ».
+          </p>
+        </template>
+      </section>
+    </div>
 
     <!-- ══════════ PC DASHBOARD (left) ══════════ -->
     <div
@@ -612,6 +631,7 @@
 import { projectIsActive, projectName } from '~/composables/projectContext'
 
 import { renderSVG } from 'uqr'
+import { hasPairingInvitation } from '~/utils/pairingRoute'
 import type { ActivityEntry } from '~/components/ActivityFeed.vue'
 import type { FileNode } from '~/components/FileTree.vue'
 import type { WsMessage } from '~/composables/useDevBridge'
@@ -913,6 +933,7 @@ const relayPairingCode = ref('')
 const pairCode  = ref('')
 const pairing   = ref(false)
 const pairError = ref('')
+const mobilePairingState = ref<'idle' | 'connecting' | 'error'>('idle')
 const currentPairingCode = ref('')
 const freshRelayPairingUrl = ref('')
 const pairingQrBusy = ref(false)
@@ -1388,14 +1409,27 @@ async function pairFromRoute() {
     ((host || agentUrl) && code.length === 6)
   )
 
-  // Pairing URLs are one-use invitations, not bookmarks. Reopening a URL
-  // from an already paired device must NEVER erase its working credential.
+  // Keep an already valid connection to this same session, without
+  // consuming a one-time QR. But never reuse a *stale* token blindly:
+  // another device may have replaced its credential in the meantime.
   if (hasExplicitPairing && relayFlag === '1' && routeSessionId
     && localStorage.getItem('vb:relaySessionId') === routeSessionId
-    && localStorage.getItem('vb:token')
     && localStorage.getItem('vb:bridgeMode') === 'relay') {
-    await router.replace({ query: { view: targetView || 'mobile' } })
-    return
+    const storedToken = localStorage.getItem('vb:token')
+    if (storedToken) {
+      try {
+        const response = await fetch(`${routeRelayUrl}/api/relay/sessions/${encodeURIComponent(routeSessionId)}`, {
+          headers: { Authorization: `Bearer ${storedToken}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        if (response.ok) {
+          await router.replace({ query: { view: targetView || 'mobile' } })
+          return
+        }
+      } catch {
+        // Connectivity/authentication errors must not mask a fresh QR.
+      }
+    }
   }
   if (!hasExplicitPairing && bridge.token.value) return
 
@@ -1910,10 +1944,13 @@ watch(() => bridge.status.value, (status) => {
 }, { immediate: true })
 
 onMounted(() => {
-  if (window.matchMedia('(max-width: 767px)').matches) {
+  const mobileViewport = window.matchMedia('(max-width: 767px)').matches
+  const pairingInvitation = hasPairingInvitation(route.query)
+  if (mobileViewport && !pairingInvitation) {
     void navigateTo('/mobile')
     return
   }
+  if (mobileViewport && pairingInvitation) mobilePairingState.value = 'connecting'
   clientReady.value = true
   // Always use the configured mDNS hostname for the QR code URL so it works
   // even when the desktop operator accessed the UI via a raw IP address.
@@ -1932,9 +1969,26 @@ onMounted(() => {
     }
   }
   pairHost.value = resolvedAgentHost.value || publicUiHost.value
-  void loadPairingCode()
-  void pairFromRoute()
-  if (bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
+  // Never request a second pairing code while consuming the one the phone
+  // has just scanned. The two operations can invalidate each other.
+  if (!pairingInvitation) void loadPairingCode()
+  void pairFromRoute().then(async () => {
+    if (!mobileViewport || !pairingInvitation) return
+    if (pairError.value) {
+      mobilePairingState.value = 'error'
+      return
+    }
+    if (bridge.token.value) {
+      await navigateTo('/mobile')
+    } else {
+      pairError.value = 'Appairage non confirmé. Génère un nouveau QR depuis VS Code.'
+      mobilePairingState.value = 'error'
+    }
+  }).catch(() => {
+    pairError.value = 'Impossible de terminer l’appairage. Génère un nouveau QR depuis VS Code.'
+    mobilePairingState.value = 'error'
+  })
+  if (!pairingInvitation && bridge.mode.value === 'relay') void bridge.fetchRelaySessions()
 })
 
 onUnmounted(() => {
