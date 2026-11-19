@@ -36,7 +36,7 @@ test('local readout redacts common secrets and rejects invented evidence',()=>{
 })
 
 test('local model parser never trusts a fragment that is not literal evidence',()=>{
-  assert.throws(()=>interpretModelOutput('not JSON','example text'),'invalid_model_output')
+  assert.throws(()=>interpretModelOutput('not JSON','example text'),/invalid_model_output/)
   const output=interpretModelOutput('{"title":"x","items":[{"text":"OK","evidence":"invented proof","category":"announced"}]}','Actual source text is unrelated.')
   assert.equal(output.items.length,0)
 })
