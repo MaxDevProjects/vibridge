@@ -147,6 +147,23 @@
             <div v-else class="mb-muted">{{ t('unreadableOutput') }}</div>
             <ObservedTerminalNotes v-if="entry.id===lastOutputId && observedNotes.length"
               :key="activeThread.key + ':' + entry.id" :notes="observedNotes" :lang="lang" inline />
+            <div v-if="entry.id===lastOutputId && entry.text" class="mb-local-reading">
+              <button type="button" :disabled="readingBusy || bridge.status.value!=='connected'"
+                @click="requestLocalReading" class="mb-local-reading-trigger">
+                <span aria-hidden="true">✧</span>
+                {{ readingBusy?'Lecture locale en cours…':'Éclaircir avec le mini-modèle local' }}
+              </button>
+              <p v-if="readingError" class="mb-local-reading-error" role="status">{{readingError}}</p>
+              <section v-if="localReading && readingOutputId===entry.id" class="mb-local-reading-card" aria-label="Interprétation locale non vérifiée">
+                <strong>{{localReading.title}}</strong>
+                <ul><li v-for="(item,i) in localReading.items" :key="i">
+                  <span>{{item.category==='remaining'?'À faire':item.category==='uncertain'?'À vérifier':'Annoncé'}}</span>
+                  {{item.text}}
+                  <small>Source : « {{item.evidence}} »</small>
+                </li></ul>
+                <small>Lecture par modèle local. Aucun point n'est une validation technique.</small>
+              </section>
+            </div>
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
             <pre v-if="expandedRaw[entry.id]" class="mb-raw">{{ entry.raw }}</pre>
             <div class="mb-output-footer"><span>{{ t('observedNotVerified') }}</span><button @click="openPreview">{{ t('preview') }} ↗</button></div>
@@ -333,6 +350,28 @@ type SavedCliSession={id:string;cliId:'codex'|'claude-code';title:string;updated
 const sessionsOpen=ref(false)
 const sessionsLoading=ref(false)
 const sessionsError=ref('')
+type LocalReadingItem={text:string;evidence:string;category:'announced'|'remaining'|'uncertain'}
+type LocalReading={title:string;items:LocalReadingItem[]}
+const localReading=ref<LocalReading|null>(null)
+const readingBusy=ref(false)
+const readingError=ref('')
+const readingOutputId=ref('')
+function requestLocalReading(){
+ const item=activeThread.value
+ const output=lastOutput.value
+ if(!item||!output||bridge.status.value!=='connected'
+   ||bridge.selectedWindow.value?.id!==item.windowId)return
+ const raw=(output.raw??output.text).slice(-6000)
+ if(raw.trim().length<40){readingError.value='Sortie insuffisante pour la lecture locale.';return}
+ readingBusy.value=true;readingError.value='';localReading.value=null;readingOutputId.value=output.id
+ // Sensitive CLI content is ALREADY visible on this phone. Minimize further
+ // exposure by redacting obvious tokens before relaying it back to the host.
+ const excerpt=raw.replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s]+/gi,'[SECRET]')
+   .replace(/\bsk-[a-z0-9_-]{12,}\b/gi,'[SECRET]').slice(-5000)
+ if(!bridge.send({type:'terminal_interpret',terminalId:item.terminalId,excerpt})){
+  readingBusy.value=false;readingError.value='Demande non transmise au poste.'
+ }
+}
 const savedCliSessions=ref<SavedCliSession[]>([])
 let sessionListTimeout:ReturnType<typeof setTimeout>|null=null
 const canResumeSession=computed(()=>bridge.status.value==='connected'
@@ -583,6 +622,7 @@ function openThread(item:Thread){
  paletteOpen.value=false
  filesOpen.value=false
  sessionsOpen.value=false
+ localReading.value=null;readingError.value='';readingBusy.value=false;readingOutputId.value=''
  actionFilter.value=''
  if(import.meta.client) {
   const stored=localStorage.getItem('vb:terminal-context:'+item.key)
@@ -773,6 +813,30 @@ const off=bridge.onMessage((msg:WsMessage)=>{
       previewError.value=labels[reason]??reason
     }
     return
+ }
+ if(msg.type==='terminal_interpret_result' && readingBusy.value && activeThread.value
+   && msg.windowId===activeThread.value.windowId && msg.terminalId===activeThread.value.terminalId){
+   readingBusy.value=false
+   if(msg.ok===true && msg.readout && typeof msg.readout==='object'){
+     const value=msg.readout as Record<string,unknown>
+     const items=Array.isArray(value.items)?value.items:[]
+     localReading.value={title:typeof value.title==='string'?value.title.slice(0,100):'Lecture locale',
+       items:items.slice(0,6).flatMap(x=>{
+         if(!x||typeof x!=='object')return []
+         const v=x as Record<string,unknown>
+         if(typeof v.text!=='string'||typeof v.evidence!=='string')return []
+         return [{text:v.text.slice(0,190),evidence:v.evidence.slice(0,160),
+           category:v.category==='remaining'?'remaining':v.category==='uncertain'?'uncertain':'announced'}]
+       })}
+   }else{
+     const error=String(msg.error??'unknown')
+     readingError.value=error==='interpreter_not_enabled'
+       ?'Modèle local désactivé. Active devbridge.interpreterEnabled dans les paramètres Utilisateur VS Code WSL.'
+       :error==='model_path_missing'||error==='model_unavailable'
+       ?'Configure devbridge.interpreterModelPath avec un GGUF local valide.'
+       :'Lecture locale indisponible ('+error.slice(0,50)+').'
+   }
+   return
  }
  if(msg.type==='cli_sessions_result' && sessionsOpen.value && activeThread.value
    && msg.windowId===activeThread.value.windowId){
@@ -1407,6 +1471,18 @@ useHead({title:'DevBridge | Conversations'})
   font-size:10px;
   box-shadow:var(--shadow);
 }
+
+.mb-local-reading{margin:10px 0 0;padding:12px 0;border-top:1px solid var(--border)}
+.mb-local-reading-trigger{display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid var(--border-bright);font-size:10px;color:var(--accent);text-align:left}
+.mb-local-reading-trigger:disabled{opacity:.45}
+.mb-local-reading-trigger span{font-size:16px}
+.mb-local-reading-error{padding:10px 0;font-size:10px;color:var(--dot-amber);line-height:1.5}
+.mb-local-reading-card{padding:12px;margin-top:10px;border:1px solid var(--border-bright);background:var(--surface2);display:grid;gap:10px}
+.mb-local-reading-card strong{font-size:12px;font-weight:500}
+.mb-local-reading-card ul{list-style:none;margin:0;padding:0;display:grid;gap:11px}
+.mb-local-reading-card li{display:grid;gap:4px;font-size:11px;line-height:1.5}
+.mb-local-reading-card li span{color:var(--accent);font-size:9px;text-transform:uppercase}
+.mb-local-reading-card li small,.mb-local-reading-card>small{color:var(--text-mid);font-size:9px;overflow-wrap:anywhere}
 
 /* ViBridge V7: contextual quick commands and project browsing */
 .mb-quick-trigger{display:grid;place-items:center;flex:0 0 34px;height:38px;font-size:17px;color:var(--accent);border:1px solid var(--border-bright);background:var(--surface)}
