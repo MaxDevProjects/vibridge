@@ -20,7 +20,7 @@ export function routeTerminalEvent<T extends TerminalRouteRef>(
   message: TerminalEventRef,
   threads: T[],
 ): T | null {
-  if (!['output', 'ide_event', 'notification', 'command_execution'].includes(message.type)) return null
+  if (!['output', 'terminal_screen', 'ide_event', 'notification', 'command_execution'].includes(message.type)) return null
   const windowId = typeof message.windowId === 'string' ? message.windowId : ''
   const terminalId = typeof message.terminalId === 'string' && message.terminalId
     ? message.terminalId
