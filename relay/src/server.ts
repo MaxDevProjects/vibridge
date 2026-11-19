@@ -846,10 +846,25 @@ export function createRelayServer(options: RelayServerOptions) {
             exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined }
         })
         if (items.some(item => !item)) return
+        const updatedAt = typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now()
+        // Persist ONLY safe summary metadata so a phone that connects after the
+        // live event can recover the latest state. Never persist raw screens,
+        // command arguments, tool output or unfiltered final responses here.
+        const previous = store.getWorkspaceSnapshot(sessionId, ws.workspaceId)
+        const history = Array.isArray(previous?.activities) ? previous.activities : []
+        const activity = { windowId, terminalId, items, updatedAt }
+        const next = [...history.filter(entry => {
+          if (!entry || typeof entry !== 'object') return false
+          const prior = entry as Record<string, unknown>
+          return !(prior.windowId === windowId && prior.terminalId === terminalId)
+        }), activity]
+          .sort((a,b) => Number((b as Record<string,unknown>).updatedAt ?? 0)
+            - Number((a as Record<string,unknown>).updatedAt ?? 0))
+          .slice(0, 60)
+        store.upsertWorkspaceSnapshot(sessionId, ws.workspaceId, { activities: next, timestamp: updatedAt })
         sendWorkspaceEvent(sessionId, {
           type: 'activity_update', workspaceId: ws.workspaceId,
-          windowId, terminalId, items,
-          updatedAt: typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now(),
+          windowId, terminalId, items, updatedAt,
         })
         return
       }
