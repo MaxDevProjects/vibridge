@@ -277,7 +277,8 @@ export class IpcServer {
       }
 
       case 'chat_message': {
-        // AI → phone: relay to WS clients and trigger push
+        // AI → phone: always relay. A question mark alone is NOT proof
+        // that a CLI is blocked and must not produce an immediate push.
         const text = msg.text as string;
         const isQuestion = this.detectQuestion(text);
         const payload = {
@@ -291,7 +292,7 @@ export class IpcServer {
         };
         this.broadcast?.(payload);
         this.forward?.('ai_message', payload);
-        if (isQuestion) {
+        if (isQuestion && msg.requiresUserInput === true) {
           void this.push.send({
             title: 'DevBridge — Copilot asks',
             body: text.slice(0, 120),
