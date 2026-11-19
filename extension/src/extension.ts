@@ -14,6 +14,7 @@ import { ChatParticipant } from './chatParticipant';
 import { FileWatcher } from './fileWatcher';
 import { IdeReporter } from './ideReporter';
 import { TerminalScreenMirror } from './terminalScreenMirror';
+import { findCliSessions, isValidCliSessionId } from './cliSessionIndex';
 import { MirrorView } from './mirrorView';
 import { buildPairingDisplayUrl } from './pairingDisplay';
 
@@ -199,6 +200,46 @@ export function activate(context: vscode.ExtensionContext): void {
       () => reportCommand(msg, 'open_project', 'dispatched'),
       () => reportCommand(msg, 'open_project', 'rejected', 'open_project_failed'),
     );
+  });
+
+  // A session browser reads only local CLI metadata for THIS workspace.
+  // No file-system paths or transcript contents are sent to the phone.
+  ipc.on('cli_sessions_request', (msg: Record<string, unknown>) => {
+    if(msg.windowId!==windowId)return;
+    const requestId=typeof msg.request_id==='string'?msg.request_id:'';
+    if(!requestId)return;
+    const cwd=resolveWorkspaceCwd();
+    void (cwd ? findCliSessions(cwd) : Promise.resolve([])).then(
+      sessions=>ipc?.send({type:'cli_sessions_result',request_id:requestId,sessions}),
+      ()=>ipc?.send({type:'cli_sessions_result',request_id:requestId,sessions:[],error:'local_session_scan_failed'}),
+    );
+  });
+
+  // Resumption is a HOST-validated operation, not arbitrary remote shell text.
+  // The allowed session ID must appear in the host-side project index.
+  // Always start a new tracked terminal so we never send shell syntax into
+  // an already running interactive Codex/Claude conversation.
+  ipc.on('cli_resume', (msg: Record<string, unknown>) => {
+    if(msg.windowId!==windowId)return;
+    const sessionId=msg.sessionId;
+    const cliId=msg.cliId;
+    if(!isValidCliSessionId(sessionId) || (cliId!=='codex' && cliId!=='claude-code')){
+      reportCommand(msg,'cli_resume','rejected','invalid_session');
+      return;
+    }
+    const cwd=resolveWorkspaceCwd();
+    if(!cwd){reportCommand(msg,'cli_resume','rejected','workspace_missing');return;}
+    void findCliSessions(cwd).then(async sessions=>{
+      const owned=sessions.some(item=>item.id===sessionId&&item.cliId===cliId);
+      if(!owned){reportCommand(msg,'cli_resume','rejected','session_not_owned_by_workspace');return;}
+      const command=cliId==='codex' ? 'codex resume '+sessionId : 'claude --resume '+sessionId;
+      const terminal=await terminalMirror.create(cliId==='codex'?'Codex · Reprise':'Claude · Reprise',cwd);
+      terminal.sendText(command,true);
+      ipc?.send({type:'terminal_created',terminalName:terminal.name,terminalId:getTerminalId(terminal),
+        mirrorSession:terminalMirror.sessionFor(terminal)});
+      reportCommand(msg,'cli_resume','dispatched',undefined,terminal);
+      ideReporter.refresh();
+    }).catch(()=>reportCommand(msg,'cli_resume','rejected','session_resume_failed'));
   });
 
   // Handle start_cli from agent: open (or focus) the terminal and run the command
