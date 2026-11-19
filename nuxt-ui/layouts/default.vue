@@ -55,7 +55,7 @@
     <div class="vb-notification-actions" :class="{'vb-notification-actions-mobile':isMobileConversation}">
       <button type="button" class="vb-notification-bell" :aria-label="'Notifications (' + notificationHistory.length + ')'"
         :aria-expanded="notificationOpen" @click="notificationOpen=!notificationOpen;toast=null">
-        <span aria-hidden="true">♧</span>
+        <span aria-hidden="true">♢</span>
         <span v-if="unreadNotifications" class="vb-notification-count">{{ unreadNotifications > 9 ? '9+' : unreadNotifications }}</span>
       </button>
     </div>
@@ -83,7 +83,7 @@
     </section>
 
     <!-- Control permissions are enforced on the local agent, not in this UI. -->
-    <div v-if="!isSetupRoute && !isPairingDisplay && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe'"
+    <div v-if="!isSetupRoute && !isPairingDisplay && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe' && !isMobileConversation
       class="fixed left-4 right-4 bottom-4 z-40 p-3 text-xs"
       style="background:var(--surface);border:1px solid var(--border-bright);color:var(--text)"
       role="status">
@@ -110,7 +110,7 @@ const notificationHistory=ref<DisplayNotice[]>([])
 const unreadNotifications=ref(0)
 let toastDismissTimer:ReturnType<typeof setTimeout>|null=null
 let pendingNoticeTimer:ReturnType<typeof setTimeout>|null=null
-let previousText=''
+
 let sequence=0
 watch(notice, value=>{
   if(toastDismissTimer)clearTimeout(toastDismissTimer)
@@ -128,7 +128,7 @@ watch(notice, value=>{
   const show=()=>{if(!notificationOpen.value){toast.value=item;toastDismissTimer=setTimeout(()=>{if(toast.value?.id===item.id)toast.value=null},duration)}}
   if(item.status==='received')pendingNoticeTimer=setTimeout(show,450)
   else show()
-  previousText=item.text
+
 })
 watch(notificationOpen,open=>{if(open){unreadNotifications.value=0;toast.value=null}})
 onUnmounted(()=>{if(toastDismissTimer)clearTimeout(toastDismissTimer);if(pendingNoticeTimer)clearTimeout(pendingNoticeTimer)})
@@ -155,7 +155,7 @@ function toggleColorMode() {
 
 <style scoped>
 .vb-notification-actions{position:fixed;top:66px;right:14px;z-index:58}
-.vb-notification-actions-mobile{top:calc(10px + env(safe-area-inset-top))}
+.vb-notification-actions-mobile{top:calc(16px + env(safe-area-inset-top));right:70px}
 .vb-notification-bell{width:37px;height:37px;display:grid;place-items:center;position:relative;border:1px solid var(--border-bright);background:var(--surface);color:var(--text);font-size:22px;box-shadow:0 3px 15px rgba(0,0,0,.18)}
 .vb-notification-bell:focus-visible,.vb-small-toast button:focus-visible,.vb-notification-inbox button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .vb-notification-count{position:absolute;right:-5px;top:-7px;background:var(--dot-amber);border-radius:50%;color:var(--bg);font:600 10px/17px monospace;min-width:17px;padding:0 3px}
