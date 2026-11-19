@@ -301,7 +301,9 @@ export function createRelayServer(options: RelayServerOptions) {
     })
   })
 
-  app.post('/api/relay/pairing-code', requireSessionAuth(['agent']), (req, res) => {
+  // An already authorized device may explicitly invite a replacement device.
+  // The existing pair endpoint still rotates the single mobile credential.
+  app.post('/api/relay/pairing-code', requireSessionAuth(['agent', 'mobile']), (req, res) => {
     const { sessionId } = (req as Request & { claims: SessionClaims }).claims
     const pairingCode = store.renewPairingCode(sessionId)
     if (!pairingCode) {
