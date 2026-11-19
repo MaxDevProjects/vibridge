@@ -42,6 +42,20 @@
           <p>{{ t('emptyText') }}</p>
         </div>
       </div>
+      <div v-if="liveWindows.length" class="mb-create-section">
+        <button class="mb-create-monitor" type="button" :disabled="!canCreateMonitored" @click="requestNewMonitoredTerminal">
+          + {{ t('newMonitoredTerminal') }}
+        </button>
+        <div v-if="showNewTerminalPicker" class="mb-create-picker">
+          <select v-model="newTerminalWindowId" :aria-label="t('target')">
+            <option v-for="window in liveWindows" :key="window.id" :value="window.id">
+              {{ projectLabel(window) }} / {{ window.id.slice(0,5) }}
+            </option>
+          </select>
+          <button @click="createMonitoredTerminal(newTerminalWindowId)">{{ t('newTerminal') }}</button>
+        </div>
+        <small v-if="!canCreateMonitored">{{ t('monitorControlNeeded') }}</small>
+      </div>
       <button class="mb-add" @click="showProjectPicker">+ {{ t('project') }}</button>
     </section>
 
@@ -60,6 +74,14 @@
       <div v-if="activeThread.connected && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
         {{ t('shellIntegrationMissing') }}
       </div>
+      <section v-if="activeThread.mirrorSession" class="mb-live-screen">
+        <header>
+          <span><span class="mb-live-dot"></span>{{ t('liveTerminal') }}</span>
+          <span>{{ activeMirrorScreen ? t('liveScreenReady') : t('liveScreenPending') }}</span>
+        </header>
+        <pre v-if="activeMirrorScreen">{{ activeMirrorScreen.text }}</pre>
+        <p v-else>{{ t('liveScreenPending') }}</p>
+      </section>
       <div class="mb-messages" ref="scroller" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
@@ -97,7 +119,7 @@
             <option v-if="!selectedTerminalAvailable" :value="activeThread.key" disabled>{{ activeThread.label }} ({{ t('terminalMissingShort') }})</option>
             <option v-for="thread in windowThreads" :key="thread.key" :value="thread.key">{{ thread.label }}</option>
           </select>
-          <button v-if="activeThread.connected" :title="t('newTerminal')" @click="createTerminal">+</button>
+          <button :disabled="!canCreateMonitored" :title="t('newMonitoredTerminal')" @click="requestNewMonitoredTerminal">+</button>
         </div>
         <div class="mb-type-row">
           <textarea v-model="draft" :placeholder="t('message')" rows="1" :aria-label="t('message')" @keydown.enter.exact.prevent="sendInstruction" />
@@ -107,6 +129,10 @@
           <span>{{ sendBlockReason }}</span>
           <button v-if="bridge.status.value==='connected'" type="button" @click="refreshControlStatus">Actualiser</button>
         </div>
+        <button v-if="activeThread.mirrorSession && !selectedTerminalAvailable && canCreateMonitored"
+          type="button" class="mb-reselect-terminal" @click="reopenMirroredTerminal">
+          {{ t('reopenMonitoredTerminal') }}
+        </button>
         <button v-if="!selectedTerminalAvailable" type="button" class="mb-reselect-terminal" @click="activeThread=null">
           {{ t('reselectTerminal') }}
         </button>
@@ -196,7 +222,7 @@ import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
-type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; windowShort: string; connected: boolean; state: string }
+type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; mirrorSession?: string; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
 const route = useRoute()
@@ -226,9 +252,15 @@ const previewWindowId = ref('')
 let previewTimeout: ReturnType<typeof setTimeout> | null = null
 const availableProjects = ref<Project[]>([])
 const pendingTerminalId = ref('')
+const liveScreens = ref<Record<string,{text:string;ts:number}>>({})
+const showNewTerminalPicker = ref(false)
+const newTerminalWindowId = ref('')
+const liveWindows = computed(()=>bridge.windows.value.filter(window=>window.connected))
+const canCreateMonitored = computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && !bridge.projectTransition.value)
+const activeMirrorScreen = computed(()=>activeThread.value ? liveScreens.value[activeThread.value.key] ?? null : null)
 const dic: Record<string,Record<string,string>> = {
-  fr: {conversations:'Conversations',connectedTo:'POSTE DISTANT',windows:'fenêtre(s)',connected:'Connecté',offline:'Hors ligne',connecting:'Connexion…',search:'Rechercher une conversation…',filter:'Filtrer',all:'Tout',running:'En cours',attention:'Besoin de moi',finished:'Terminé',emptyTitle:'Aucun terminal disponible',emptyText:'Ouvre un projet dans VS Code, puis sélectionne son terminal ici.',project:'Choisir un projet',projects:'Projets et fenêtres',otherProjects:'Autres projets',noProjects:'Aucun projet disponible',back:'Retour',menu:'Menu',actions:'Actions',window:'Fenêtre',offlineWarning:'Connexion interrompue. Aucune instruction ne sera envoyée.',observeWarning:'Mode observation. Le contrôle distant est désactivé sur ton ordinateur.',readyChat:'Terminal prêt à être consulté',chatDescription:'Les sorties observées apparaîtront ici. Les commandes sont exécutées sur ton ordinateur.',outputInProgress:'Sortie en cours de réception',unreadableOutput:'Sortie technique sans texte lisible.',showRaw:'Afficher la sortie reçue',hideRaw:'Masquer la sortie reçue',observedNotVerified:'Sortie observée, résultat CLI non vérifié',preview:'Voir la preview',latest:'Derniers messages',target:'Terminal',newTerminal:'Nouveau terminal',message:'Nouvelle instruction…',send:'Envoyer',notAChatbot:'Transmission vers le vrai terminal VS Code',projectExplain:'La sélection ne rouvre pas les dossiers. Les commandes vont uniquement à la fenêtre choisie.',switchProject:'Changer de fenêtre',launch:'Lancer',closeWindowNotSupported:'Pour fermer une fenêtre, autorise explicitement VIBRIDGE_ALLOW_WINDOW_CLOSE sur ton PC.',closeWindow:'Fermer la fenêtre VS Code',closeWindowConfirm:'La fenêtre sélectionnée sera fermée sur ton ordinateur. VS Code peut demander de sauvegarder les fichiers non enregistrés. Les processus indépendants peuvent continuer.',requestClose:'Demander la fermeture',language:'Langue',disconnectDevice:'Déconnecter ce téléphone',revoke:'Couper l’accès distant',revokeExplain:'La révocation invalide les jetons relay. Un nouvel appairage sera nécessaire.',revokeConfirm:'Couper cette session pour tous les appareils associés ? Le terminal local peut continuer à fonctionner.',revokeFailed:'Impossible de confirmer la révocation. Aucun succès n’est annoncé. Réessaie une fois connecté.',revoking:'Révocation…',confirmRevoke:'Révoquer la session',cancel:'Annuler',instructionSent:'Instruction envoyée. En attente de confirmation.',terminalCreated:'Terminal créé dans VS Code.',launchDispatched:'Demande de lancement envoyée. En attente de confirmation par VS Code.',attentionPossible:'Intervention possible. Vérifie la sortie du terminal.',commandStarted:'Exécution shell détectée.',commandFinished:'Fin de commande shell détectée (succès CLI non confirmé).',invalidContext:'Terminal indisponible, rien n’a été envoyé.',shellIntegrationMissing:'Shell Integration non détectée au dernier relevé. Certaines sorties peuvent manquer.',terminalMissingShort:'indisponible',reselectTerminal:'Revenir aux terminaux disponibles' },
-  en: {conversations:'Conversations',connectedTo:'REMOTE COMPUTER',windows:'window(s)',connected:'Connected',offline:'Offline',connecting:'Connecting…',search:'Search conversations…',filter:'Filter',all:'All',running:'Running',attention:'Needs me',finished:'Finished',emptyTitle:'No terminals available',emptyText:'Open a project in VS Code to display its real terminals here.',project:'Choose a project',projects:'Projects and windows',otherProjects:'Other projects',noProjects:'No projects available',back:'Back',menu:'Menu',actions:'Actions',window:'Window',offlineWarning:'Connection lost. No instruction will be sent.',observeWarning:'Observe mode. Remote control is disabled on your computer.',readyChat:'Terminal available',chatDescription:'Observed output appears here. Commands run on your computer.',outputInProgress:'Receiving output',unreadableOutput:'Technical output without readable text.',showRaw:'Show received output',hideRaw:'Hide received output',observedNotVerified:'Output observed, CLI result not verified',preview:'Open preview',latest:'Latest messages',target:'Terminal',newTerminal:'New terminal',message:'New instruction…',send:'Send',notAChatbot:'Sending to the real VS Code terminal',projectExplain:'Selecting a window does not reopen folders. Commands target only the selected window.',switchProject:'Change window',launch:'Launch',closeWindowNotSupported:'Enable VIBRIDGE_ALLOW_WINDOW_CLOSE on your computer to close a window remotely.',closeWindow:'Close VS Code window',closeWindowConfirm:'Close the selected VS Code window on your computer? VS Code may ask to save unsaved files. Independent processes may keep running.',requestClose:'Request close',language:'Language',disconnectDevice:'Sign out of this phone',revoke:'Revoke remote access',revokeExplain:'Revocation invalidates relay tokens. Pair again from VS Code to reconnect.',revokeConfirm:'Revoke this session for all paired clients? Local terminal processes may continue.',revokeFailed:'Revocation could not be confirmed. Access may still be active.',revoking:'Revoking…',confirmRevoke:'Revoke session',cancel:'Cancel',instructionSent:'Instruction sent. Awaiting confirmation.',terminalCreated:'Terminal created in VS Code.',launchDispatched:'Launch requested. Awaiting confirmation from VS Code.',attentionPossible:'Intervention possible. Check terminal output.',commandStarted:'Shell execution observed.',commandFinished:'Shell command finished. CLI success unconfirmed.',invalidContext:'Terminal unavailable. Nothing sent.',shellIntegrationMissing:'Shell Integration not detected in the latest snapshot. Some output may be missing.',terminalMissingShort:'unavailable',reselectTerminal:'Back to available terminals' }
+  fr: {conversations:'Conversations',connectedTo:'POSTE DISTANT',windows:'fenêtre(s)',connected:'Connecté',offline:'Hors ligne',connecting:'Connexion…',search:'Rechercher une conversation…',filter:'Filtrer',all:'Tout',running:'En cours',attention:'Besoin de moi',finished:'Terminé',emptyTitle:'Aucun terminal disponible',emptyText:'Ouvre un projet dans VS Code, puis sélectionne son terminal ici.',project:'Choisir un projet',projects:'Projets et fenêtres',otherProjects:'Autres projets',noProjects:'Aucun projet disponible',back:'Retour',menu:'Menu',actions:'Actions',window:'Fenêtre',offlineWarning:'Connexion interrompue. Aucune instruction ne sera envoyée.',observeWarning:'Mode observation. Le contrôle distant est désactivé sur ton ordinateur.',readyChat:'Terminal prêt à être consulté',chatDescription:'Les sorties observées apparaîtront ici. Les commandes sont exécutées sur ton ordinateur.',outputInProgress:'Sortie en cours de réception',unreadableOutput:'Sortie technique sans texte lisible.',showRaw:'Afficher la sortie reçue',hideRaw:'Masquer la sortie reçue',observedNotVerified:'Sortie observée, résultat CLI non vérifié',preview:'Voir la preview',latest:'Derniers messages',target:'Terminal',newTerminal:'Nouveau terminal',message:'Nouvelle instruction…',send:'Envoyer',notAChatbot:'Transmission vers le vrai terminal VS Code',projectExplain:'La sélection ne rouvre pas les dossiers. Les commandes vont uniquement à la fenêtre choisie.',switchProject:'Changer de fenêtre',launch:'Lancer',closeWindowNotSupported:'Pour fermer une fenêtre, autorise explicitement VIBRIDGE_ALLOW_WINDOW_CLOSE sur ton PC.',closeWindow:'Fermer la fenêtre VS Code',closeWindowConfirm:'La fenêtre sélectionnée sera fermée sur ton ordinateur. VS Code peut demander de sauvegarder les fichiers non enregistrés. Les processus indépendants peuvent continuer.',requestClose:'Demander la fermeture',language:'Langue',disconnectDevice:'Déconnecter ce téléphone',revoke:'Couper l’accès distant',revokeExplain:'La révocation invalide les jetons relay. Un nouvel appairage sera nécessaire.',revokeConfirm:'Couper cette session pour tous les appareils associés ? Le terminal local peut continuer à fonctionner.',revokeFailed:'Impossible de confirmer la révocation. Aucun succès n’est annoncé. Réessaie une fois connecté.',revoking:'Révocation…',confirmRevoke:'Révoquer la session',cancel:'Annuler',instructionSent:'Instruction envoyée. En attente de confirmation.',terminalCreated:'Terminal créé dans VS Code.',launchDispatched:'Demande de lancement envoyée. En attente de confirmation par VS Code.',attentionPossible:'Intervention possible. Vérifie la sortie du terminal.',commandStarted:'Exécution shell détectée.',commandFinished:'Fin de commande shell détectée (succès CLI non confirmé).',invalidContext:'Terminal indisponible, rien n’a été envoyé.',shellIntegrationMissing:'Shell Integration non détectée au dernier relevé. Certaines sorties peuvent manquer.',terminalMissingShort:'indisponible',reselectTerminal:'Revenir aux terminaux disponibles',newMonitoredTerminal:'Nouveau terminal suivi',monitorControlNeeded:'Le mode contrôle doit être disponible sur le PC.',liveTerminal:'Écran du terminal en direct',liveScreenReady:'Synchronisé',liveScreenPending:'En attente du premier écran du PC…',reopenMonitoredTerminal:'Rouvrir la session suivie',reopenAmbiguous:'Fenêtre indisponible ou ambiguë. Choisis une fenêtre active avant de rouvrir cette session.',reopenRequested:'Demande de réouverture envoyée. En attente de confirmation.' },
+  en: {conversations:'Conversations',connectedTo:'REMOTE COMPUTER',windows:'window(s)',connected:'Connected',offline:'Offline',connecting:'Connecting…',search:'Search conversations…',filter:'Filter',all:'All',running:'Running',attention:'Needs me',finished:'Finished',emptyTitle:'No terminals available',emptyText:'Open a project in VS Code to display its real terminals here.',project:'Choose a project',projects:'Projects and windows',otherProjects:'Other projects',noProjects:'No projects available',back:'Back',menu:'Menu',actions:'Actions',window:'Window',offlineWarning:'Connection lost. No instruction will be sent.',observeWarning:'Observe mode. Remote control is disabled on your computer.',readyChat:'Terminal available',chatDescription:'Observed output appears here. Commands run on your computer.',outputInProgress:'Receiving output',unreadableOutput:'Technical output without readable text.',showRaw:'Show received output',hideRaw:'Hide received output',observedNotVerified:'Output observed, CLI result not verified',preview:'Open preview',latest:'Latest messages',target:'Terminal',newTerminal:'New terminal',message:'New instruction…',send:'Send',notAChatbot:'Sending to the real VS Code terminal',projectExplain:'Selecting a window does not reopen folders. Commands target only the selected window.',switchProject:'Change window',launch:'Launch',closeWindowNotSupported:'Enable VIBRIDGE_ALLOW_WINDOW_CLOSE on your computer to close a window remotely.',closeWindow:'Close VS Code window',closeWindowConfirm:'Close the selected VS Code window on your computer? VS Code may ask to save unsaved files. Independent processes may keep running.',requestClose:'Request close',language:'Language',disconnectDevice:'Sign out of this phone',revoke:'Revoke remote access',revokeExplain:'Revocation invalidates relay tokens. Pair again from VS Code to reconnect.',revokeConfirm:'Revoke this session for all paired clients? Local terminal processes may continue.',revokeFailed:'Revocation could not be confirmed. Access may still be active.',revoking:'Revoking…',confirmRevoke:'Revoke session',cancel:'Cancel',instructionSent:'Instruction sent. Awaiting confirmation.',terminalCreated:'Terminal created in VS Code.',launchDispatched:'Launch requested. Awaiting confirmation from VS Code.',attentionPossible:'Intervention possible. Check terminal output.',commandStarted:'Shell execution observed.',commandFinished:'Shell command finished. CLI success unconfirmed.',invalidContext:'Terminal unavailable. Nothing sent.',shellIntegrationMissing:'Shell Integration not detected in the latest snapshot. Some output may be missing.',terminalMissingShort:'unavailable',reselectTerminal:'Back to available terminals',newMonitoredTerminal:'New monitored terminal',monitorControlNeeded:'Remote control must be enabled on the PC.',liveTerminal:'Live terminal screen',liveScreenReady:'Synced',liveScreenPending:'Waiting for the first screen from the PC…',reopenMonitoredTerminal:'Reopen monitored session',reopenAmbiguous:'Window is missing or ambiguous. Select an active window before reopening.',reopenRequested:'Reopen requested. Awaiting confirmation.' }
 }
 const t=(key:string)=>dic[lang.value]?.[key] ?? key
 const connectionText=computed(()=> t(bridge.status.value === 'connected' ? 'connected' : bridge.status.value === 'connecting' ? 'connecting' : 'offline'))
@@ -240,7 +272,7 @@ const allThreads=computed<Thread[]>(()=>bridge.windows.value.flatMap(w=>{
  return (w.ideState?.terminals ?? []).filter(term=>Boolean(term.id)).map(term=>({
   key:terminalConversationKey(bridge.relaySessionId.value || bridge.activeUrl.value,bridge.activeWorkspaceId.value,w.id,String(term.id)),
   windowId:w.id, terminalId:String(term.id), label:term.name,project,projectPath,
-  processId:term.processId,shellIntegration:term.shellIntegration,windowShort:w.id.slice(0,5),
+  processId:term.processId,shellIntegration:term.shellIntegration,mirrorSession:term.mirrorSession,windowShort:w.id.slice(0,5),
   connected:Boolean(w.connected),state:w.activity?.terminalId === term.id ? (w.activity?.state ?? 'idle') : 'idle'
  }))
 }))
@@ -371,7 +403,36 @@ function sendInstruction(){
  addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('instructionSent')})
  draft.value=''
 }
-function createTerminal(){if(!canSend.value)return;const names=new Set(windowThreads.value.map(t=>t.label));let i=1;while(names.has('DevBridge '+i))i++;const sent=bridge.send({type:'create_terminal',terminalName:'DevBridge '+i});if(sent)closeSheets()}
+function createMonitoredTerminal(windowId:string){
+ if(!canCreateMonitored.value)return
+ const selected=liveWindows.value.find(window=>window.id===windowId)
+ if(!selected)return
+ bridge.selectWindow(selected.id)
+ const names=new Set((selected.ideState?.terminals??[]).map(term=>term.name))
+ let i=1
+ while(names.has('ViBridge suivi '+i))i++
+ const sent=bridge.send({type:'create_terminal',terminalName:'ViBridge suivi '+i,mirror:true})
+ if(sent){showNewTerminalPicker.value=false;pendingTerminalId.value='';closeSheets()}
+}
+function requestNewMonitoredTerminal(){
+ if(!canCreateMonitored.value || !liveWindows.value.length)return
+ if(liveWindows.value.length===1){createMonitoredTerminal(liveWindows.value[0]!.id);return}
+ newTerminalWindowId.value=liveWindows.value.find(window=>window.id===bridge.activeWindowId.value)?.id ?? liveWindows.value[0]!.id
+ showNewTerminalPicker.value=true
+ if(activeThread.value)activeThread.value=null
+}
+function reopenMirroredTerminal(){
+ const item=activeThread.value
+ if(!item?.mirrorSession || !canCreateMonitored.value)return
+ const candidates=liveWindows.value.filter(window=>
+  window.id===item.windowId || (window.workspaceFolders[0]??'')===item.projectPath)
+ if(candidates.length!==1){addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('reopenAmbiguous')});return}
+ bridge.selectWindow(candidates[0]!.id)
+ if(bridge.send({type:'reopen_terminal',session:item.mirrorSession})){
+  pendingTerminalId.value=''
+  addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('reopenRequested')})
+ }
+}
 function startCli(cli:string){const sent=bridge.send({type:'start_cli',cliId:cli});if(sent){if(activeThread.value)addEntry(activeThread.value.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('launchDispatched')});closeSheets()}}
 function openPreview(){
   closeSheets()
@@ -459,6 +520,10 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
  const thread=routeTerminalEvent(msg,allThreads.value)
  if(!thread)return
  const key=thread.key
+ if(msg.type==='terminal_screen' && thread.mirrorSession && typeof msg.text==='string'){
+  liveScreens.value={...liveScreens.value,[key]:{text:msg.text,ts:Date.now()}}
+  return
+ }
  loadLog(key)
  if(msg.type==='output' && typeof msg.text==='string'){
   const tool=String(msg.tool??'')
@@ -671,6 +736,17 @@ useHead({title:'DevBridge | Conversations'})
 .mb-send-block{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;font-size:10px;line-height:1.5;color:var(--dot-amber);padding:8px 11px;border:1px solid var(--border)}
 .mb-send-block button{flex-shrink:0;text-decoration:underline;color:var(--text);font-size:10px}
 .mb-reselect-terminal{display:block;margin:10px auto 0;padding:9px 12px;border:1px solid var(--border-bright);color:var(--text);font-size:11px;letter-spacing:.04em}
+.mb-live-screen{margin:10px 15px;border:1px solid var(--border-bright);background:var(--surface);flex-shrink:0}
+.mb-live-screen header{display:flex;justify-content:space-between;gap:6px;padding:9px 12px;border-bottom:1px solid var(--border);font-size:10px;letter-spacing:.04em;color:var(--text-mid)}
+.mb-live-screen pre{margin:0;white-space:pre;overflow:auto;max-height:min(34dvh,340px);padding:12px;font-size:11px;line-height:1.45;color:var(--text);font-family:monospace}
+.mb-live-screen p{padding:12px;font-size:11px;color:var(--text-mid)}
+.mb-live-dot{display:inline-block;width:6px;height:6px;background:var(--dot-green);border-radius:50%;margin-right:6px}
+.mb-create-section{margin:14px 20px 80px}
+.mb-create-monitor,.mb-create-picker button{padding:10px 14px;border:1px solid var(--border-bright);color:var(--text);width:100%;text-align:left;background:var(--surface);font-size:11px}
+.mb-create-monitor:disabled{opacity:.5}
+.mb-create-picker{display:flex;gap:8px;margin-top:8px}
+.mb-create-picker select{min-width:0;flex:1;color:var(--text);background:var(--surface);border:1px solid var(--border);font-size:11px;padding:8px}
+.mb-create-picker button{width:auto}
 /* Search, filters, grouped conversations */
 .mb-archive-toggle{width:calc(100% - 38px);margin:12px 19px;padding:12px 14px;display:block;text-align:left;border:1px solid var(--border-bright);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mid);background:var(--surface)}
 .mb-archive-toggle:hover{color:var(--text);border-color:var(--text-mid)}
