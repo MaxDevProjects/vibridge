@@ -55,6 +55,7 @@ export interface WorkspaceSnapshot {
   ideState?: unknown
   windows?: unknown[]
   focusedWindowId?: string
+  activities?: unknown[]
   previewUrl?: string | null
   fileTree?: unknown
   control?: unknown
