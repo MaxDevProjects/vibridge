@@ -152,15 +152,16 @@
             </button>
             <ClientOnly>
               <button
-                :disabled="!pairingQrSvg"
+                :disabled="pairingQrBusy || !bridge.token.value"
                 class="text-[10px] uppercase tracking-widest py-2 transition-colors disabled:opacity-30"
                 style="border:1px solid var(--border);color:var(--text);background:none"
-                @click="showQrModal = true"
+                @click="openPairingModal"
               >
                 QR ▣
               </button>
             </ClientOnly>
           </div>
+          <p v-if="pairingDisplayError" role="alert" class="px-7 mt-3 text-[11px]" style="color:var(--dot-red)">{{ pairingDisplayError }}</p>
           <!-- Pair form — only code field inline -->
           <div v-if="bridge.status.value === 'disconnected' && !bridge.token.value" class="px-7 pb-6 mt-4 space-y-2">
             <input v-model="pairCode" placeholder="CODE D'APPAIRAGE" class="w-full text-[11px] px-3 py-2 text-text outline-none uppercase tracking-widest" style="background:var(--surface);border:1px solid var(--border)" />
@@ -339,10 +340,10 @@
               </button>
               <ClientOnly>
                 <button
-                  :disabled="!pairingQrSvg"
+                  :disabled="pairingQrBusy || !bridge.token.value"
                   class="text-[10px] uppercase tracking-[0.1em] py-2.5 disabled:opacity-30"
                   style="background:var(--bg);color:var(--text)"
-                  @click="showQrModal = true"
+                  @click="openPairingModal"
                 >
                   QR ▣
                 </button>
@@ -549,7 +550,7 @@
         <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid var(--border)">
           <div>
             <p class="text-[9px] uppercase tracking-[0.2em]" style="color:var(--muted)">Pairing QR</p>
-            <p class="text-sm mt-0.5">Scannez depuis le mobile pour lancer l'appairage.</p>
+            <p class="text-sm mt-0.5">Scanne ce QR depuis le téléphone à connecter.</p>
           </div>
           <button
             class="shrink-0 w-9 h-9 text-sm"
@@ -599,6 +600,7 @@
             <p>Adresse : <span class="font-mono" style="color:var(--text)">{{ currentAgentBaseUrl() || agentHost }}</span></p>
             <p v-if="currentPairingCode">Code : <span class="font-mono" style="color:var(--text)">{{ currentPairingCode }}</span></p>
             <p>Mode : <span style="color:var(--text)">{{ tunnelModeLabel }}</span></p>
+            <p v-if="bridge.mode.value === 'relay'">Attention : connecter un autre téléphone remplace la connexion mobile précédente.</p>
           </div>
         </div>
       </div>
@@ -912,6 +914,9 @@ const pairCode  = ref('')
 const pairing   = ref(false)
 const pairError = ref('')
 const currentPairingCode = ref('')
+const freshRelayPairingUrl = ref('')
+const pairingQrBusy = ref(false)
+const pairingDisplayError = ref('')
 const showQrModal = ref(false)
 const preIssuedWorkspace = ref('')
 
@@ -920,6 +925,9 @@ function queryValue(value: string | string[] | undefined): string {
 }
 
 const pairingUrl = computed(() => {
+  if (bridge.mode.value === 'relay' && freshRelayPairingUrl.value) {
+    return freshRelayPairingUrl.value
+  }
   const relaySession = relayState.value
   const effectiveCode = relaySession?.pairingCode || currentPairingCode.value
   if (!clientReady.value || (!effectiveCode && !preIssuedToken.value)) return ''
@@ -1279,15 +1287,45 @@ async function doPair() {
     await loadPairingCode()
   }
 }
-async function refreshPairing() {
-  if (relayState.value?.pairingCode) {
-    currentPairingCode.value = relayState.value.pairingCode
-    return
+async function openPairingModal() {
+  await refreshPairing()
+  if (pairingQrSvg.value && !pairingDisplayError.value) {
+    showQrModal.value = true
   }
-  if (bridge.status.value === 'connected' && bridge.mode.value === 'local') {
-    bridge.send({ type: 'get_pairing_code' })
-  } else {
-    await loadPairingCode()
+}
+
+async function refreshPairing() {
+  if (pairingQrBusy.value) return
+  pairingQrBusy.value = true
+  pairingDisplayError.value = ''
+  try {
+    if (bridge.mode.value === 'relay') {
+      const relayBaseUrl = bridge.relayUrl.value || configuredRelayUrl.value
+      const token = bridge.token.value
+      if (!relayBaseUrl || !token) throw new Error('relay not connected')
+      // Explicit user action only. The relay never publishes this code in snapshots.
+      const response = await fetch(`${relayBaseUrl.replace(/\/$/, '')}/api/relay/pairing-code`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error('pairing code unavailable')
+      const payload = await response.json() as { qrUrl?: string; pairingCode?: string }
+      if (!payload.qrUrl || !/^\d{6}$/.test(payload.pairingCode || '')) {
+        throw new Error('invalid pairing response')
+      }
+      freshRelayPairingUrl.value = payload.qrUrl
+      currentPairingCode.value = payload.pairingCode
+    } else {
+      freshRelayPairingUrl.value = ''
+      await loadPairingCode()
+      if (!pairingQrSvg.value) throw new Error('pairing invitation unavailable')
+    }
+  } catch {
+    freshRelayPairingUrl.value = ''
+    currentPairingCode.value = ''
+    pairingDisplayError.value = 'Impossible de générer un QR. Vérifie la connexion à l’agent ou au relais.'
+  } finally {
+    pairingQrBusy.value = false
   }
 }
 

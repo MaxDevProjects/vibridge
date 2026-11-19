@@ -77,7 +77,7 @@ onMounted(() => {
 
   // First launch: no stored session + not scanning a QR → redirect to onboarding
   const hasToken = Boolean(localStorage.getItem('vb:token'))
-  const isSetup = route.path.startsWith('/setup') || route.path.startsWith('/settings')
+  const isSetup = route.path.startsWith('/setup') || route.path.startsWith('/settings') || route.path === '/pairing/display'
   const relayFlag = typeof route.query.relay === 'string' ? route.query.relay.trim() : ''
   const relaySessionId = typeof route.query.sessionId === 'string' ? route.query.sessionId.trim() : ''
   const relayCode = typeof route.query.code === 'string' ? route.query.code.trim() : ''

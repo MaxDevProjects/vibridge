@@ -14,6 +14,7 @@ import { ChatParticipant } from './chatParticipant';
 import { FileWatcher } from './fileWatcher';
 import { IdeReporter } from './ideReporter';
 import { MirrorView } from './mirrorView';
+import { buildPairingDisplayUrl } from './pairingDisplay';
 
 const execAsync = promisify(exec);
 
@@ -357,39 +358,32 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage('DevBridge: agent not connected or no pairing code available.');
         return;
       }
-      const { code, qrUrl: relayQrUrl, localQrUrl } = result;
-      const config = vscode.workspace.getConfiguration('devbridge');
-      const publicPwaUrl: string = (config.get<string>('pwaUrl') ?? '').trim().replace(/\/$/, '');
-      const workspaceName = resolveWorkspaceName();
-
-      // Priority: relay session QR in public mode → local WiFi QR → legacy fallback
-      let pwaUrl: string;
-      if (publicPwaUrl && relayQrUrl) {
-        pwaUrl = relayQrUrl;
-      } else if (localQrUrl) {
-        pwaUrl = localQrUrl;
-      } else if (relayQrUrl) {
-        pwaUrl = relayQrUrl;
-      } else if (publicPwaUrl) {
-        pwaUrl = `${publicPwaUrl}/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
-      } else {
-        // Legacy fallback — agent too old to send localQrUrl
-        pwaUrl = `http://devbridge.local:8080/?token=${encodeURIComponent(code)}&workspace=${encodeURIComponent(workspaceName)}`;
+      // The agent refreshes the relay invitation when asked. Prefer it
+      // whenever available: the local invitation only works on the LAN.
+      const invitationUrl = result.qrUrl || result.localQrUrl;
+      if (!invitationUrl) {
+        void vscode.window.showWarningMessage('ViBridge: aucune invitation valide fournie par l’agent. Vérifie sa connexion et sa version.');
+        return;
       }
 
-      // Keep pairing secrets on the user's own devices. Never send the URL to a QR CDN.
-      const panel = vscode.window.createWebviewPanel(
-        'devbridgeQR', 'DevBridge - Secure Pairing', vscode.ViewColumn.One, { enableScripts: false }
-      );
-      const escapeHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-      panel.webview.html = `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;padding:40px;gap:22px">
-        <h2 style="margin:0">VibeBridge - Secure pairing</h2>
-        <p>Le QR externe est désactivé pour protéger les secrets d'appairage. Ouvre ce lien sur ton téléphone.</p>
-        <code style="overflow-wrap:anywhere;max-width:500px;user-select:all">${escapeHtml(pwaUrl)}</code>
-        <p>Code : <strong>${escapeHtml(code)}</strong></p>
-      </body></html>`;
-      await vscode.env.clipboard.writeText(pwaUrl);
-      void vscode.window.showInformationMessage('Lien d’appairage copié. Colle-le sur ton téléphone pour te connecter.');
+      const displayUrl = buildPairingDisplayUrl(invitationUrl);
+      if (!displayUrl) {
+        void vscode.window.showErrorMessage('ViBridge: l’URL d’appairage fournie par l’agent est invalide.');
+        return;
+      }
+
+      // Open a dedicated, non-consuming QR display in the system browser.
+      // This avoids VS Code webview CSP limitations and QR services receiving secrets.
+      try {
+        const opened = await vscode.env.openExternal(vscode.Uri.parse(displayUrl));
+        if (!opened) {
+          await vscode.env.clipboard.writeText(invitationUrl);
+          void vscode.window.showWarningMessage('ViBridge: navigateur indisponible. Invitation copiée, à ouvrir uniquement sur le téléphone.');
+        }
+      } catch {
+        await vscode.env.clipboard.writeText(invitationUrl);
+        void vscode.window.showWarningMessage('ViBridge: ouverture du navigateur impossible. Invitation copiée pour le téléphone.');
+      }
     })
   );
 
