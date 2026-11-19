@@ -11,6 +11,7 @@ import type { MessageQueue, OutputPayload } from './queue';
 import type { PushService } from './push';
 import type { AuthService } from './auth';
 import type { CliRegistry } from './cliRegistry';
+import { ActivityEngine, type ActivitySnapshot } from './activity/engine';
 
 // Matches http://localhost:PORT or http://127.0.0.1:PORT with optional path, ignoring ANSI.
 const DEV_SERVER_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?(?:\/[^\s\x1b]*)*/;
@@ -38,6 +39,14 @@ export class IpcServer {
   private projectsParentDir = '';
   broadcast?: (data: unknown) => void;
   forward?: (type: string, payload?: Record<string, unknown>) => void;
+  private readonly activity = new ActivityEngine(update => {
+    this.broadcast?.({ type:'activity_update', ...update });
+    this.forward?.('activity_update', { ...update });
+  });
+
+  getActivitySnapshot(): ActivitySnapshot[] {
+    return this.activity.snapshot();
+  }
 
   constructor(
     private socketPath: string,
@@ -323,6 +332,8 @@ export class IpcServer {
           kind: msg.kind,
           terminal: msg.terminal,
           commandLine: msg.commandLine,
+          executionId: msg.executionId,
+          exitCode: msg.exitCode,
           terminalId: msg.terminalId,
           windowId,
           activeFile: msg.activeFile,
@@ -347,6 +358,8 @@ export class IpcServer {
         }
         this.broadcast?.(payload);
         this.forward?.('ide_event', payload);
+        if (msg.kind === 'terminal_command_started') this.activity.started(payload);
+        if (msg.kind === 'terminal_command_finished') this.activity.finished(payload);
         break;
       }
       case 'command_execution': {
@@ -387,6 +400,7 @@ export class IpcServer {
         const frame = { text, terminalId, windowId, ts: typeof msg.ts === 'number' ? msg.ts : Date.now() };
         this.broadcast?.({ type: 'terminal_screen', ...frame });
         this.forward?.('terminal_screen', frame);
+        this.activity.output(frame, 'screen');
         break;
       }
       case 'terminal_output': {
@@ -402,6 +416,7 @@ export class IpcServer {
           data: { terminalId, terminalName, windowId },
         };
         this.queue.emit(payload);
+        this.activity.output({ windowId, terminalId }, 'output');
 
         // Purely heuristic: notify that intervention *may* be required.
         // Never automatically answer a trust/approval prompt.
@@ -432,6 +447,7 @@ export class IpcServer {
           };
           this.broadcast?.(notification);
           this.forward?.('notification', notification);
+          this.activity.possibleQuestion({ windowId, terminalId });
           void this.push.send({
             title: 'VibeBridge - intervention possible',
             body: 'Vérifie le terminal ' + (terminalName || 'actif') + ' depuis VibeBridge.',
@@ -483,6 +499,7 @@ export class IpcServer {
         const payload = { type: 'terminal_closed', terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
         this.broadcast?.(payload);
         this.forward?.('terminal_closed', payload);
+        this.activity.closed({ windowId, terminalId: msg.terminalId });
         break;
       }
       case 'file_changed': {

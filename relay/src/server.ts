@@ -820,6 +820,55 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
+      // The activity engine sends only bounded, generic metadata. Deliver
+      // updates live, without inserting them into the raw message history.
+      // The latest safe state is also included in agent status snapshots for
+      // mobile reconnects.
+      if (msg.type === 'activity_update') {
+        const windowId = typeof msg.windowId === 'string' ? msg.windowId.slice(0, 80) : ''
+        const terminalId = typeof msg.terminalId === 'string' ? msg.terminalId.slice(0, 80) : ''
+        const validStatuses = new Set(['running', 'confirmed', 'failed', 'observed', 'attention'])
+        const validKinds = new Set(['build', 'test', 'dependency', 'git', 'command', 'output', 'attention'])
+        const allowedEvidence = new Set(['shell_started', 'shell_exit_0', 'shell_exit_nonzero',
+          'shell_finished_unverified', 'output_observed', 'screen_observed', 'possible_question', 'terminal_closed'])
+        if (!windowId || !terminalId || !Array.isArray(msg.items) || msg.items.length > 8) return
+        const items = msg.items.map(value => {
+          if (!value || typeof value !== 'object') return null
+          const item = value as Record<string, unknown>
+          if (typeof item.id !== 'string' || item.id.length > 80
+            || typeof item.label !== 'string' || item.label.length > 120
+            || !validStatuses.has(String(item.status))
+            || !validKinds.has(String(item.kind))
+            || !allowedEvidence.has(String(item.evidence))) return null
+          return { id: item.id, label: item.label, status: item.status,
+            kind: item.kind, evidence: item.evidence,
+            updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : Date.now(),
+            exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined }
+        })
+        if (items.some(item => !item)) return
+        const updatedAt = typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now()
+        // Persist ONLY safe summary metadata so a phone that connects after the
+        // live event can recover the latest state. Never persist raw screens,
+        // command arguments, tool output or unfiltered final responses here.
+        const previous = store.getWorkspaceSnapshot(sessionId, ws.workspaceId)
+        const history = Array.isArray(previous?.activities) ? previous.activities : []
+        const activity = { windowId, terminalId, items, updatedAt }
+        const next = [...history.filter(entry => {
+          if (!entry || typeof entry !== 'object') return false
+          const prior = entry as Record<string, unknown>
+          return !(prior.windowId === windowId && prior.terminalId === terminalId)
+        }), activity]
+          .sort((a,b) => Number((b as Record<string,unknown>).updatedAt ?? 0)
+            - Number((a as Record<string,unknown>).updatedAt ?? 0))
+          .slice(0, 60)
+        store.upsertWorkspaceSnapshot(sessionId, ws.workspaceId, { activities: next, timestamp: updatedAt })
+        sendWorkspaceEvent(sessionId, {
+          type: 'activity_update', workspaceId: ws.workspaceId,
+          windowId, terminalId, items, updatedAt,
+        })
+        return
+      }
+
       const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'mirrorSession', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'windowId']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {

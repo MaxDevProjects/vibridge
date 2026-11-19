@@ -211,6 +211,7 @@ export class RelayClient {
         ideState,
         windows: this.options.ipc.getWindows(),
         focusedWindowId: this.options.ipc.getFocusedWindowId(),
+        activities: this.options.ipc.getActivitySnapshot(),
         previewUrl: this.options.adapters.getPreviewUrl(),
         fileTree: fileTreeNode.children ?? [],
         relay: this.getState(),
