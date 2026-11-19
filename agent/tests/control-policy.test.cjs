@@ -30,3 +30,14 @@ test('control mode allows only explicitly listed CLIs and never grants remote ad
     VIBRIDGE_ALLOW_TERMINAL_CLOSE: 'true',
   }).authorize('kill_cli').allowed, true)
 })
+
+test('local session listing and one-shot interpretation are read-only, resume stays allowlisted',()=>{
+ const observe=new ControlPolicy({})
+ assert.equal(observe.authorize('cli_sessions_request').allowed,true)
+ assert.equal(observe.authorize('terminal_interpret').allowed,true)
+ assert.equal(observe.authorize('cli_resume',{cliId:'codex'}).allowed,false)
+ const control=new ControlPolicy({VIBRIDGE_REMOTE_MODE:'control',VIBRIDGE_ALLOWED_CLIS:'codex'})
+ assert.equal(control.authorize('cli_resume',{cliId:'codex'}).allowed,true)
+ assert.equal(control.authorize('cli_resume',{cliId:'claude-code'}).allowed,false)
+ assert.equal(control.authorize('cli_resume',{cliId:'my-tool'}).allowed,false)
+})
