@@ -2,6 +2,7 @@ import { resolveChatHistoryKey } from '../../composables/useWorkspaceChatHistory
 import { activeProjectPath, projectName, projectIsActive, scopedProjectKey } from '../../composables/projectContext'
 import assert from 'node:assert/strict'
 import { resolvePairingDisplayInvitation } from '../../utils/pairingDisplayInvitation'
+import { hasPairingInvitation } from '../../utils/pairingRoute'
 
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
 import { useQuickReplies } from '../../composables/useQuickReplies'
@@ -167,6 +168,30 @@ test('mobile chat can recover a previous active window after agent restart witho
   assert.equal(findRestorableThread(live,[{...remembered,lastSeen:Date.now()-25*3600*1000}],[live],()=>true),null)
   assert.equal(findRestorableThread(live,[{...remembered,processId:1235}],[live],()=>true),null)
   assert.equal(findRestorableThread(live,[{...remembered,recoveredTo:'other'}],[live],()=>true),null)
+})
+
+test('QR relay invitation must be processed before routing phones to /mobile', () => {
+  assert.equal(hasPairingInvitation({
+    relay: '1',
+    sessionId: 'sess_abc',
+    relayUrl: 'https://vibridge.example/relay',
+    code: '123456',
+  }), true)
+  assert.equal(hasPairingInvitation({
+    relay: ['1'],
+    sessionId: ['sess_abc'],
+    code: ['123456'],
+  }), true)
+  assert.equal(hasPairingInvitation({ view: 'mobile' }), false)
+  assert.equal(hasPairingInvitation({ relay: '1', sessionId: 'sess_abc', code: '12345' }), false)
+  assert.equal(hasPairingInvitation({ relay: '1', code: '123456' }), false)
+})
+
+test('local QR invitations are handled before automatic mobile navigation too', () => {
+  assert.equal(hasPairingInvitation({ token: 'short', agentUrl: 'http://devbridge.local:3333' }), true)
+  assert.equal(hasPairingInvitation({ host: 'devbridge.local', port: '3333', token: 'short' }), true)
+  assert.equal(hasPairingInvitation({ host: 'devbridge.local', port: '3333', code: '123456' }), true)
+  assert.equal(hasPairingInvitation({ token: 'short' }), false)
 })
 
 if (failures > 0) {
