@@ -44,7 +44,7 @@
 La V7 fonctionne **sans IA**. Si tu veux tester la lecture plus contextuelle :
 
 1. Installer [llama.cpp](https://github.com/ggml-org/llama.cpp) sur WSL. Le binaire de commande doit être accessible à VS Code WSL. Il peut être testé par `llama-cli --help` ou par son chemin absolu.
-2. Télécharger manuellement et examiner la licence du GGUF sélectionné, par exemple le modèle officiel [Qwen3-0.6B-GGUF](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) (Apache 2.0). Il existe des quantifications plus petites distribuées par d'autres dépôts, mais ne fais pas confiance à un fichier sans vérifier son origine.
+2. Télécharger manuellement et examiner la licence du GGUF sélectionné, par exemple le modèle officiel [Qwen3-0.6B-GGUF](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) (Apache 2.0). Une commande d'installation **explicite et facultative**, après installation de `llama-cli`, permet de télécharger sa version officielle Q8_0 (environ 639 Mo) : `bash scripts/install-local-interpreter.sh`. Elle demande ton accord avant tout transfert. Il existe des quantifications Q4 plus petites distribuées par d'autres dépôts, mais vérifie toujours leur origine et licence. Le modèle n'est jamais téléchargé par ViBridge au démarrage.
 3. Dans les **paramètres Utilisateur de VS Code WSL** (pas les paramètres Workspace) :
 
    ```json
