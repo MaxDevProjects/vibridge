@@ -43,6 +43,7 @@
 
 <script setup lang="ts">
 import { renderSVG } from 'uqr'
+import { resolvePairingDisplayInvitation } from '~/utils/pairingDisplayInvitation'
 
 const invitation = ref('')
 const error = ref('')
@@ -69,28 +70,22 @@ const qrDataUrl = computed(() => {
 })
 
 onMounted(() => {
-  const fragment = new URLSearchParams(window.location.hash.slice(1))
-  const candidate = fragment.get('invite') || ''
+  const result = resolvePairingDisplayInvitation(window.location.hash, window.location.origin)
 
-  // Never keep the one-time invitation visible in browser history or the URL.
+  // Do not leave the one-time invitation in the browser address bar or history.
   window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
 
-  try {
-    if (!candidate || candidate.length > 4096) throw new Error('missing invitation')
-    const url = new URL(candidate)
-    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== window.location.origin) {
-      throw new Error('invalid invitation origin')
-    }
-    const relay = url.searchParams.get('relay') === '1'
-    const validRelay = relay
-      && Boolean(url.searchParams.get('sessionId'))
-      && /^\d{6}$/.test(url.searchParams.get('code') || '')
-    const validLocal = !relay && Boolean(url.searchParams.get('token'))
-    if (!validRelay && !validLocal) throw new Error('invalid invitation')
-    invitation.value = url.toString()
-  } catch {
-    error.value = 'Invitation absente ou invalide. Génère un nouveau QR depuis VS Code.'
+  if (result.ok) {
+    invitation.value = result.url
+    return
   }
+
+  const reasons = {
+    missing: 'Invitation non transmise par le navigateur. Relance « DevBridge: Show QR » dans VS Code après mise à jour de l’extension.',
+    malformed: 'Invitation illisible. Mets à jour l’extension VS Code puis génère un nouveau QR.',
+    origin: 'Le domaine du lien d’appairage ne correspond pas à celui de cette page. Vérifie la configuration de l’URL publique de ViBridge.',
+  } as const
+  error.value = reasons[result.reason]
 })
 
 async function copyInvitation() {

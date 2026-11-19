@@ -1,6 +1,7 @@
 import { resolveChatHistoryKey } from '../../composables/useWorkspaceChatHistory'
 import { activeProjectPath, projectName, projectIsActive, scopedProjectKey } from '../../composables/projectContext'
 import assert from 'node:assert/strict'
+import { resolvePairingDisplayInvitation } from '../../utils/pairingDisplayInvitation'
 
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
 import { useQuickReplies } from '../../composables/useQuickReplies'
@@ -116,6 +117,33 @@ test('chat and terminal selection storage is isolated between projects', () => {
   assert.notEqual(scopedProjectKey(base, '/home/projects/a'), scopedProjectKey(base, '/home/projects/b'))
   assert.equal(scopedProjectKey(base, '/home/projects/a/'), scopedProjectKey(base, '/home/projects/a'))
   assert.equal(scopedProjectKey('', '/home/projects/a'), '')
+})
+
+
+test('pairing display decodes base64url invitation without consuming it', () => {
+  const invitation = 'https://vibridge.example/?relay=1&relayUrl=https%3A%2F%2Fvibridge.example%2Frelay&sessionId=abc&code=123456'
+  const encoded = Buffer.from(invitation, 'utf8').toString('base64url')
+  assert.deepEqual(
+    resolvePairingDisplayInvitation(`#invite=${encoded}`, 'https://vibridge.example'),
+    { ok: true, url: invitation },
+  )
+})
+
+test('pairing display accepts older percent-encoded and double-encoded fragments', () => {
+  const invitation = 'https://vibridge.example/?relay=1&relayUrl=https%3A%2F%2Fvibridge.example%2Frelay&sessionId=abc&code=123456'
+  const legacy = `#${new URLSearchParams({ invite: invitation }).toString()}`
+  const doubleEncoded = legacy.replace(/%/g, '%25')
+  assert.deepEqual(resolvePairingDisplayInvitation(legacy, 'https://vibridge.example'), { ok: true, url: invitation })
+  assert.deepEqual(resolvePairingDisplayInvitation(doubleEncoded, 'https://vibridge.example'), { ok: true, url: invitation })
+})
+
+test('pairing display rejects invalid, missing and cross-origin invitations', () => {
+  const local = 'http://devbridge.local:8080/?token=secret&view=mobile'
+  const encoded = Buffer.from(local, 'utf8').toString('base64url')
+  assert.deepEqual(resolvePairingDisplayInvitation('', 'http://devbridge.local:8080'), { ok: false, reason: 'missing' })
+  assert.deepEqual(resolvePairingDisplayInvitation('#invite=garbage', 'http://devbridge.local:8080'), { ok: false, reason: 'malformed' })
+  assert.deepEqual(resolvePairingDisplayInvitation(`#invite=${encoded}`, 'https://vibridge.example'), { ok: false, reason: 'origin' })
+  assert.deepEqual(resolvePairingDisplayInvitation(`#invite=${encoded}`, 'http://devbridge.local:8080'), { ok: true, url: local })
 })
 
 if (failures > 0) {
