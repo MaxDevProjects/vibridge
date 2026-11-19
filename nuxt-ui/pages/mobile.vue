@@ -478,7 +478,7 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
      text:lang.value==='fr' ? action+' transmis à VS Code. Résultat CLI non confirmé.' : action+' sent to VS Code. CLI outcome not confirmed.'})
    if(phase==='rejected')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
      text:(lang.value==='fr' ? 'Action refusée : ' : 'Action rejected: ')+String(msg.reason??'unknown')})
-
+ }
 })
 
 onMounted(()=>{
