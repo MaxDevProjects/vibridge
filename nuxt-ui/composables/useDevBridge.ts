@@ -585,6 +585,7 @@ function emit(msg: WsMessage) {
       ideState: agentStatus.value?.ideState ?? null,
       previewUrl: agentStatus.value?.previewUrl ?? null,
       fileTree: agentStatus.value?.fileTree,
+      activities: agentStatus.value?.activities ?? [],
       control: agentStatus.value?.control,
       relay: {
         ...(agentStatus.value?.relay ?? {

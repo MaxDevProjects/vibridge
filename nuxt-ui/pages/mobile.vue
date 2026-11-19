@@ -83,6 +83,7 @@
         <p v-else>{{ t('liveScreenPending') }}</p>
       </section>
       <ActivityTimeline v-if="activeActivity?.items.length" :items="activeActivity.items" :lang="lang" />
+      <ObservedTerminalNotes v-if="observedNotes.length" :notes="observedNotes" :lang="lang" />
       <div class="mb-messages" ref="scroller" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
@@ -219,6 +220,7 @@
 <script setup lang="ts">
 import type { ConnectedWindow, WsMessage } from '~/composables/useDevBridge'
 import { compactTerminalOutput, terminalConversationKey } from '~/composables/compactTerminalOutput'
+import { extractObservedTerminalNotes } from '~/utils/observedTerminalNotes'
 import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 
@@ -299,6 +301,12 @@ const groups=computed(()=>{
 const windowThreads=computed(()=>allThreads.value.filter(item=>item.connected && item.windowId===activeThread.value?.windowId))
 const selectedTerminalAvailable=computed(()=>Boolean(activeThread.value && windowThreads.value.some(item=>item.key===activeThread.value?.key)))
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
+// Only process text already received by this browser. No new relay event,
+// remote model or persistent copy of sensitive terminal passages.
+const observedNotes=computed(()=>{
+  const output=[...activeMessages.value].reverse().find(item=>item.kind==='output')
+  return extractObservedTerminalNotes(output?.raw ?? output?.text ?? '')
+})
 const sendBlockReason=computed(()=>{
  if(!activeThread.value)return 'Aucun terminal sélectionné.'
  if(bridge.status.value!=='connected')return 'Relais déconnecté. Instruction conservée, envoi indisponible.'
