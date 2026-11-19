@@ -20,6 +20,23 @@ export interface WsMessage {
   [key: string]: unknown
 }
 
+export type ActivityStatus = 'running' | 'confirmed' | 'failed' | 'observed' | 'attention'
+export interface ActivityItem {
+  id: string
+  kind: 'build' | 'test' | 'dependency' | 'git' | 'command' | 'output' | 'attention'
+  label: string
+  status: ActivityStatus
+  evidence: string
+  updatedAt: number
+  exitCode?: number
+}
+export interface ActivitySnapshot {
+  windowId: string
+  terminalId: string
+  items: ActivityItem[]
+  updatedAt: number
+}
+
 export interface ConnectedWindow {
   id: string
   connected: boolean
@@ -61,7 +78,9 @@ interface WorkspaceSnapshot {
   previewUrl?: string | null
   fileTree?: unknown
   windows?: ConnectedWindow[]
+  activities?: ActivitySnapshot[]
   focusedWindowId?: string
+  activities?: ActivitySnapshot[]
   control?: AgentStatus['control']
   adapters?: AgentStatus['adapters']
   activeAdapter?: string | null
@@ -318,7 +337,7 @@ function resolveStoredWorkspace(sessionId = relaySessionId.value): string {
 function setActiveWorkspace(nextWorkspaceId: string) {
   if (activeWorkspaceId.value !== nextWorkspaceId && mode.value === 'relay' && agentStatus.value) {
     agentStatus.value = {
-      ...agentStatus.value, adapters: [], activeAdapter: null, ideState: null, previewUrl: null, fileTree: undefined,
+      ...agentStatus.value, adapters: [], activeAdapter: null, ideState: null, previewUrl: null, fileTree: undefined, activities: [],
     }
   }
   if (activeWorkspaceId.value !== nextWorkspaceId) {
@@ -437,6 +456,7 @@ function applyStatusSnapshot(snapshot: Partial<AgentStatus>) {
     ideState: snapshot.ideState ?? agentStatus.value?.ideState ?? null,
     previewUrl: snapshot.previewUrl ?? agentStatus.value?.previewUrl ?? null,
     fileTree: snapshot.fileTree ?? agentStatus.value?.fileTree,
+    activities: Array.isArray(snapshot.activities) ? snapshot.activities : agentStatus.value?.activities ?? [],
     control: snapshot.control ?? agentStatus.value?.control,
     relay: snapshot.relay ?? agentStatus.value?.relay ?? null,
     timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : Date.now(),
@@ -467,6 +487,23 @@ function emit(msg: WsMessage) {
         ? { status: 'received', text: 'Action transmise à VS Code. Le résultat dans la CLI reste à vérifier.' }
         : { status: 'error', text: 'Action refusée par VS Code : ' + String(normalized.reason ?? 'erreur inconnue') };
     }
+  }
+
+  if (normalized.type === 'activity_update'
+    && typeof normalized.windowId === 'string'
+    && typeof normalized.terminalId === 'string'
+    && Array.isArray(normalized.items)) {
+    const current = agentStatus.value?.activities ?? []
+    const next = {
+      windowId: normalized.windowId,
+      terminalId: normalized.terminalId,
+      items: normalized.items as ActivityItem[],
+      updatedAt: typeof normalized.updatedAt === 'number' ? normalized.updatedAt : Date.now(),
+    }
+    applyStatusSnapshot({ activities: [
+      ...current.filter(item => !(item.windowId === next.windowId && item.terminalId === next.terminalId)),
+      next,
+    ].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60) })
   }
 
   if (normalized.type === 'windows_update' && Array.isArray(normalized.windows)) {
@@ -907,6 +944,7 @@ async function fetchRelayStatus() {
         ideState: selectedSnapshot.ideState ?? agentStatus.value?.ideState ?? null,
         windows: Array.isArray(selectedSnapshot.windows) ? selectedSnapshot.windows : undefined,
         focusedWindowId: selectedSnapshot.focusedWindowId,
+        activities: Array.isArray(selectedSnapshot.activities) ? selectedSnapshot.activities : undefined,
         previewUrl: typeof selectedSnapshot.previewUrl === 'string' || selectedSnapshot.previewUrl === null
           ? selectedSnapshot.previewUrl
           : agentStatus.value?.previewUrl ?? null,
