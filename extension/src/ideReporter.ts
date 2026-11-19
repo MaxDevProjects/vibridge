@@ -8,6 +8,7 @@ interface TerminalInfo {
   shellIntegration: boolean;
   cwd: string | null;
   processId?: number;
+  mirrorSession?: string;
 }
 
 interface IdeSnapshot {
@@ -25,7 +26,7 @@ export class IdeReporter {
   private terminalCwds = new Map<string, string>();
   private snapshotVersion = 0;
 
-  constructor(private ipc: IpcClient) {}
+  constructor(private ipc: IpcClient, private mirrorSessionFor?: (terminal: vscode.Terminal) => string | undefined) {}
 
   start(): vscode.Disposable {
     this.disposables.push(
@@ -133,6 +134,7 @@ export class IdeReporter {
         id: getTerminalId(terminal),
         name: terminal.name,
         shellIntegration: Boolean(terminal.shellIntegration),
+        mirrorSession: this.mirrorSessionFor?.(terminal),
         cwd: this.terminalCwds.get(getTerminalId(terminal)) ?? null,
       })),
       updatedAt: Date.now(),
