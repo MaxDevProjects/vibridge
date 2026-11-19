@@ -23,7 +23,7 @@ export function filterPrivateTerminalText(raw:string):string {
   return String(raw).slice(-6200)
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g,'')
     .replace(/-----BEGIN [\s\S]*?PRIVATE KEY-----[\s\S]*?-----END [\s\S]*?PRIVATE KEY-----/gi,'[PRIVATE_KEY_REDACTED]')
-    .replace(/\b(?:authorization|bearer|password|passwd|secret|api[_-]?key|access[_-]?token)\s*[:=]?\s*[A-Za-z0-9+/=_-]{12,}\b/gi,'[SECRET_REDACTED]')
+    .replace(/\b(?:authorization|bearer|password|passwd|secret|api[_-]?key|access[_-]?token|token)\s*[:=]?\s*[A-Za-z0-9+/=_-]{12,}\b/gi,'[SECRET_REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g,'[SECRET_REDACTED]')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'')
     .slice(-5000);
