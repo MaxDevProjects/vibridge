@@ -1,51 +1,64 @@
 <template>
-  <details v-if="notes.length" class="terminal-notes" :aria-label="lang === 'fr' ? 'Points relevés dans la sortie' : 'Observed terminal excerpts'">
-    <summary class="notes-toggle">
-      <span class="notes-icon" aria-hidden="true">≡</span>
-      <span class="notes-heading">
-        <strong>{{ lang === 'fr' ? 'Derniers points relevés' : 'Latest observed notes' }}</strong>
-        <small>{{ notes.length }} {{ lang === 'fr' ? (notes.length > 1 ? 'extraits du terminal' : 'extrait du terminal') : (notes.length > 1 ? 'terminal excerpts' : 'terminal excerpt') }}</small>
-      </span>
-      <span class="notes-chevron" aria-hidden="true">⌄</span>
-    </summary>
-    <div class="notes-details">
-      <ul>
-        <li v-for="(note, index) in notes" :key="index">
-          <span class="dot" aria-hidden="true">·</span>
-          <span>{{ note.text }}</span>
-        </li>
-      </ul>
-      <p class="disclaimer">
-        {{ lang === 'fr'
-          ? 'Extraits réellement reçus, sans validation automatique. Vérifie la sortie complète dans le terminal.'
-          : 'Excerpts actually received, without automatic verification. Check the full terminal output.' }}
-      </p>
-    </div>
-  </details>
+  <section v-if="notes.length" class="terminal-notes" :class="{ inline }"
+    :aria-label="lang === 'fr' ? 'Points réellement reçus du terminal' : 'Passages actually received from the terminal'">
+    <header>
+      <div class="notes-title">
+        <span class="notes-mark" aria-hidden="true">↳</span>
+        <div>
+          <span class="eyebrow">{{ lang === 'fr' ? 'LECTURE DE CETTE SORTIE' : 'READING THIS OUTPUT' }}</span>
+          <h3>{{ lang === 'fr' ? 'À retenir' : 'Key passages' }}</h3>
+        </div>
+      </div>
+      <span class="count">{{ notes.length }}</span>
+    </header>
+    <ul>
+      <li v-for="(note, index) in visibleNotes" :key="index">
+        <span class="dot" aria-hidden="true">·</span>
+        <span>{{ note.text }}</span>
+      </li>
+    </ul>
+    <button v-if="notes.length > 2" class="notes-expand" type="button" :aria-expanded="expanded"
+      @click="expanded = !expanded">
+      {{ expanded
+        ? (lang === 'fr' ? 'Réduire' : 'Show less')
+        : (lang === 'fr' ? 'Voir les ' + notes.length + ' passages' : 'See all ' + notes.length + ' passages') }}
+      <span aria-hidden="true">{{ expanded ? '⌃' : '⌄' }}</span>
+    </button>
+    <p class="disclaimer">
+      {{ lang === 'fr'
+        ? 'Passages reçus, non vérifiés. Le terminal original fait foi.'
+        : 'Received passages, not verified. The original terminal is authoritative.' }}
+    </p>
+  </section>
 </template>
 
 <script setup lang="ts">
 import type { ObservedNote } from '~/utils/observedTerminalNotes'
-withDefaults(defineProps<{ notes: ObservedNote[]; lang?: 'fr' | 'en' }>(), { lang:'fr' })
+
+const props = withDefaults(defineProps<{ notes: ObservedNote[]; lang?: 'fr' | 'en'; inline?: boolean }>(), {
+  lang: 'fr', inline: false,
+})
+const expanded = ref(false)
+const visibleNotes = computed(() => expanded.value ? props.notes : props.notes.slice(0, 2))
+watch(() => props.notes, () => { expanded.value = false })
 </script>
 
 <style scoped>
-.terminal-notes{margin:7px 15px 4px;border:1px solid var(--border-bright);background:var(--surface);font-family:monospace;flex:0 0 auto;min-width:0}
-.notes-toggle{display:flex;align-items:center;gap:11px;min-height:57px;padding:11px 13px;cursor:pointer;list-style:none;user-select:none;-webkit-tap-highlight-color:transparent}
-.notes-toggle::-webkit-details-marker{display:none}
-.notes-toggle::marker{content:''}
-.notes-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.notes-toggle:active{background:var(--surface2)}
-.notes-icon{display:grid;place-items:center;width:31px;height:31px;flex:0 0 31px;border:1px solid var(--border-bright);color:var(--accent);font-size:20px;line-height:1}
-.notes-heading{display:grid;gap:4px;min-width:0;flex:1}
-.notes-heading strong{font-size:12px;font-weight:500;color:var(--text)}
-.notes-heading small{font-size:10px;line-height:1.4;color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.notes-chevron{flex:0 0 auto;color:var(--text-mid);font-size:22px;transition:transform 140ms ease}
-.terminal-notes[open] .notes-chevron{transform:rotate(180deg)}
-.notes-details{border-top:1px solid var(--border);max-height:min(40dvh,330px);overflow-y:auto;overscroll-behavior:contain}
-.terminal-notes ul{list-style:none;margin:0;padding:13px;display:grid;gap:12px}
-.terminal-notes li{display:flex;gap:10px;align-items:flex-start;font-size:12px;line-height:1.65;color:var(--text);overflow-wrap:anywhere}
-.terminal-notes .dot{color:var(--text-mid);border:1px solid var(--border-bright);width:20px;height:20px;min-width:20px;display:grid;place-items:center;line-height:1}
-.terminal-notes .disclaimer{margin:0;padding:10px 13px;border-top:1px solid var(--border);font-size:10px;line-height:1.6;color:var(--text-mid)}
-@media(prefers-reduced-motion:reduce){.notes-chevron{transition:none}}
+.terminal-notes{margin:12px 15px;border:1px solid var(--border-bright);background:var(--surface);font-family:monospace}
+.terminal-notes.inline{margin:12px 0 0;border:0;border-top:1px solid var(--border);background:transparent}
+.terminal-notes header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.terminal-notes.inline header{padding:12px 0}
+.notes-title{display:flex;align-items:center;gap:10px;min-width:0}
+.notes-mark{display:grid;place-items:center;width:27px;height:27px;flex:0 0 27px;background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-size:16px}
+.eyebrow{display:block;font-size:9px;letter-spacing:.1em;color:var(--text-mid);margin-bottom:2px}
+.terminal-notes h3{font-size:12px;font-weight:500;color:var(--text);margin:0}
+.count{font-size:10px;color:var(--text-mid)}
+.terminal-notes ul{list-style:none;margin:0;padding:12px 14px;display:grid;gap:11px}
+.terminal-notes.inline ul{padding:12px 0}
+.terminal-notes li{display:flex;gap:9px;align-items:flex-start;font-size:11px;line-height:1.65;color:var(--text);overflow-wrap:anywhere}
+.dot{color:var(--text-mid);width:14px;min-width:14px;line-height:1.6}
+.notes-expand{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 14px;width:100%;color:var(--accent);font-size:10px;text-align:left;border-top:1px solid var(--border)}
+.inline .notes-expand{padding-left:0;padding-right:0}
+.disclaimer{margin:0;padding:10px 14px;border-top:1px solid var(--border);font-size:9px;line-height:1.6;color:var(--text-mid)}
+.inline .disclaimer{padding:9px 0 0}
 </style>
