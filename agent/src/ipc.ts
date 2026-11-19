@@ -377,6 +377,18 @@ export class IpcServer {
         this.forward?.('preview_capture_result', payload);
         break;
       }
+      case 'terminal_screen': {
+        // Ephemeral screen snapshots: never store in the MessageQueue history.
+        // Window identity is derived from the authenticated IPC socket.
+        if (!windowId) break;
+        const text = typeof msg.text === 'string' ? msg.text : '';
+        const terminalId = typeof msg.terminalId === 'string' ? msg.terminalId : '';
+        if (!terminalId || text.length > 24_000) break;
+        const frame = { text, terminalId, windowId, ts: typeof msg.ts === 'number' ? msg.ts : Date.now() };
+        this.broadcast?.({ type: 'terminal_screen', ...frame });
+        this.forward?.('terminal_screen', frame);
+        break;
+      }
       case 'terminal_output': {
         const text = String(msg.text ?? '');
         if (!text) break;
@@ -460,7 +472,8 @@ export class IpcServer {
         break;
       }
       case 'terminal_created': {
-        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId, windowId };
+        const payload = { type: 'terminal_created', terminalName: msg.terminalName, terminalId: msg.terminalId,
+          mirrorSession: msg.mirrorSession, windowId };
         this.broadcast?.(payload);
         this.forward?.('terminal_created', payload);
         break;

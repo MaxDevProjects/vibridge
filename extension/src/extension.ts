@@ -13,6 +13,7 @@ import { IpcClient } from './ipcClient';
 import { ChatParticipant } from './chatParticipant';
 import { FileWatcher } from './fileWatcher';
 import { IdeReporter } from './ideReporter';
+import { TerminalScreenMirror } from './terminalScreenMirror';
 import { MirrorView } from './mirrorView';
 import { buildPairingDisplayUrl } from './pairingDisplay';
 
@@ -104,6 +105,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   ipc = new IpcClient(target, windowId);
   ipc.connect();
+  const terminalMirror = new TerminalScreenMirror(ipc, context);
+  context.subscriptions.push(terminalMirror);
   const reportCommand = (msg: Record<string, unknown>, action: string,
     phase: 'dispatched' | 'rejected', reason?: string, terminal?: vscode.Terminal) => {
     if (typeof msg.request_id !== 'string') return;
@@ -227,14 +230,39 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Handle create_terminal from agent: open (or focus) a plain terminal without running a command
   ipc.on('create_terminal', (msg: Record<string, unknown>) => {
-    const terminalName = String(msg.terminalName ?? 'DevBridge 1');
+    const terminalName = String(msg.terminalName ?? 'DevBridge 1').slice(0, 80);
     const cwd = resolveWorkspaceCwd();
+    const publish = (terminal: vscode.Terminal) => {
+      ipc!.send({ type: 'terminal_created', terminalName, terminalId: getTerminalId(terminal),
+        mirrorSession: terminalMirror.sessionFor(terminal) });
+      reportCommand(msg, 'create_terminal', 'dispatched', undefined, terminal);
+      ideReporter.refresh();
+    };
+    if (msg.mirror === true) {
+      void terminalMirror.create(terminalName, cwd).then(publish, error =>
+        reportCommand(msg, 'create_terminal', 'rejected',
+          error instanceof Error ? error.message : 'mirror_failed'));
+      return;
+    }
     const matches = vscode.window.terminals.filter(t => t.name === terminalName);
     if (matches.length > 1) { reportCommand(msg, 'create_terminal', 'rejected', 'ambiguous_terminal'); return; }
     const terminal = matches[0] ?? vscode.window.createTerminal({ name: terminalName, cwd });
     terminal.show(true);
-    ipc!.send({ type: 'terminal_created', terminalName, terminalId: getTerminalId(terminal) });
-    reportCommand(msg, 'create_terminal', 'dispatched', undefined, terminal);
+    publish(terminal);
+  });
+
+  ipc.on('reopen_terminal', (msg: Record<string, unknown>) => {
+    if (typeof msg.session !== 'string') {
+      reportCommand(msg, 'reopen_terminal', 'rejected', 'missing_session');
+      return;
+    }
+    void terminalMirror.reopen(msg.session).then(terminal => {
+      ipc!.send({ type: 'terminal_created', terminalName: terminal.name,
+        terminalId: getTerminalId(terminal), mirrorSession: terminalMirror.sessionFor(terminal) });
+      reportCommand(msg, 'reopen_terminal', 'dispatched', undefined, terminal);
+      ideReporter.refresh();
+    }, error => reportCommand(msg, 'reopen_terminal', 'rejected',
+      error instanceof Error ? error.message : 'mirror_reopen_failed'));
   });
 
   // Handle focus_terminal from agent: focus an existing terminal by name
@@ -307,7 +335,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(watcher.start());
 
   // IDE state + terminal activity reporter
-  const ideReporter = new IdeReporter(ipc);
+  const ideReporter = new IdeReporter(ipc, terminal => terminalMirror.sessionFor(terminal));
   context.subscriptions.push(ideReporter.start());
 
   // Several VS Code windows may share one local agent. The last connected

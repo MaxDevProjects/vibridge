@@ -34,12 +34,12 @@ interface SessionPeers {
 const MOBILE_COMMANDS = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
   'open_project', 'list_projects', 'get_preview_url', 'get_pairing_code',
-  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
+  'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
 ])
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device', 'mirror', 'session',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
@@ -802,7 +802,25 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
-      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'windowId']
+      // Live terminal screen is sensitive ephemeral state. Never persist it in
+      // SQLite history, logs, or a workspace snapshot.
+      if (msg.type === 'terminal_screen') {
+        const terminalId = typeof msg.terminalId === 'string' ? msg.terminalId : ''
+        const windowId = typeof msg.windowId === 'string' ? msg.windowId : ''
+        const screen = typeof msg.text === 'string' ? msg.text : ''
+        if (terminalId && windowId && screen.length <= 24_000) {
+          sendWorkspaceEvent(sessionId, {
+            type: 'terminal_screen',
+            workspaceId: ws.workspaceId,
+            windowId, terminalId,
+            text: screen,
+            ts: typeof msg.ts === 'number' ? msg.ts : Date.now(),
+          })
+        }
+        return
+      }
+
+      const eventFields = ['event', 'url', 'path', 'terminalName', 'terminalId', 'mirrorSession', 'request_id', 'phase', 'action', 'reason', 'state', 'isQuestion', 'direction', 'clis', 'windowId']
       const extras = Object.fromEntries(eventFields.filter(field => msg[field] !== undefined).map(field => [field, msg[field]]))
       let payload = Object.keys(extras).length ? {
         ...(msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : {}),

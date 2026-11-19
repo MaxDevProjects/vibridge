@@ -225,6 +225,19 @@ test('mobile never guesses an output target from terminal names or ambiguous ide
   assert.equal(routeTerminalEvent({type:'chat_response',windowId:'window-a',tool:'terminal:new-term'},threads),null)
 })
 
+test('live terminal screens must be routed only to the exact connected terminal', () => {
+  const terminals = [
+    {key:'a',windowId:'window-a',terminalId:'term-1',connected:true},
+    {key:'b',windowId:'window-b',terminalId:'term-1',connected:true},
+    {key:'offline',windowId:'window-c',terminalId:'term-2',connected:false},
+  ]
+  assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-a',terminalId:'term-1'},terminals)?.key,'a')
+  assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-b',terminalId:'term-1'},terminals)?.key,'b')
+  assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-c',terminalId:'term-2'},terminals),null)
+  assert.equal(routeTerminalEvent({type:'terminal_screen',terminalId:'term-1'},terminals),null)
+  assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-a',terminalId:'unknown'},terminals),null)
+})
+
 if (failures > 0) {
   process.exitCode = 1
 } else {
