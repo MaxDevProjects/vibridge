@@ -26,13 +26,10 @@
             <button type="button" class="vb-button vb-button-primary text-[11px]" @click="copyInvitation">
               {{ copied ? 'Lien copié' : 'Copier le lien' }}
             </button>
-            <button type="button" class="vb-button text-[11px]" @click="closeDisplay">
-              Fermer
-            </button>
           </div>
           <p class="mt-5 text-[11px] leading-5" style="color:var(--muted)">
             Une invitation est temporaire. Pour un nouveau QR, relance « DevBridge: Show QR » dans VS Code.
-            Un téléphone déjà appairé n'a pas besoin d'être reconnecté à chaque ouverture.
+            Un téléphone déjà appairé n'a pas besoin d'être reconnecté à chaque ouverture. Tu peux fermer cet onglet après le scan.
           </p>
         </div>
         <div v-else class="mt-7 px-4 py-6 text-sm" style="border:1px solid var(--border-bright);color:var(--text-mid)" role="alert">
@@ -105,8 +102,4 @@ async function copyInvitation() {
   }
 }
 
-function closeDisplay() {
-  window.close()
-  // Browsers may disallow closing a tab not created by window.open.
-}
 </script>
