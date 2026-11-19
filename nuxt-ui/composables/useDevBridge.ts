@@ -547,6 +547,8 @@ function emit(msg: WsMessage) {
       activeAdapter: agentStatus.value?.activeAdapter ?? null,
       ideState: agentStatus.value?.ideState ?? null,
       previewUrl: agentStatus.value?.previewUrl ?? null,
+      fileTree: agentStatus.value?.fileTree,
+      control: agentStatus.value?.control,
       relay: {
         ...(agentStatus.value?.relay ?? {
           enabled: true,
