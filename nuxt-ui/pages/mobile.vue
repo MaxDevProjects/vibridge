@@ -57,6 +57,9 @@
       <div class="mb-context"><span><span class="mb-context-brand">VIBRIDGE</span> / {{ activeThread.project }}</span><span>{{ t('window') }} {{ activeThread.windowShort }}</span></div>
       <div v-if="bridge.status.value !== 'connected'" class="mb-alert">{{ t('offlineWarning') }}</div>
       <div v-else-if="bridge.agentStatus.value?.control?.mode === 'observe'" class="mb-alert">{{ t('observeWarning') }}</div>
+      <div v-if="activeThread.shellIntegration === false" class="mb-alert">
+        Shell Integration non détectée sur ce terminal. Ses sorties ne sont pas garanties sur le téléphone.
+      </div>
       <div class="mb-messages" ref="scroller" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
@@ -189,7 +192,7 @@ import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
-type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; windowShort: string; connected: boolean; state: string }
+type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
 const route = useRoute()
@@ -233,7 +236,7 @@ const allThreads=computed<Thread[]>(()=>bridge.windows.value.flatMap(w=>{
  return (w.ideState?.terminals ?? []).filter(term=>Boolean(term.id)).map(term=>({
   key:terminalConversationKey(bridge.relaySessionId.value || bridge.activeUrl.value,bridge.activeWorkspaceId.value,w.id,String(term.id)),
   windowId:w.id, terminalId:String(term.id), label:term.name,project,projectPath,
-  processId:term.processId,windowShort:w.id.slice(0,5),
+  processId:term.processId,shellIntegration:term.shellIntegration,windowShort:w.id.slice(0,5),
   connected:Boolean(w.connected),state:w.activity?.terminalId === term.id ? (w.activity?.state ?? 'idle') : 'idle'
  }))
 }))
@@ -489,6 +492,11 @@ onMounted(()=>{
   for(const thread of allThreads.value)loadLog(thread.key)
 })
 watch(lang,value=>{if(import.meta.client)localStorage.setItem('vb:mobile-language',value)})
+watch([()=>bridge.status.value,()=>bridge.activeWorkspaceId.value],([connection,workspace])=>{
+  if(connection==='connected' && workspace && !bridge.agentStatus.value?.control) {
+    void bridge.fetchAgentStatus()
+  }
+},{immediate:true})
 watch(allThreads,(threads)=>{
   syncThreadArchive(threads)
   for(const thread of threads)loadLog(thread.key)
