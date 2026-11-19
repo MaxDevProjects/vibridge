@@ -93,7 +93,7 @@ export interface AgentStatus {
     activeLanguage?: string | null
     activeTerminal?: string | null
     activeTerminalId?: string | null
-    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null; processId?: number }>
+    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null; processId?: number; mirrorSession?: string }>
     updatedAt?: number
   } | null
   previewUrl?: string | null
@@ -591,13 +591,13 @@ function emit(msg: WsMessage) {
   // The mobile inbox needs events from ALL live windows to update each
   // terminal's own thread. Session/workspace checks above still apply.
   // The ordinary listeners keep their selected-window isolation.
-  if (['output', 'ide_event', 'notification', 'command_execution'].includes(normalized.type)) {
+  if (['output', 'terminal_screen', 'ide_event', 'notification', 'command_execution'].includes(normalized.type)) {
     workspaceTerminalListeners.forEach(fn => fn(normalized))
   }
 
   // Outputs from other windows may update badges, but must never enter the
   // selected window's conversation or be mistaken for its tool's response.
-  const scoped = ['output', 'chat_response', 'ai_message', 'notification',
+  const scoped = ['output', 'terminal_screen', 'chat_response', 'ai_message', 'notification',
     'ide_event', 'command_execution', 'terminal_closed', 'terminal_created', 'cli_started']
   if (normalized.windowId && activeWindowId.value
     && normalized.windowId !== activeWindowId.value && scoped.includes(normalized.type)) return
@@ -788,7 +788,7 @@ function disconnect() {
 
 const RELAY_COMMANDS_WITH_FEEDBACK = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
-  'open_project', 'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
+  'open_project', 'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
 ])
 
 function send(data: unknown): boolean {
@@ -802,7 +802,7 @@ function send(data: unknown): boolean {
     return false
   }
   const scopedToWindow = ['message', 'chat', 'open_project', 'focus_terminal', 'kill_cli',
-    'create_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'list_projects', 'get_preview_url']
+    'create_terminal', 'reopen_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'list_projects', 'get_preview_url']
   if (scopedToWindow.includes(String(frame.type)) && windows.value.length) {
     if (!selectedWindow.value?.connected) {
       deliveryNotice.value = { status: 'error', text: 'Fenêtre VS Code absente ou déconnectée. Choisis une fenêtre connectée.' }
@@ -813,7 +813,7 @@ function send(data: unknown): boolean {
   if (mode.value === 'relay' && activeWorkspaceId.value && typeof frame.workspace_id !== 'string') {
     frame.workspace_id = activeWorkspaceId.value
   }
-  if (projectTransition.value && ['message', 'chat', 'create_terminal', 'start_cli', 'focus_terminal'].includes(String(frame.type))) {
+  if (projectTransition.value && ['message', 'chat', 'create_terminal', 'reopen_terminal', 'start_cli', 'focus_terminal'].includes(String(frame.type))) {
     deliveryNotice.value = { status: 'error', text: 'Changement de projet en cours : attends la confirmation de VS Code.' }
     return false
   }
