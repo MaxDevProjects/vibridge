@@ -27,6 +27,7 @@
               {{ copied ? 'Lien copié' : 'Copier le lien' }}
             </button>
           </div>
+          <p v-if="error" role="alert" class="mt-3 text-[11px]" style="color:var(--dot-red)">{{ error }}</p>
           <p class="mt-5 text-[11px] leading-5" style="color:var(--muted)">
             Une invitation est temporaire. Pour un nouveau QR, relance « DevBridge: Show QR » dans VS Code.
             Un téléphone déjà appairé n'a pas besoin d'être reconnecté à chaque ouverture. Tu peux fermer cet onglet après le scan.
