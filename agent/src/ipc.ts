@@ -19,6 +19,7 @@ export class IpcServer {
   private server: net.Server;
   private activeExtension: net.Socket | null = null;
   private windowSockets = new Map<string, net.Socket>();
+  private windowCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private socketWindows = new Map<net.Socket, string>();
   private windowStates = new Map<string, {
     id: string; connected: boolean; ideState: Record<string, unknown> | null;
@@ -112,6 +113,8 @@ export class IpcServer {
   }
 
   close(): void {
+    for (const timer of this.windowCleanupTimers.values()) clearTimeout(timer);
+    this.windowCleanupTimers.clear();
     this.clients.forEach((c) => c.destroy());
     this.server.close();
     this.tcpServer?.close();
@@ -184,6 +187,18 @@ export class IpcServer {
         this.windowSockets.delete(windowId);
         const record = this.windowStates.get(windowId);
         if (record) this.windowStates.set(windowId, { ...record, connected: false, lastSeen: Date.now() });
+        // Keep a short reconnect grace period, then remove obsolete window
+        // snapshots. Conversation history is retained on the mobile client.
+        const oldTimer = this.windowCleanupTimers.get(windowId);
+        if (oldTimer) clearTimeout(oldTimer);
+        const timer = setTimeout(() => {
+          this.windowCleanupTimers.delete(windowId);
+          if (this.windowSockets.has(windowId)) return;
+          this.windowStates.delete(windowId);
+          this.publishWindows();
+        }, 60_000);
+        timer.unref();
+        this.windowCleanupTimers.set(windowId, timer);
       }
       if (this.activeExtension === socket) {
         this.activeExtension = [...this.windowSockets.values()].at(-1) ?? null;
@@ -213,6 +228,9 @@ export class IpcServer {
       if (alreadyRegistered && alreadyRegistered !== windowId) { socket.destroy(); return; }
       const previousSocket = this.windowSockets.get(windowId);
       if (previousSocket && previousSocket !== socket) previousSocket.destroy();
+      const cleanupTimer = this.windowCleanupTimers.get(windowId);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      this.windowCleanupTimers.delete(windowId);
       this.windowSockets.set(windowId, socket);
       this.socketWindows.set(socket, windowId);
       const existing = this.windowStates.get(windowId);
