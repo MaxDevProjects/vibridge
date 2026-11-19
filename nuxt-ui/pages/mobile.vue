@@ -82,8 +82,8 @@
         <pre v-if="activeMirrorScreen">{{ activeMirrorScreen.text }}</pre>
         <p v-else>{{ t('liveScreenPending') }}</p>
       </section>
-      <ActivityTimeline v-if="activeActivity?.items.length" :items="activeActivity.items" :lang="lang" />
-      <ObservedTerminalNotes v-if="observedNotes.length" :notes="observedNotes" :lang="lang" />
+      <ActivityTimeline v-if="activeActivity?.items.length" :key="activeThread.key + ':activity'" :items="activeActivity.items" :lang="lang" />
+      <ObservedTerminalNotes v-if="observedNotes.length" :key="activeThread.key + ':notes'" :notes="observedNotes" :lang="lang" />
       <div class="mb-messages" ref="scroller" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
