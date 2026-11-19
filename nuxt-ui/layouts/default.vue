@@ -4,7 +4,7 @@
 
     <!-- ── Global top bar ─────────────────────── -->
     <header
-      v-if="!isMobileConversation"
+      v-if="!isMobileConversation && !isPairingDisplay"
       class="fixed top-0 left-0 right-0 h-14 z-50 flex items-center justify-between px-4 sm:px-6"
       style="background:color-mix(in srgb, var(--bg) 88%, transparent);border-bottom:1px solid var(--border);backdrop-filter:blur(12px)"
     >
@@ -60,7 +60,7 @@
     </div>
 
     <!-- Control permissions are enforced on the local agent, not in this UI. -->
-    <div v-if="!isSetupRoute && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe'"
+    <div v-if="!isSetupRoute && !isPairingDisplay && bridge.agentStatus.value?.control && bridge.agentStatus.value.control.mode === 'observe'"
       class="fixed left-4 right-4 bottom-4 z-40 p-3 text-xs"
       style="background:var(--surface);border:1px solid var(--border-bright);color:var(--text)"
       role="status">
@@ -68,7 +68,7 @@
     </div>
 
     <!-- ── Content ──────────────────────────────── -->
-    <main class="flex-1 overflow-hidden relative z-10" :class="isMobileConversation ? '' : 'pt-14'">
+    <main class="flex-1 overflow-hidden relative z-10" :class="isMobileConversation || isPairingDisplay ? '' : 'pt-14'">
       <slot :active-view="activeView" />
     </main>
 
@@ -90,6 +90,7 @@ const views = [
 
 const isSetupRoute = computed(() => route.path.startsWith('/setup'))
 const isMobileConversation = computed(() => route.path === '/mobile')
+const isPairingDisplay = computed(() => route.path === '/pairing/display')
 
 function setView(v: 'both' | 'pc' | 'mobile') {
   activeView.value = v
