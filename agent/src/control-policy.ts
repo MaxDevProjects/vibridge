@@ -57,7 +57,7 @@ export class ControlPolicy {
     if (type === 'close_window') {
       return this.allowWindowClose ? { allowed: true } : { allowed: false, reason: 'window_close_disabled' };
     }
-    if (['message', 'chat', 'create_terminal', 'focus_terminal', 'open_project', 'adapter_toggle'].includes(type)) {
+    if (['message', 'chat', 'create_terminal', 'reopen_terminal', 'focus_terminal', 'open_project', 'adapter_toggle'].includes(type)) {
       return { allowed: true };
     }
     // No generic arbitrary actions, remote CLI definitions, remote pairing or
