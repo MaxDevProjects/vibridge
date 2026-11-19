@@ -69,10 +69,13 @@
         <button class="mb-iconbtn" :aria-label="t('actions')" @click="actionsOpen = true">⋮</button>
       </header>
       <div class="mb-context"><span><span class="mb-context-brand">VIBRIDGE</span> / {{ activeThread.project }}</span><span>{{ t('window') }} {{ activeThread.windowShort }}</span></div>
-      <div v-if="bridge.status.value !== 'connected'" class="mb-alert">{{ t('offlineWarning') }}</div>
-      <div v-else-if="bridge.agentStatus.value?.control?.mode === 'observe'" class="mb-alert">{{ t('observeWarning') }}</div>
-      <div v-if="activeThread.connected && !activeThread.mirrorSession && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
-        {{ t('shellIntegrationMissing') }}
+      <div v-if="activeWarning" class="mb-slim-warning">
+        <button type="button" :aria-expanded="warningExpanded" @click="warningExpanded=!warningExpanded">
+          <span aria-hidden="true">!</span>
+          <span>{{ activeWarning.title }}</span>
+          <span aria-hidden="true">{{ warningExpanded?'⌃':'⌄' }}</span>
+        </button>
+        <p v-if="warningExpanded">{{ activeWarning.detail }}</p>
       </div>
       <div class="mb-view-switch" role="tablist" :aria-label="t('readingMode')">
         <button type="button" role="tab" :aria-selected="mobileView==='conversation'"
@@ -534,6 +537,18 @@ function navigateToFolder(relative:string){
  sendTextToCurrentTerminal('cd -- '+quotePosix(full))
 }
 const significantActivityItems = computed(()=>activeActivity.value?.items.filter(item=>item.kind!=='output') ?? [])
+const warningExpanded=ref(false)
+const activeWarning=computed(()=>{
+ if(bridge.status.value!=='connected')return {title:lang.value==='fr'?'Connexion interrompue':'Disconnected',detail:t('offlineWarning')}
+ if(bridge.agentStatus.value?.control?.mode==='observe')return {
+   title:lang.value==='fr'?'Mode observation':'Observe mode',detail:t('observeWarning')}
+ if(activeThread.value?.connected&&!activeThread.value?.mirrorSession
+   &&activeThread.value?.shellIntegration===false && !activeMessages.value.some(entry=>entry.kind==='output'))
+   return {title:lang.value==='fr'?'Sorties possiblement incomplètes':'Output may be incomplete',
+     detail:t('shellIntegrationMissing')}
+ return null
+})
+
 // Ordinary VS Code terminals only expose observed output events, not a live PTY mirror.
 const terminalReceivedText = computed(()=>activeMessages.value
   .filter(item=>item.kind==='output')
@@ -1491,6 +1506,10 @@ useHead({title:'DevBridge | Conversations'})
 .mb-local-reading-card li span{color:var(--accent);font-size:9px;text-transform:uppercase}
 .mb-local-reading-card li small,.mb-local-reading-card>small{color:var(--text-mid);font-size:9px;overflow-wrap:anywhere}
 
+.mb-slim-warning{flex:0 0 auto;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--dot-amber) 6%,var(--bg))}
+.mb-slim-warning>button{width:100%;display:flex;align-items:center;gap:9px;text-align:left;padding:6px 14px;color:var(--dot-amber);font-size:10px;min-height:30px}
+.mb-slim-warning>button span:nth-child(2){flex:1}
+.mb-slim-warning>p{padding:6px 14px 11px;margin:0;color:var(--text-mid);font-size:10px;line-height:1.6}
 /* ViBridge V7: contextual quick commands and project browsing */
 .mb-quick-trigger{display:grid;place-items:center;flex:0 0 34px;height:38px;font-size:17px;color:var(--accent);border:1px solid var(--border-bright);background:var(--surface)}
 .mb-action-palette{max-height:min(37dvh,320px);display:flex;flex-direction:column;gap:0;overflow:hidden;margin:0 0 10px;border:1px solid var(--border-bright);background:var(--surface)}
