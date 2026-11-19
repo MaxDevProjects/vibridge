@@ -46,7 +46,7 @@ export function interpretModelOutput(raw:string,source:string):LocalReadout {
     if(evidence.length<12||!fullSource.includes(normalized(evidence)))return [];
     const label=r.text.replace(/[\r\n\u0000-\u001f]/g,' ').trim().slice(0,190);
     if(!label)return [];
-    const category=r.category==='remaining'?'remaining':
+    const category:InterpretedItem['category']=r.category==='remaining'?'remaining':
       r.category==='uncertain'?'uncertain':'announced';
     return [{text:label,evidence,category}];
   });
