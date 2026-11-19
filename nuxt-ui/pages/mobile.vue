@@ -71,7 +71,7 @@
       <div class="mb-context"><span><span class="mb-context-brand">VIBRIDGE</span> / {{ activeThread.project }}</span><span>{{ t('window') }} {{ activeThread.windowShort }}</span></div>
       <div v-if="bridge.status.value !== 'connected'" class="mb-alert">{{ t('offlineWarning') }}</div>
       <div v-else-if="bridge.agentStatus.value?.control?.mode === 'observe'" class="mb-alert">{{ t('observeWarning') }}</div>
-      <div v-if="activeThread.connected && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
+      <div v-if="activeThread.connected && !activeThread.mirrorSession && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
         {{ t('shellIntegrationMissing') }}
       </div>
       <section v-if="activeThread.mirrorSession" class="mb-live-screen">
@@ -157,7 +157,7 @@
           <h2>{{ activeThread?.project }}</h2>
           <button class="mb-sheet-action" @click="openPreview">{{ t('preview') }} <span>▣</span></button>
           <button class="mb-sheet-action" @click="showProjectPicker">{{ t('switchProject') }} <span>⌄</span></button>
-          <button v-if="bridge.agentStatus.value?.control?.canControl" class="mb-sheet-action" @click="createTerminal">{{ t('newTerminal') }} <span>+</span></button>
+          <button v-if="bridge.agentStatus.value?.control?.canControl" class="mb-sheet-action" @click="requestNewMonitoredTerminal">{{ t('newMonitoredTerminal') }} <span>+</span></button>
           <button v-for="cli in availableClis" :key="cli" class="mb-sheet-action" @click="startCli(cli)">{{ t('launch') }} {{ cli }} <span>↗</span></button>
           <button v-if="bridge.agentStatus.value?.control?.allowWindowClose" class="mb-sheet-action danger" @click="actionsOpen=false;confirmClose=true">{{ t('closeWindow') }} <span>×</span></button>
           <p v-else class="mb-muted">{{ t('closeWindowNotSupported') }}</p>
