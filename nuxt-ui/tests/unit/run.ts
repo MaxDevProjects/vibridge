@@ -9,6 +9,7 @@ import { useQuickReplies } from '../../composables/useQuickReplies'
 import { compactTerminalOutput, terminalConversationKey } from '../../composables/compactTerminalOutput'
 import { findRestorableThread } from '../../utils/mobileThreadRecovery'
 import { routeTerminalEvent } from '../../utils/routeTerminalEvent'
+import { extractObservedTerminalNotes } from '../../utils/observedTerminalNotes'
 
 let failures = 0
 
@@ -236,6 +237,58 @@ test('live terminal screens must be routed only to the exact connected terminal'
   assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-c',terminalId:'term-2'},terminals),null)
   assert.equal(routeTerminalEvent({type:'terminal_screen',terminalId:'term-1'},terminals),null)
   assert.equal(routeTerminalEvent({type:'terminal_screen',windowId:'window-a',terminalId:'unknown'},terminals),null)
+})
+
+
+test('terminal notes extract explicit final bullets without inferring success', () => {
+  const raw=[
+    'Working...',
+    '## Conclusion',
+    '- La page accueil a été modernisée avec deux sections plus lisibles.',
+    '- Tests de build réalisés, mais le résultat reste à vérifier.',
+    '- La recette sur téléphone reste nécessaire avant la mise en production.',
+    'Tip: NEW: Prevent sleep while running is now available',
+  ].join('\n')
+  const notes=extractObservedTerminalNotes(raw)
+  assert.equal(notes.length,3)
+  assert.equal(notes[0]?.source,'bullet')
+  assert.equal(notes[0]?.text,'La page accueil a été modernisée avec deux sections plus lisibles.')
+  assert.match(notes[2]?.text ?? '',/recette sur téléphone/)
+  assert.equal(JSON.stringify(notes).includes('Tip'),false)
+})
+
+test('terminal notes can show literal project wrap-up sentences without inventing actions', () => {
+  const raw=[
+    'Les contrôles responsive aux quatre largeurs demandées ont été étudiés.',
+    'Tout reste local sur feature/pre-recette-audrey : aucun commit, push ou déploiement.',
+    'L’ouverture distante nécessitera les migrations après sauvegarde, la vérification des référentiels et SMTP,',
+    'puis l’activation des demandes.',
+    'Tip: NEW: Prevent sleep while running is now available.',
+    'Worked for 14s',
+  ].join('\n')
+  const notes=extractObservedTerminalNotes(raw)
+  assert.ok(notes.length>=2)
+  const joined=notes.map(n=>n.text).join(' ')
+  assert.match(joined,/aucun commit, push ou déploiement/i)
+  assert.match(joined,/migrations après sauvegarde/i)
+  assert.equal(joined.includes('Prevent sleep'),false)
+  assert.equal(joined.includes('Worked for'),false)
+  assert.equal(notes.every(note=>note.source==='excerpt'),true)
+})
+
+test('terminal notes keep no synthesized completion and exclude obvious secrets', () => {
+  const raw=[
+    '## Final',
+    '- Mot de passe: password=TOP_SECRET_987654 ne doit pas être cité.',
+    '- Le menu mobile fonctionne maintenant sur petits écrans.',
+    '- Les tests restent à exécuter avant toute validation finale.',
+  ].join('\n')
+  const notes=extractObservedTerminalNotes(raw)
+  assert.equal(notes.length,2)
+  assert.ok(!JSON.stringify(notes).includes('TOP_SECRET'))
+  assert.ok(!notes.some(note=>note.text.includes('Build réussi')))
+  assert.deepEqual(extractObservedTerminalNotes('Working...'),[])
+  assert.deepEqual(extractObservedTerminalNotes(''),[])
 })
 
 if (failures > 0) {
