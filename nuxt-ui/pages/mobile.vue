@@ -280,7 +280,7 @@ function addEntry(key:string,entry:Entry){
  const next=[...prior,entry].slice(-70)
  threadsHistory.value={...threadsHistory.value,[key]:next}
  saveLog(key)
- if(nearBottom.value)nextTick(scrollBottom)
+ if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
 }
 function saveLog(key:string){
   if(!import.meta.client)return
@@ -464,7 +464,7 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
   if(last?.kind==='output' && Date.now()-last.ts<120000){
    const raw=((last.raw??'')+msg.text).slice(-20000)
    const next=[...prior.slice(0,-1),{...last,raw,text:compactTerminalOutput(raw).display,working:compactTerminalOutput(raw).working,ts:Date.now()}]
-   threadsHistory.value={...threadsHistory.value,[key]:next};saveLog(key);if(nearBottom.value)nextTick(scrollBottom)
+   threadsHistory.value={...threadsHistory.value,[key]:next};saveLog(key);if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
   }else{
    const raw=msg.text
    addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'output',raw,text:compactTerminalOutput(raw).display,working:true})
