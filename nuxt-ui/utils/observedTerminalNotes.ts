@@ -15,7 +15,7 @@ const BULLET = /^\s*(?:[-*•◦] |\d{1,2}[.)] |\[[xX ]\] )/
 const SECTION = /^\s*(?:#{1,3}\s*)?(?:final(?: answer| response)?|résumé|resume|conclusion|bilan|synthèse|résultat final|summary)(?:\s*[:.]\s*)?$/i
 const NOISE = /^(?:(?:tip|new|worked for|tokens used|token usage|total tokens|press enter|ctrl\+|use \/|experimental|prevent sleep|elapsed|thinking|working|processing|running|loading|compiling|analyzing)\b|\s*[⠁-⣿⣀-⣿◌◐◓◑◒])|^(?:[-=┄─━│┌└┐┘]{3,})$/i
 const LOG = /^(?:\[(?:info|debug|warn|error)\]|\d{2}:\d{2}:\d{2}|>\s+(?:npm|pnpm|yarn|bash)|(?:\$|#)\s)/i
-const SENSITIVE = /(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|(?:bearer|authorization|password|secret|api[_-]?key|access[_-]?token)\\s*[:=]\\s*\\S+|\\bsk-[a-z0-9_-]{12,}\\b)/i
+const SENSITIVE = /(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|(?:bearer|authorization|password|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*\S+|\bsk-[a-z0-9_-]{12,}\b)/i
 
 function cleanLines(raw: string): string[] {
   const tail = raw.slice(-12000)
