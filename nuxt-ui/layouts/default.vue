@@ -55,7 +55,7 @@
     <div class="vb-notification-actions" :class="{'vb-notification-actions-mobile':isMobileConversation}">
       <button type="button" class="vb-notification-bell" :aria-label="'Notifications (' + notificationHistory.length + ')'"
         :aria-expanded="notificationOpen" @click="notificationOpen=!notificationOpen;toast=null">
-        <span aria-hidden="true">♢</span>
+        <span aria-hidden="true">🔔</span>
         <span v-if="unreadNotifications" class="vb-notification-count">{{ unreadNotifications > 9 ? '9+' : unreadNotifications }}</span>
       </button>
     </div>
