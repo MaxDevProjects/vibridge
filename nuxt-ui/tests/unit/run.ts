@@ -6,6 +6,7 @@ import { resolvePairingDisplayInvitation } from '../../utils/pairingDisplayInvit
 import { formatTerminalMessage, splitTerminalInlineSegments } from '../../composables/formatTerminalMessage'
 import { useQuickReplies } from '../../composables/useQuickReplies'
 import { compactTerminalOutput, terminalConversationKey } from '../../composables/compactTerminalOutput'
+import { findRestorableThread } from '../../utils/mobileThreadRecovery'
 
 let failures = 0
 
@@ -144,6 +145,28 @@ test('pairing display rejects invalid, missing and cross-origin invitations', ()
   assert.deepEqual(resolvePairingDisplayInvitation('#invite=garbage', 'http://devbridge.local:8080'), { ok: false, reason: 'malformed' })
   assert.deepEqual(resolvePairingDisplayInvitation(`#invite=${encoded}`, 'https://vibridge.example'), { ok: false, reason: 'origin' })
   assert.deepEqual(resolvePairingDisplayInvitation(`#invite=${encoded}`, 'http://devbridge.local:8080'), { ok: true, url: local })
+})
+
+
+test('mobile chat recovers a terminal only with unique matching process and project', () => {
+  const current = { key:'new', projectPath:'/work/we-june', label:'DevBridge 1', processId:1205, connected:true }
+  const previous = { ...current, key:'old', connected:false, lastSeen:Date.now()-5000 }
+  const hasHistory = (key:string) => key === 'old'
+  assert.equal(findRestorableThread(current,[previous],[current],hasHistory),'old')
+  assert.equal(findRestorableThread(current,[previous,{...previous,key:'other'}],[current],()=>true),null)
+  assert.equal(findRestorableThread(current,[previous],[current,{...current,key:'another'}],hasHistory),null)
+  assert.equal(findRestorableThread({...current,processId:320},[previous],[current],hasHistory),null)
+  assert.equal(findRestorableThread({...current,projectPath:'/work/other'},[previous],[current],hasHistory),null)
+  assert.equal(findRestorableThread({...current,processId:undefined},[previous],[current],hasHistory),null)
+})
+
+test('mobile chat can recover a previous active window after agent restart without guessing terminal names', () => {
+  const live = { key:'new', projectPath:'/project', label:'bash', processId:1234, connected:true }
+  const remembered = { ...live, key:'from-previous-restart', connected:true, lastSeen:Date.now()-10000 }
+  assert.equal(findRestorableThread(live,[remembered],[live],()=>true),remembered.key)
+  assert.equal(findRestorableThread(live,[{...remembered,lastSeen:Date.now()-25*3600*1000}],[live],()=>true),null)
+  assert.equal(findRestorableThread(live,[{...remembered,processId:1235}],[live],()=>true),null)
+  assert.equal(findRestorableThread(live,[{...remembered,recoveredTo:'other'}],[live],()=>true),null)
 })
 
 if (failures > 0) {

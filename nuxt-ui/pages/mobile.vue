@@ -17,6 +17,9 @@
       <div class="mb-filters" role="group" :aria-label="t('filter')">
         <button v-for="f in filters" :key="f" :class="{selected:filter===f}" @click="filter=f">{{ t(f) }}</button>
       </div>
+      <button v-if="archivedThreads.length" type="button" class="mb-archive-toggle" @click="showArchived = !showArchived">
+        {{ showArchived ? (lang==='fr' ? 'Masquer les conversations hors ligne' : 'Hide offline conversations') : (lang==='fr' ? 'Historique hors ligne' : 'Offline history') + ' (' + archivedThreads.length + ')' }}
+      </button>
       <div class="mb-list">
         <template v-for="group in groups" :key="group.id">
           <div class="mb-group"><span>{{ group.name }}</span><span>{{ group.items.length }}</span></div>
@@ -87,10 +90,10 @@
       <div class="mb-composer">
         <div class="mb-target">
           <span>⌘ {{ t('target') }}</span>
-          <select :value="activeThread.key" :aria-label="t('target')" @change="onTargetChange">
+          <select :value="activeThread.key" :aria-label="t('target')" :disabled="!activeThread.connected" @change="onTargetChange">
             <option v-for="thread in windowThreads" :key="thread.key" :value="thread.key">{{ thread.label }}</option>
           </select>
-          <button :title="t('newTerminal')" @click="createTerminal">+</button>
+          <button v-if="activeThread.connected" :title="t('newTerminal')" @click="createTerminal">+</button>
         </div>
         <div class="mb-type-row">
           <textarea v-model="draft" :placeholder="t('message')" rows="1" :aria-label="t('message')" :disabled="!canSend" @keydown.enter.exact.prevent="sendInstruction" />
@@ -178,9 +181,10 @@
 <script setup lang="ts">
 import type { ConnectedWindow, WsMessage } from '~/composables/useDevBridge'
 import { compactTerminalOutput, terminalConversationKey } from '~/composables/compactTerminalOutput'
+import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
-type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; windowShort: string; connected: boolean; state: string }
+type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
 const route = useRoute()
@@ -191,6 +195,8 @@ const filter = ref('all')
 const filters = ['all', 'running', 'attention', 'finished']
 const activeThread = ref<Thread|null>(null)
 const threadsHistory = ref<Record<string,Entry[]>>({})
+const archivedThreads = ref<Thread[]>([])
+const showArchived = ref(false)
 const draft = ref('')
 const expandedRaw = ref<Record<string,boolean>>({})
 const nearBottom = ref(true)
@@ -218,21 +224,29 @@ const availableClis=computed(()=>bridge.agentStatus.value?.control?.canControl ?
 function projectLabel(w:ConnectedWindow) { return (w.workspaceFolders[0] ?? w.ideState?.workspaceFolders?.[0] ?? '').replace(/\\/g,'/').split('/').filter(Boolean).pop() || 'VS Code' }
 const allThreads=computed<Thread[]>(()=>bridge.windows.value.flatMap(w=>{
  const project=projectLabel(w)
+ const projectPath=(w.workspaceFolders[0] ?? w.ideState?.workspaceFolders?.[0] ?? '').replace(/\\/g,'/')
  return (w.ideState?.terminals ?? []).filter(term=>Boolean(term.id)).map(term=>({
   key:terminalConversationKey(bridge.relaySessionId.value || bridge.activeUrl.value,bridge.activeWorkspaceId.value,w.id,String(term.id)),
-  windowId:w.id, terminalId:String(term.id), label:term.name,project,windowShort:w.id.slice(0,5),
+  windowId:w.id, terminalId:String(term.id), label:term.name,project,projectPath,
+  processId:term.processId,windowShort:w.id.slice(0,5),
   connected:Boolean(w.connected),state:w.activity?.terminalId === term.id ? (w.activity?.state ?? 'idle') : 'idle'
  }))
 }))
 const groups=computed(()=>{
  const q=search.value.trim().toLowerCase()
- const matching=allThreads.value.filter(item=>(!q || (item.label+' '+item.project).toLowerCase().includes(q))
+ const all=[...allThreads.value.filter(item=>item.connected),...(showArchived.value?archivedThreads.value:[])]
+ const matching=all.filter(item=>(!q || (item.label+' '+item.project).toLowerCase().includes(q))
    && (filter.value==='all' || (filter.value==='attention' ? item.state==='attention_possible' : item.state===filter.value)))
  const grouped=new Map<string,{id:string;name:string;items:Thread[]}>()
- for(const item of matching){const id=item.windowId; if(!grouped.has(id))grouped.set(id,{id,name:item.project,items:[]});grouped.get(id)!.items.push(item)}
+ for(const item of matching){
+   const id=(item.connected?'live:':'archive:')+item.windowId
+   const name=item.connected ? item.project+' / '+item.windowShort : (lang.value==='fr'?'Historique':'History')+' / '+item.project+' / '+item.windowShort
+   if(!grouped.has(id))grouped.set(id,{id,name,items:[]})
+   if(!grouped.get(id)!.items.some(existing=>existing.key===item.key))grouped.get(id)!.items.push(item)
+ }
  return [...grouped.values()]
 })
-const windowThreads=computed(()=>allThreads.value.filter(item=>item.windowId===activeThread.value?.windowId))
+const windowThreads=computed(()=>allThreads.value.filter(item=>item.connected && item.windowId===activeThread.value?.windowId))
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
 const canSend=computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && Boolean(bridge.selectedWindow.value?.connected) && bridge.activeWindowId.value===activeThread.value?.windowId && !bridge.projectTransition.value)
 function threadState(state:string,connected:boolean) { return !connected ? t('offline') : state==='attention_possible'?t('attention'):state==='running'?t('running'):state==='finished'?t('finished'):t('connected') }
@@ -254,9 +268,68 @@ function saveLog(key:string){
   try{localStorage.setItem('vb:mobile-thread:'+key,JSON.stringify(entries))}catch{}
 }
 function loadLog(key:string){if(!import.meta.client || threadsHistory.value[key])return;try{const parsed=JSON.parse(localStorage.getItem('vb:mobile-thread:'+key)||'[]') as Entry[];if(Array.isArray(parsed))threadsHistory.value={...threadsHistory.value,[key]:parsed.slice(-70)}}catch{}}
-function openThread(item:Thread){bridge.selectWindow(item.windowId);activeThread.value=item;loadLog(item.key);draft.value=localStorage.getItem('vb:mobile-draft:'+item.key)||'';nearBottom.value=true;nextTick(scrollBottom)}
+function openThread(item:Thread){if(item.connected)bridge.selectWindow(item.windowId);activeThread.value=item;loadLog(item.key);draft.value=localStorage.getItem('vb:mobile-draft:'+item.key)||'';nearBottom.value=true;nextTick(scrollBottom)}
 function onTargetChange(e:Event){const key=(e.target as HTMLSelectElement).value; const next=allThreads.value.find(item=>item.key===key);if(next){saveDraft();openThread(next)}}
 function saveDraft(){if(import.meta.client && activeThread.value)localStorage.setItem('vb:mobile-draft:'+activeThread.value.key,draft.value)}
+
+type IndexedThread = Thread & { lastSeen: number; recoveredTo?: string }
+const INDEX_LIMIT = 100
+
+function threadIndexKey(): string {
+  const session = bridge.relaySessionId.value || bridge.activeUrl.value
+  const workspace = bridge.activeWorkspaceId.value || 'local'
+  return 'vb:mobile-thread-index:'+JSON.stringify([session, workspace])
+}
+
+function readIndex(): Record<string, IndexedThread> {
+  if (!import.meta.client || !bridge.token.value) return {}
+  try {
+    const records = JSON.parse(localStorage.getItem(threadIndexKey()) || '{}') as Record<string, IndexedThread>
+    return records && typeof records === 'object' && !Array.isArray(records) ? records : {}
+  } catch { return {} }
+}
+
+function hasSavedHistory(key:string): boolean {
+  try {
+    const entries=JSON.parse(localStorage.getItem('vb:mobile-thread:'+key)||'[]') as Entry[]
+    return Array.isArray(entries) && entries.length>0
+  } catch { return false }
+}
+
+function syncThreadArchive(threads:Thread[]): void {
+  if (!import.meta.client || !bridge.token.value || !bridge.activeWorkspaceId.value) return
+  const index=readIndex(), now=Date.now()
+  for(const thread of threads){
+    const prior=index[thread.key]
+    index[thread.key]={...thread,lastSeen:thread.connected ? now : (prior?.lastSeen ?? now),recoveredTo:prior?.recoveredTo}
+  }
+  const live=threads.filter(thread=>thread.connected)
+  for(const thread of live){
+    if(hasSavedHistory(thread.key)) continue
+    const oldKey=findRestorableThread(thread,Object.values(index),live,hasSavedHistory)
+    if(!oldKey) continue
+    const oldLog=localStorage.getItem('vb:mobile-thread:'+oldKey)
+    if(!oldLog) continue
+    // Only the display history is reused. Never carry over terminal routing IDs.
+    localStorage.setItem('vb:mobile-thread:'+thread.key,oldLog)
+    index[oldKey]!.recoveredTo=thread.key
+    delete threadsHistory.value[thread.key]
+    if(activeThread.value?.key===oldKey) activeThread.value=thread
+  }
+  const currentKeys=new Set(live.map(thread=>thread.key))
+  const values=Object.values(index)
+  archivedThreads.value=values
+    .filter(item=>!item.connected || !currentKeys.has(item.key))
+    .filter(item=>!currentKeys.has(item.key) && !item.recoveredTo && hasSavedHistory(item.key))
+    .sort((a,b)=>b.lastSeen-a.lastSeen)
+    .slice(0,INDEX_LIMIT)
+    .map(({lastSeen,recoveredTo,...thread})=>({...thread,connected:false,state:'idle'}))
+  // Do not cache credentials or terminal output here, only display identities.
+  const retained=values.sort((a,b)=>b.lastSeen-a.lastSeen).slice(0,INDEX_LIMIT)
+  try { localStorage.setItem(threadIndexKey(),JSON.stringify(Object.fromEntries(retained.map(item=>[item.key,item])))) } catch {}
+  for(const archived of archivedThreads.value)loadLog(archived.key)
+}
+
 watch(draft,saveDraft)
 function onScroll(){const el=scroller.value;if(el)nearBottom.value=el.scrollHeight-el.scrollTop-el.clientHeight<90}
 function scrollBottom(){if(scroller.value)scroller.value.scrollTop=scroller.value.scrollHeight}
@@ -382,17 +455,19 @@ onMounted(()=>{
   const stored = localStorage.getItem('vb:mobile-language')
   if(stored==='fr'||stored==='en')lang.value=stored
   else lang.value=navigator.language.toLowerCase().startsWith('fr')?'fr':'en'
+  syncThreadArchive(allThreads.value)
   for(const thread of allThreads.value)loadLog(thread.key)
 })
 watch(lang,value=>{if(import.meta.client)localStorage.setItem('vb:mobile-language',value)})
 watch(allThreads,(threads)=>{
+  syncThreadArchive(threads)
   for(const thread of threads)loadLog(thread.key)
   if(pendingTerminalId.value){
     const created=threads.find(thread=>thread.windowId===bridge.activeWindowId.value && thread.terminalId===pendingTerminalId.value)
     if(created){pendingTerminalId.value='';openThread(created)}
   }
   if(activeThread.value){
-    const updated=threads.find(thread=>thread.key===activeThread.value?.key)
+    const updated=[...threads,...archivedThreads.value].find(thread=>thread.key===activeThread.value?.key)
     if(updated)activeThread.value=updated
   }
   const focusWindow=String(route.query.focusWindow??'')
@@ -551,6 +626,9 @@ useHead({title:'DevBridge | Conversations'})
 .mb-dot.small{width:7px;height:7px}
 
 /* Search, filters, grouped conversations */
+.mb-archive-toggle{width:calc(100% - 38px);margin:12px 19px;padding:12px 14px;display:block;text-align:left;border:1px solid var(--border-bright);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mid);background:var(--surface)}
+.mb-archive-toggle:hover{color:var(--text);border-color:var(--text-mid)}
+
 .mb-search{
   display:flex;
   align-items:center;

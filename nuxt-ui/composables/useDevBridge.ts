@@ -93,7 +93,7 @@ export interface AgentStatus {
     activeLanguage?: string | null
     activeTerminal?: string | null
     activeTerminalId?: string | null
-    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null }>
+    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null; processId?: number }>
     updatedAt?: number
   } | null
   previewUrl?: string | null
@@ -165,8 +165,13 @@ function syncWindows(next: ConnectedWindow[], focused = ''): void {
   const replacement = transition && !sourceStillOnline
     ? next.find(w => w.connected && projectIsActive(w.workspaceFolders[0] ?? '', transition.path))
     : undefined
-  const wanted = replacement?.id || [activeWindowId.value, saved, focused, next.find(window => window.connected)?.id ?? '']
-    .find(id => next.some(window => window.id === id)) || ''
+  // Prefer a currently connected window on reload. A cached selection of
+  // an old extension-host window must not prevent the live one from being used.
+  const preferred = [replacement?.id, activeWindowId.value, saved, focused].filter((id): id is string => Boolean(id))
+  const wanted = preferred.find(id => next.some(window => window.id === id && window.connected))
+    || next.find(window => window.connected)?.id
+    || preferred.find(id => next.some(window => window.id === id))
+    || ''
   if (wanted) selectWindow(wanted)
   else activeWindowId.value = ''
 }
