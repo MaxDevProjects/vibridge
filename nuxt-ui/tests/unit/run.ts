@@ -8,6 +8,7 @@ import { formatTerminalMessage, splitTerminalInlineSegments } from '../../compos
 import { useQuickReplies } from '../../composables/useQuickReplies'
 import { compactTerminalOutput, terminalConversationKey } from '../../composables/compactTerminalOutput'
 import { findRestorableThread } from '../../utils/mobileThreadRecovery'
+import { routeTerminalEvent } from '../../utils/routeTerminalEvent'
 
 let failures = 0
 
@@ -192,6 +193,36 @@ test('local QR invitations are handled before automatic mobile navigation too', 
   assert.equal(hasPairingInvitation({ host: 'devbridge.local', port: '3333', token: 'short' }), true)
   assert.equal(hasPairingInvitation({ host: 'devbridge.local', port: '3333', code: '123456' }), true)
   assert.equal(hasPairingInvitation({ token: 'short' }), false)
+})
+
+
+test('mobile routes output to its exact terminal regardless of selected VS Code window', () => {
+  const threads=[
+    {key:'a',windowId:'window-a',terminalId:'term-1',connected:true},
+    {key:'b',windowId:'window-b',terminalId:'term-1',connected:true},
+    {key:'c',windowId:'window-c',terminalId:'term-2',connected:true},
+  ]
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-b',tool:'terminal:term-1'},threads)?.key,'b')
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-c',terminalId:'term-2'},threads)?.key,'c')
+  assert.equal(routeTerminalEvent({type:'ide_event',windowId:'window-a',terminalId:'term-1'},threads)?.key,'a')
+  assert.equal(routeTerminalEvent({type:'notification',windowId:'window-a',terminalId:'term-1'},threads)?.key,'a')
+})
+
+test('mobile never guesses an output target from terminal names or ambiguous identities', () => {
+  const threads=[
+    {key:'old',windowId:'window-a',terminalId:'old-term',connected:false},
+    {key:'live',windowId:'window-a',terminalId:'new-term',connected:true},
+    {key:'other',windowId:'window-b',terminalId:'new-term',connected:true},
+  ]
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-a',tool:'terminal:old-term'},threads),null)
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-a',tool:'bash'},threads),null)
+  assert.equal(routeTerminalEvent({type:'output',terminalId:'new-term'},threads),null)
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-a'},threads),null)
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-a',tool:'terminal:new-term'},threads)?.key,'live')
+  assert.equal(routeTerminalEvent({type:'output',windowId:'window-a',tool:'terminal:new-term'},[
+    ...threads,{key:'duplicate',windowId:'window-a',terminalId:'new-term',connected:true}
+  ]),null)
+  assert.equal(routeTerminalEvent({type:'chat_response',windowId:'window-a',tool:'terminal:new-term'},threads),null)
 })
 
 if (failures > 0) {
