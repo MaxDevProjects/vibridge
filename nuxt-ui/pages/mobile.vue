@@ -57,6 +57,9 @@
       <div class="mb-context"><span><span class="mb-context-brand">VIBRIDGE</span> / {{ activeThread.project }}</span><span>{{ t('window') }} {{ activeThread.windowShort }}</span></div>
       <div v-if="bridge.status.value !== 'connected'" class="mb-alert">{{ t('offlineWarning') }}</div>
       <div v-else-if="bridge.agentStatus.value?.control?.mode === 'observe'" class="mb-alert">{{ t('observeWarning') }}</div>
+      <div v-if="activeThread.shellIntegration === false" class="mb-alert">
+        Shell Integration non détectée sur ce terminal. Ses sorties ne sont pas garanties sur le téléphone.
+      </div>
       <div class="mb-messages" ref="scroller" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
@@ -96,10 +99,14 @@
           <button v-if="activeThread.connected" :title="t('newTerminal')" @click="createTerminal">+</button>
         </div>
         <div class="mb-type-row">
-          <textarea v-model="draft" :placeholder="t('message')" rows="1" :aria-label="t('message')" :disabled="!canSend" @keydown.enter.exact.prevent="sendInstruction" />
+          <textarea v-model="draft" :placeholder="t('message')" rows="1" :aria-label="t('message')" @keydown.enter.exact.prevent="sendInstruction" />
           <button class="mb-send" :disabled="!canSend || !draft.trim()" :aria-label="t('send')" @click="sendInstruction">↑</button>
         </div>
-        <small class="mb-subline">{{ t('notAChatbot') }}</small>
+        <div v-if="sendBlockReason" class="mb-send-block" role="status">
+          <span>{{ sendBlockReason }}</span>
+          <button v-if="bridge.status.value==='connected'" type="button" @click="refreshControlStatus">Actualiser</button>
+        </div>
+        <small v-else class="mb-subline">{{ t('notAChatbot') }}</small>
       </div>
     </section>
 
@@ -181,10 +188,11 @@
 <script setup lang="ts">
 import type { ConnectedWindow, WsMessage } from '~/composables/useDevBridge'
 import { compactTerminalOutput, terminalConversationKey } from '~/composables/compactTerminalOutput'
+import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
-type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; windowShort: string; connected: boolean; state: string }
+type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
 const route = useRoute()
@@ -228,7 +236,7 @@ const allThreads=computed<Thread[]>(()=>bridge.windows.value.flatMap(w=>{
  return (w.ideState?.terminals ?? []).filter(term=>Boolean(term.id)).map(term=>({
   key:terminalConversationKey(bridge.relaySessionId.value || bridge.activeUrl.value,bridge.activeWorkspaceId.value,w.id,String(term.id)),
   windowId:w.id, terminalId:String(term.id), label:term.name,project,projectPath,
-  processId:term.processId,windowShort:w.id.slice(0,5),
+  processId:term.processId,shellIntegration:term.shellIntegration,windowShort:w.id.slice(0,5),
   connected:Boolean(w.connected),state:w.activity?.terminalId === term.id ? (w.activity?.state ?? 'idle') : 'idle'
  }))
 }))
@@ -248,7 +256,21 @@ const groups=computed(()=>{
 })
 const windowThreads=computed(()=>allThreads.value.filter(item=>item.connected && item.windowId===activeThread.value?.windowId))
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
-const canSend=computed(()=>bridge.status.value==='connected' && Boolean(bridge.agentStatus.value?.control?.canControl) && Boolean(bridge.selectedWindow.value?.connected) && bridge.activeWindowId.value===activeThread.value?.windowId && !bridge.projectTransition.value)
+const sendBlockReason=computed(()=>{
+ if(!activeThread.value)return 'Aucun terminal sélectionné.'
+ if(bridge.status.value!=='connected')return 'Relais déconnecté. Instruction conservée, envoi indisponible.'
+ if(bridge.agentStatus.value?.control?.mode==='observe')return 'Mode observation activé sur le PC. Envoi interdit.'
+ if(!bridge.agentStatus.value?.control?.canControl)return 'Autorisations du PC non synchronisées. Actualise l’état de l’agent.'
+ if(!activeThread.value.connected)return 'Cette fenêtre VS Code est hors ligne. Sélectionne une conversation active.'
+ if(!bridge.selectedWindow.value?.connected || bridge.activeWindowId.value!==activeThread.value.windowId)
+   return 'Fenêtre VS Code non sélectionnée. Rouvre la conversation active.'
+ if(!allThreads.value.some(thread=>thread.connected && thread.key===activeThread.value?.key))
+   return 'Terminal non retrouvé dans la fenêtre connectée.'
+ if(bridge.projectTransition.value)return 'Changement de projet en cours. Envoi temporairement indisponible.'
+ return ''
+})
+const canSend=computed(()=>!sendBlockReason.value)
+function refreshControlStatus(){void bridge.fetchAgentStatus()}
 function threadState(state:string,connected:boolean) { return !connected ? t('offline') : state==='attention_possible'?t('attention'):state==='running'?t('running'):state==='finished'?t('finished'):t('connected') }
 function threadPreview(key:string,state:string){const entries=threadsHistory.value[key] ?? []; const last=entries.at(-1);return last?.kind==='output'?compactTerminalOutput(last.raw ?? last.text).display.slice(-90)||t('outputInProgress'):last?.text.slice(0,90)||threadState(state,true)}
 function activeKey(){return activeThread.value?.key??''}
@@ -258,7 +280,7 @@ function addEntry(key:string,entry:Entry){
  const next=[...prior,entry].slice(-70)
  threadsHistory.value={...threadsHistory.value,[key]:next}
  saveLog(key)
- if(nearBottom.value)nextTick(scrollBottom)
+ if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
 }
 function saveLog(key:string){
   if(!import.meta.client)return
@@ -417,40 +439,51 @@ const off=bridge.onMessage((msg:WsMessage)=>{
     }
     return
  }
- const key=activeKey(),item=activeThread.value
- if(msg.type==='projects_list'){const payload=msg.payload && typeof msg.payload==='object'?msg.payload as {projects?:Project[]}:{};const projects=Array.isArray(msg.projects)?msg.projects as Project[]:payload.projects;availableProjects.value=Array.isArray(projects)?projects:[];return}
- if(!item || !key)return
- if(typeof msg.windowId==='string' && msg.windowId!==item.windowId)return
+ if(msg.type==='projects_list'){
+  const payload=msg.payload && typeof msg.payload==='object'?msg.payload as {projects?:Project[]}: {}
+  const projects=Array.isArray(msg.projects)?msg.projects as Project[]:payload.projects
+  availableProjects.value=Array.isArray(projects)?projects:[]
+  return
+ }
+ if((msg.type==='terminal_created' || msg.type==='cli_started') && msg.terminalId){
+  pendingTerminalId.value=String(msg.terminalId)
+ }
+})
+
+const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
+ const thread=routeTerminalEvent(msg,allThreads.value)
+ if(!thread)return
+ const key=thread.key
+ loadLog(key)
  if(msg.type==='output' && typeof msg.text==='string'){
   const tool=String(msg.tool??'')
-  if(tool && tool!=='terminal:'+item.terminalId)return
+  if(tool && tool!=='terminal:'+thread.terminalId)return
   const prior=threadsHistory.value[key]??[]
   const last=prior.at(-1)
   // A continuous CLI stream is *one* message, not a new bubble per PTY chunk.
   if(last?.kind==='output' && Date.now()-last.ts<120000){
    const raw=((last.raw??'')+msg.text).slice(-20000)
    const next=[...prior.slice(0,-1),{...last,raw,text:compactTerminalOutput(raw).display,working:compactTerminalOutput(raw).working,ts:Date.now()}]
-   threadsHistory.value={...threadsHistory.value,[key]:next};saveLog(key);if(nearBottom.value)nextTick(scrollBottom)
+   threadsHistory.value={...threadsHistory.value,[key]:next};saveLog(key);if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
   }else{
    const raw=msg.text
    addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'output',raw,text:compactTerminalOutput(raw).display,working:true})
   }
- }else if(msg.type==='ide_event' && typeof msg.kind==='string' && String(msg.terminalId??'')===item.terminalId){
+ }else if(msg.type==='ide_event' && typeof msg.kind==='string' && String(msg.terminalId??'')===thread.terminalId){
   if(msg.kind==='terminal_command_started')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('commandStarted')})
   if(msg.kind==='terminal_command_finished'){const prior=threadsHistory.value[key]??[];const last=prior.at(-1);if(last?.kind==='output'){threadsHistory.value={...threadsHistory.value,[key]:[...prior.slice(0,-1),{...last,working:false}]};saveLog(key)}addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('commandFinished')})}
- }else if(msg.type==='notification' && (!msg.terminalId || String(msg.terminalId)===item.terminalId)){
+ }else if(msg.type==='notification' && (!msg.terminalId || String(msg.terminalId)===thread.terminalId)){
   addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('attentionPossible')})
- }else if(msg.type==='command_execution' && (!msg.terminalId || msg.terminalId===item.terminalId)){
+ }else if(msg.type==='command_execution' && (!msg.terminalId || msg.terminalId===thread.terminalId)){
    const action=String(msg.action??'action')
    const phase=String(msg.phase??'')
    if(phase==='dispatched')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
      text:lang.value==='fr' ? action+' transmis à VS Code. Résultat CLI non confirmé.' : action+' sent to VS Code. CLI outcome not confirmed.'})
    if(phase==='rejected')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
      text:(lang.value==='fr' ? 'Action refusée : ' : 'Action rejected: ')+String(msg.reason??'unknown')})
- }else if((msg.type==='terminal_created' || msg.type==='cli_started') && msg.terminalId){
-   pendingTerminalId.value=String(msg.terminalId)
  }
 })
+
 onMounted(()=>{
   const stored = localStorage.getItem('vb:mobile-language')
   if(stored==='fr'||stored==='en')lang.value=stored
@@ -459,6 +492,11 @@ onMounted(()=>{
   for(const thread of allThreads.value)loadLog(thread.key)
 })
 watch(lang,value=>{if(import.meta.client)localStorage.setItem('vb:mobile-language',value)})
+watch([()=>bridge.status.value,()=>bridge.activeWorkspaceId.value],([connection,workspace])=>{
+  if(connection==='connected' && workspace && !bridge.agentStatus.value?.control) {
+    void bridge.fetchAgentStatus()
+  }
+},{immediate:true})
 watch(allThreads,(threads)=>{
   syncThreadArchive(threads)
   for(const thread of threads)loadLog(thread.key)
@@ -477,7 +515,7 @@ watch(allThreads,(threads)=>{
     if(target)openThread(target)
   }
 },{immediate:true})
-onUnmounted(()=>{off();if(previewTimeout)clearTimeout(previewTimeout)})
+onUnmounted(()=>{off();offTerminal();if(previewTimeout)clearTimeout(previewTimeout)})
 useHead({title:'DevBridge | Conversations'})
 </script>
 
@@ -625,6 +663,8 @@ useHead({title:'DevBridge | Conversations'})
 .mb-dot.disconnected{background:var(--dot-red)}
 .mb-dot.small{width:7px;height:7px}
 
+.mb-send-block{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;font-size:10px;line-height:1.5;color:var(--dot-amber);padding:8px 11px;border:1px solid var(--border)}
+.mb-send-block button{flex-shrink:0;text-decoration:underline;color:var(--text);font-size:10px}
 /* Search, filters, grouped conversations */
 .mb-archive-toggle{width:calc(100% - 38px);margin:12px 19px;padding:12px 14px;display:block;text-align:left;border:1px solid var(--border-bright);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mid);background:var(--surface)}
 .mb-archive-toggle:hover{color:var(--text);border-color:var(--text-mid)}
