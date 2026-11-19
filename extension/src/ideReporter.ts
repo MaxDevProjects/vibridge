@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { IpcClient } from './ipcClient';
 import { getTerminalId } from './terminalIdentity';
+import { randomUUID } from 'node:crypto';
 
 interface TerminalInfo {
   id: string;
@@ -25,6 +26,7 @@ export class IdeReporter {
   private disposables: vscode.Disposable[] = [];
   private terminalCwds = new Map<string, string>();
   private snapshotVersion = 0;
+  private readonly executionIds = new WeakMap<vscode.TerminalShellExecution, string>();
 
   constructor(private ipc: IpcClient, private mirrorSessionFor?: (terminal: vscode.Terminal) => string | undefined) {}
 
@@ -58,6 +60,8 @@ export class IdeReporter {
         this.sendSnapshot();
       }),
       vscode.window.onDidStartTerminalShellExecution((event) => {
+        const executionId = randomUUID();
+        this.executionIds.set(event.execution, executionId);
         const commandLine = event.execution.commandLine.value;
         const terminalName = event.terminal.name;
         const cwd = event.execution.cwd?.fsPath ?? null;
@@ -69,11 +73,14 @@ export class IdeReporter {
           terminalId: getTerminalId(event.terminal),
           target: `terminal:${getTerminalId(event.terminal)}`,
           commandLine,
+          executionId,
           cwd,
         });
         this.streamExecutionOutput(event.terminal, event.execution);
       }),
       vscode.window.onDidEndTerminalShellExecution((event) => {
+        const executionId = this.executionIds.get(event.execution);
+        this.executionIds.delete(event.execution);
         const cwd = event.execution.cwd?.fsPath ?? null;
         if (cwd) {
           this.terminalCwds.set(getTerminalId(event.terminal), cwd);
@@ -83,6 +90,8 @@ export class IdeReporter {
           terminalId: getTerminalId(event.terminal),
           target: `terminal:${getTerminalId(event.terminal)}`,
           commandLine: event.execution.commandLine.value,
+          executionId,
+          exitCode: event.exitCode,
           cwd,
         });
       }),
