@@ -41,7 +41,7 @@ export class IpcServer {
   forward?: (type: string, payload?: Record<string, unknown>) => void;
   private readonly activity = new ActivityEngine(update => {
     this.broadcast?.({ type:'activity_update', ...update });
-    this.forward?.('activity_update', update);
+    this.forward?.('activity_update', { ...update });
   });
 
   getActivitySnapshot(): ActivitySnapshot[] {
