@@ -34,12 +34,12 @@ interface SessionPeers {
 const MOBILE_COMMANDS = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
   'open_project', 'list_projects', 'get_preview_url', 'get_pairing_code',
-  'focus_terminal', 'create_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
+  'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
 ])
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device',
+  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device', 'mirror', 'session',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
