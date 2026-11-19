@@ -114,6 +114,8 @@ export class ActivityEngine {
 
   private publish(state: InternalSnapshot): void {
     state.items = state.items.slice(-MAX_ITEMS);
+    const current = new Set(state.items.map(item => item.id));
+    for (const id of state.activeExecutions.keys()) if (!current.has(id)) state.activeExecutions.delete(id);
     state.updatedAt = this.now();
     this.onUpdate({ windowId: state.windowId, terminalId: state.terminalId,
       items: state.items.map(item => ({ ...item })), updatedAt: state.updatedAt });
