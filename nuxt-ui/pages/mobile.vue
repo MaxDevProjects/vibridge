@@ -61,7 +61,7 @@
 
     <section v-else class="mb-chat">
       <header class="mb-chatbar">
-        <button class="mb-back" :aria-label="t('back')" @click="activeThread = null">‹</button>
+        <button class="mb-back" :aria-label="t('back')" @click="goBackToConversations">‹</button>
         <div class="mb-chat-heading">
           <strong>{{ activeThread.label }}</strong>
           <small>{{ activeThread.project }} · {{ threadState(activeThread.state,activeThread.connected) }}</small>
@@ -74,17 +74,47 @@
       <div v-if="activeThread.connected && !activeThread.mirrorSession && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
         {{ t('shellIntegrationMissing') }}
       </div>
-      <section v-if="activeThread.mirrorSession" class="mb-live-screen">
-        <header>
-          <span><span class="mb-live-dot"></span>{{ t('liveTerminal') }}</span>
-          <span>{{ activeMirrorScreen ? t('liveScreenReady') : t('liveScreenPending') }}</span>
+      <div class="mb-view-switch" role="tablist" :aria-label="t('readingMode')">
+        <button type="button" role="tab" :aria-selected="mobileView==='conversation'"
+          :class="{selected:mobileView==='conversation'}" @click="switchMobileView('conversation')">
+          <span aria-hidden="true">◉</span> {{ t('conversationView') }}
+        </button>
+        <button type="button" role="tab" :aria-selected="mobileView==='terminal'"
+          :class="{selected:mobileView==='terminal'}" @click="switchMobileView('terminal')">
+          <span aria-hidden="true">⌘</span> {{ t('terminalView') }}
+        </button>
+      </div>
+      <div v-if="mobileView==='conversation' && resumeState" class="mb-resume" role="status">
+        <button class="mb-resume-primary" type="button" @click="jumpToLastMessage">
+          <span class="mb-resume-mark" aria-hidden="true">↳</span>
+          <span class="mb-resume-copy">
+            <strong>{{ t('resumeContext') }}</strong>
+            <small>{{ resumeDescription }}</small>
+          </span>
+          <span class="mb-resume-arrow" aria-hidden="true">↓</span>
+        </button>
+        <button class="mb-resume-close" type="button" :aria-label="t('dismissResume')" @click="dismissResume">×</button>
+      </div>
+      <section v-if="mobileView==='terminal'" class="mb-terminal-workspace" role="tabpanel" :aria-label="t('terminalView')">
+        <header class="mb-terminal-head">
+          <div>
+            <strong>{{ activeThread.mirrorSession ? t('monitoredScreen') : t('observedOutput') }}</strong>
+            <small>{{ activeThread.mirrorSession ? t('monitoredExplanation') : t('outputOnlyExplanation') }}</small>
+          </div>
+          <span class="mb-terminal-reception" :class="{connected:activeThread.connected && bridge.status.value==='connected'}">
+            <span class="mb-dot small" :class="activeThread.connected && bridge.status.value==='connected' ? 'connected' : 'disconnected'"></span>
+            {{ activeThread.connected && bridge.status.value==='connected' ? t('connected') : t('offline') }}
+          </span>
         </header>
-        <pre v-if="activeMirrorScreen">{{ activeMirrorScreen.text }}</pre>
-        <p v-else>{{ t('liveScreenPending') }}</p>
+        <pre v-if="activeThread.mirrorSession && activeMirrorScreen" class="mb-terminal-pre">{{ activeMirrorScreen.text }}</pre>
+        <p v-else-if="activeThread.mirrorSession" class="mb-terminal-placeholder">{{ t('liveScreenPending') }}</p>
+        <pre v-else-if="terminalReceivedText" class="mb-terminal-pre">{{ terminalReceivedText }}</pre>
+        <p v-else class="mb-terminal-placeholder">{{ t('noOutputYet') }}</p>
+        <footer class="mb-terminal-foot">
+          {{ activeThread.mirrorSession ? t('screenEvidence') : t('partialEvidence') }}
+        </footer>
       </section>
-      <ActivityTimeline v-if="activeActivity?.items.length" :key="activeThread.key + ':activity'" :items="activeActivity.items" :lang="lang" />
-      <ObservedTerminalNotes v-if="observedNotes.length" :key="activeThread.key + ':notes'" :notes="observedNotes" :lang="lang" />
-      <div class="mb-messages" ref="scroller" @scroll="onScroll">
+      <div v-else class="mb-messages" ref="scroller" role="tabpanel" :aria-label="t('conversationView')" @scroll="onScroll">
         <div v-if="!activeMessages.length" class="mb-empty mb-empty-chat">
           <span class="mb-empty-icon">⌘</span>
           <strong>{{ t('readyChat') }}</strong>
@@ -105,15 +135,27 @@
               <span class="mb-output-time">{{ timeLabel(entry.ts) }}</span>
             </div>
             <div v-if="entry.working" class="mb-working"><span class="mb-pulse"></span>{{ t('outputInProgress') }}</div>
-            <div v-if="entry.text" class="mb-output-text">{{ displayOutput(entry) }}</div>
+            <div v-if="entry.text" class="mb-output-text"
+              :class="{'mb-output-preview': entry.id===lastOutputId && observedNotes.length && !expandedOutput[entry.id]}">
+              {{ displayOutput(entry) }}
+            </div>
+            <button v-if="entry.id===lastOutputId && observedNotes.length" type="button" class="mb-text-toggle"
+              :aria-expanded="Boolean(expandedOutput[entry.id])" @click="toggleOutputText(entry.id)">
+              {{ expandedOutput[entry.id] ? t('collapseResponse') : t('expandResponse') }}
+              <span aria-hidden="true">{{ expandedOutput[entry.id] ? '⌃' : '⌄' }}</span>
+            </button>
             <div v-else class="mb-muted">{{ t('unreadableOutput') }}</div>
+            <ObservedTerminalNotes v-if="entry.id===lastOutputId && observedNotes.length"
+              :key="activeThread.key + ':' + entry.id" :notes="observedNotes" :lang="lang" inline />
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
             <pre v-if="expandedRaw[entry.id]" class="mb-raw">{{ entry.raw }}</pre>
             <div class="mb-output-footer"><span>{{ t('observedNotVerified') }}</span><button @click="openPreview">{{ t('preview') }} ↗</button></div>
           </div>
         </template>
+        <ActivityTimeline v-if="significantActivityItems.length" :key="activeThread.key + ':activity'"
+          :items="significantActivityItems" :lang="lang" compact />
       </div>
-      <button v-if="!nearBottom" class="mb-new-messages" @click="scrollBottom">{{ t('latest') }} ↓</button>
+      <button v-if="mobileView==='conversation' && !nearBottom" class="mb-new-messages" @click="scrollBottom">{{ t('latest') }} ↓</button>
       <div class="mb-composer">
         <div class="mb-target">
           <span>⌘ {{ t('target') }}</span>
@@ -223,6 +265,7 @@ import { compactTerminalOutput, terminalConversationKey } from '~/composables/co
 import { extractObservedTerminalNotes } from '~/utils/observedTerminalNotes'
 import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
+import { computeReentrySummary, type ReentrySummary } from '~/utils/mobileReentry'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
 type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; mirrorSession?: string; windowShort: string; connected: boolean; state: string }
@@ -240,6 +283,9 @@ const archivedThreads = ref<Thread[]>([])
 const showArchived = ref(false)
 const draft = ref('')
 const expandedRaw = ref<Record<string,boolean>>({})
+const expandedOutput = ref<Record<string,boolean>>({})
+const mobileView = ref<'conversation'|'terminal'>('conversation')
+const resumeState = ref<ReentrySummary|null>(null)
 const nearBottom = ref(true)
 const scroller = ref<HTMLElement|null>(null)
 const menuOpen = ref(false), actionsOpen = ref(false), projectsOpen = ref(false)
@@ -267,8 +313,8 @@ const activeActivity=computed(()=>activeThread.value
       && activity.terminalId===activeThread.value?.terminalId) ?? null
   : null)
 const dic: Record<string,Record<string,string>> = {
-  fr: {conversations:'Conversations',connectedTo:'POSTE DISTANT',windows:'fenêtre(s)',connected:'Connecté',offline:'Hors ligne',connecting:'Connexion…',search:'Rechercher une conversation…',filter:'Filtrer',all:'Tout',running:'En cours',attention:'Besoin de moi',finished:'Terminé',emptyTitle:'Aucun terminal disponible',emptyText:'Ouvre un projet dans VS Code, puis sélectionne son terminal ici.',project:'Choisir un projet',projects:'Projets et fenêtres',otherProjects:'Autres projets',noProjects:'Aucun projet disponible',back:'Retour',menu:'Menu',actions:'Actions',window:'Fenêtre',offlineWarning:'Connexion interrompue. Aucune instruction ne sera envoyée.',observeWarning:'Mode observation. Le contrôle distant est désactivé sur ton ordinateur.',readyChat:'Terminal prêt à être consulté',chatDescription:'Les sorties observées apparaîtront ici. Les commandes sont exécutées sur ton ordinateur.',outputInProgress:'Sortie en cours de réception',unreadableOutput:'Sortie technique sans texte lisible.',showRaw:'Afficher la sortie reçue',hideRaw:'Masquer la sortie reçue',observedNotVerified:'Sortie observée, résultat CLI non vérifié',preview:'Voir la preview',latest:'Derniers messages',target:'Terminal',newTerminal:'Nouveau terminal',message:'Nouvelle instruction…',send:'Envoyer',notAChatbot:'Transmission vers le vrai terminal VS Code',projectExplain:'La sélection ne rouvre pas les dossiers. Les commandes vont uniquement à la fenêtre choisie.',switchProject:'Changer de fenêtre',launch:'Lancer',closeWindowNotSupported:'Pour fermer une fenêtre, autorise explicitement VIBRIDGE_ALLOW_WINDOW_CLOSE sur ton PC.',closeWindow:'Fermer la fenêtre VS Code',closeWindowConfirm:'La fenêtre sélectionnée sera fermée sur ton ordinateur. VS Code peut demander de sauvegarder les fichiers non enregistrés. Les processus indépendants peuvent continuer.',requestClose:'Demander la fermeture',language:'Langue',disconnectDevice:'Déconnecter ce téléphone',revoke:'Couper l’accès distant',revokeExplain:'La révocation invalide les jetons relay. Un nouvel appairage sera nécessaire.',revokeConfirm:'Couper cette session pour tous les appareils associés ? Le terminal local peut continuer à fonctionner.',revokeFailed:'Impossible de confirmer la révocation. Aucun succès n’est annoncé. Réessaie une fois connecté.',revoking:'Révocation…',confirmRevoke:'Révoquer la session',cancel:'Annuler',instructionSent:'Instruction envoyée. En attente de confirmation.',terminalCreated:'Terminal créé dans VS Code.',launchDispatched:'Demande de lancement envoyée. En attente de confirmation par VS Code.',attentionPossible:'Intervention possible. Vérifie la sortie du terminal.',commandStarted:'Exécution shell détectée.',commandFinished:'Fin de commande shell détectée (succès CLI non confirmé).',invalidContext:'Terminal indisponible, rien n’a été envoyé.',shellIntegrationMissing:'Shell Integration non détectée au dernier relevé. Certaines sorties peuvent manquer.',terminalMissingShort:'indisponible',reselectTerminal:'Revenir aux terminaux disponibles',newMonitoredTerminal:'Nouveau terminal suivi',monitorControlNeeded:'Le mode contrôle doit être disponible sur le PC.',liveTerminal:'Écran du terminal en direct',liveScreenReady:'Synchronisé',liveScreenPending:'En attente du premier écran du PC…',reopenMonitoredTerminal:'Rouvrir la session suivie',reopenAmbiguous:'Fenêtre indisponible ou ambiguë. Choisis une fenêtre active avant de rouvrir cette session.',reopenRequested:'Demande de réouverture envoyée. En attente de confirmation.' },
-  en: {conversations:'Conversations',connectedTo:'REMOTE COMPUTER',windows:'window(s)',connected:'Connected',offline:'Offline',connecting:'Connecting…',search:'Search conversations…',filter:'Filter',all:'All',running:'Running',attention:'Needs me',finished:'Finished',emptyTitle:'No terminals available',emptyText:'Open a project in VS Code to display its real terminals here.',project:'Choose a project',projects:'Projects and windows',otherProjects:'Other projects',noProjects:'No projects available',back:'Back',menu:'Menu',actions:'Actions',window:'Window',offlineWarning:'Connection lost. No instruction will be sent.',observeWarning:'Observe mode. Remote control is disabled on your computer.',readyChat:'Terminal available',chatDescription:'Observed output appears here. Commands run on your computer.',outputInProgress:'Receiving output',unreadableOutput:'Technical output without readable text.',showRaw:'Show received output',hideRaw:'Hide received output',observedNotVerified:'Output observed, CLI result not verified',preview:'Open preview',latest:'Latest messages',target:'Terminal',newTerminal:'New terminal',message:'New instruction…',send:'Send',notAChatbot:'Sending to the real VS Code terminal',projectExplain:'Selecting a window does not reopen folders. Commands target only the selected window.',switchProject:'Change window',launch:'Launch',closeWindowNotSupported:'Enable VIBRIDGE_ALLOW_WINDOW_CLOSE on your computer to close a window remotely.',closeWindow:'Close VS Code window',closeWindowConfirm:'Close the selected VS Code window on your computer? VS Code may ask to save unsaved files. Independent processes may keep running.',requestClose:'Request close',language:'Language',disconnectDevice:'Sign out of this phone',revoke:'Revoke remote access',revokeExplain:'Revocation invalidates relay tokens. Pair again from VS Code to reconnect.',revokeConfirm:'Revoke this session for all paired clients? Local terminal processes may continue.',revokeFailed:'Revocation could not be confirmed. Access may still be active.',revoking:'Revoking…',confirmRevoke:'Revoke session',cancel:'Cancel',instructionSent:'Instruction sent. Awaiting confirmation.',terminalCreated:'Terminal created in VS Code.',launchDispatched:'Launch requested. Awaiting confirmation from VS Code.',attentionPossible:'Intervention possible. Check terminal output.',commandStarted:'Shell execution observed.',commandFinished:'Shell command finished. CLI success unconfirmed.',invalidContext:'Terminal unavailable. Nothing sent.',shellIntegrationMissing:'Shell Integration not detected in the latest snapshot. Some output may be missing.',terminalMissingShort:'unavailable',reselectTerminal:'Back to available terminals',newMonitoredTerminal:'New monitored terminal',monitorControlNeeded:'Remote control must be enabled on the PC.',liveTerminal:'Live terminal screen',liveScreenReady:'Synced',liveScreenPending:'Waiting for the first screen from the PC…',reopenMonitoredTerminal:'Reopen monitored session',reopenAmbiguous:'Window is missing or ambiguous. Select an active window before reopening.',reopenRequested:'Reopen requested. Awaiting confirmation.' }
+  fr: {conversations:'Conversations',connectedTo:'POSTE DISTANT',windows:'fenêtre(s)',connected:'Connecté',offline:'Hors ligne',connecting:'Connexion…',search:'Rechercher une conversation…',filter:'Filtrer',all:'Tout',running:'En cours',attention:'Besoin de moi',finished:'Terminé',emptyTitle:'Aucun terminal disponible',emptyText:'Ouvre un projet dans VS Code, puis sélectionne son terminal ici.',project:'Choisir un projet',projects:'Projets et fenêtres',otherProjects:'Autres projets',noProjects:'Aucun projet disponible',back:'Retour',menu:'Menu',actions:'Actions',window:'Fenêtre',offlineWarning:'Connexion interrompue. Aucune instruction ne sera envoyée.',observeWarning:'Mode observation. Le contrôle distant est désactivé sur ton ordinateur.',readyChat:'Terminal prêt à être consulté',chatDescription:'Les sorties observées apparaîtront ici. Les commandes sont exécutées sur ton ordinateur.',outputInProgress:'Sortie en cours de réception',unreadableOutput:'Sortie technique sans texte lisible.',showRaw:'Afficher la sortie reçue',hideRaw:'Masquer la sortie reçue',observedNotVerified:'Sortie observée, résultat CLI non vérifié',preview:'Voir la preview',latest:'Derniers messages',target:'Terminal',newTerminal:'Nouveau terminal',message:'Nouvelle instruction…',send:'Envoyer',notAChatbot:'Transmission vers le vrai terminal VS Code',projectExplain:'La sélection ne rouvre pas les dossiers. Les commandes vont uniquement à la fenêtre choisie.',switchProject:'Changer de fenêtre',launch:'Lancer',closeWindowNotSupported:'Pour fermer une fenêtre, autorise explicitement VIBRIDGE_ALLOW_WINDOW_CLOSE sur ton PC.',closeWindow:'Fermer la fenêtre VS Code',closeWindowConfirm:'La fenêtre sélectionnée sera fermée sur ton ordinateur. VS Code peut demander de sauvegarder les fichiers non enregistrés. Les processus indépendants peuvent continuer.',requestClose:'Demander la fermeture',language:'Langue',disconnectDevice:'Déconnecter ce téléphone',revoke:'Couper l’accès distant',revokeExplain:'La révocation invalide les jetons relay. Un nouvel appairage sera nécessaire.',revokeConfirm:'Couper cette session pour tous les appareils associés ? Le terminal local peut continuer à fonctionner.',revokeFailed:'Impossible de confirmer la révocation. Aucun succès n’est annoncé. Réessaie une fois connecté.',revoking:'Révocation…',confirmRevoke:'Révoquer la session',cancel:'Annuler',instructionSent:'Instruction envoyée. En attente de confirmation.',terminalCreated:'Terminal créé dans VS Code.',launchDispatched:'Demande de lancement envoyée. En attente de confirmation par VS Code.',attentionPossible:'Intervention possible. Vérifie la sortie du terminal.',commandStarted:'Exécution shell détectée.',commandFinished:'Fin de commande shell détectée (succès CLI non confirmé).',invalidContext:'Terminal indisponible, rien n’a été envoyé.',shellIntegrationMissing:'Shell Integration non détectée au dernier relevé. Certaines sorties peuvent manquer.',terminalMissingShort:'indisponible',reselectTerminal:'Revenir aux terminaux disponibles',newMonitoredTerminal:'Nouveau terminal suivi',monitorControlNeeded:'Le mode contrôle doit être disponible sur le PC.',liveTerminal:'Écran du terminal en direct',liveScreenReady:'Synchronisé',liveScreenPending:'En attente du premier écran du PC…',reopenMonitoredTerminal:'Rouvrir la session suivie',reopenAmbiguous:'Fenêtre indisponible ou ambiguë. Choisis une fenêtre active avant de rouvrir cette session.',reopenRequested:'Demande de réouverture envoyée. En attente de confirmation.',readingMode:'Mode de lecture',conversationView:'Conversation',terminalView:'Terminal',resumeContext:'Depuis ton dernier passage',dismissResume:'Masquer la reprise',monitoredScreen:'Écran du terminal suivi',observedOutput:'Sorties reçues',monitoredExplanation:'Capture de la session tmux sur le PC',outputOnlyExplanation:'Extraits capturés par VS Code, pas un miroir continu',screenEvidence:'Dernier écran transmis par le PC. Certains changements très brefs peuvent manquer.',partialEvidence:'Ces sorties sont partielles. Un terminal VS Code classique ne fournit pas un écran complet.',noOutputYet:'Aucune sortie encore reçue depuis ce terminal.',expandResponse:'Déplier la sortie affichée',collapseResponse:'Réduire la sortie affichée' },
+  en: {conversations:'Conversations',connectedTo:'REMOTE COMPUTER',windows:'window(s)',connected:'Connected',offline:'Offline',connecting:'Connecting…',search:'Search conversations…',filter:'Filter',all:'All',running:'Running',attention:'Needs me',finished:'Finished',emptyTitle:'No terminals available',emptyText:'Open a project in VS Code to display its real terminals here.',project:'Choose a project',projects:'Projects and windows',otherProjects:'Other projects',noProjects:'No projects available',back:'Back',menu:'Menu',actions:'Actions',window:'Window',offlineWarning:'Connection lost. No instruction will be sent.',observeWarning:'Observe mode. Remote control is disabled on your computer.',readyChat:'Terminal available',chatDescription:'Observed output appears here. Commands run on your computer.',outputInProgress:'Receiving output',unreadableOutput:'Technical output without readable text.',showRaw:'Show received output',hideRaw:'Hide received output',observedNotVerified:'Output observed, CLI result not verified',preview:'Open preview',latest:'Latest messages',target:'Terminal',newTerminal:'New terminal',message:'New instruction…',send:'Send',notAChatbot:'Sending to the real VS Code terminal',projectExplain:'Selecting a window does not reopen folders. Commands target only the selected window.',switchProject:'Change window',launch:'Launch',closeWindowNotSupported:'Enable VIBRIDGE_ALLOW_WINDOW_CLOSE on your computer to close a window remotely.',closeWindow:'Close VS Code window',closeWindowConfirm:'Close the selected VS Code window on your computer? VS Code may ask to save unsaved files. Independent processes may keep running.',requestClose:'Request close',language:'Language',disconnectDevice:'Sign out of this phone',revoke:'Revoke remote access',revokeExplain:'Revocation invalidates relay tokens. Pair again from VS Code to reconnect.',revokeConfirm:'Revoke this session for all paired clients? Local terminal processes may continue.',revokeFailed:'Revocation could not be confirmed. Access may still be active.',revoking:'Revoking…',confirmRevoke:'Revoke session',cancel:'Cancel',instructionSent:'Instruction sent. Awaiting confirmation.',terminalCreated:'Terminal created in VS Code.',launchDispatched:'Launch requested. Awaiting confirmation from VS Code.',attentionPossible:'Intervention possible. Check terminal output.',commandStarted:'Shell execution observed.',commandFinished:'Shell command finished. CLI success unconfirmed.',invalidContext:'Terminal unavailable. Nothing sent.',shellIntegrationMissing:'Shell Integration not detected in the latest snapshot. Some output may be missing.',terminalMissingShort:'unavailable',reselectTerminal:'Back to available terminals',newMonitoredTerminal:'New monitored terminal',monitorControlNeeded:'Remote control must be enabled on the PC.',liveTerminal:'Live terminal screen',liveScreenReady:'Synced',liveScreenPending:'Waiting for the first screen from the PC…',reopenMonitoredTerminal:'Reopen monitored session',reopenAmbiguous:'Window is missing or ambiguous. Select an active window before reopening.',reopenRequested:'Reopen requested. Awaiting confirmation.',readingMode:'Reading mode',conversationView:'Conversation',terminalView:'Terminal',resumeContext:'Since your last visit',dismissResume:'Dismiss recap',monitoredScreen:'Monitored terminal screen',observedOutput:'Received output',monitoredExplanation:'tmux session snapshot from your computer',outputOnlyExplanation:'VS Code captured excerpts, not a continuous mirror',screenEvidence:'Last screen received from your computer. Very brief changes may be missed.',partialEvidence:'These are partial outputs. Standard VS Code terminals do not provide a full screen mirror.',noOutputYet:'No output received from this terminal yet.',expandResponse:'Expand displayed output',collapseResponse:'Collapse displayed output' }
 }
 const t=(key:string)=>dic[lang.value]?.[key] ?? key
 const connectionText=computed(()=> t(bridge.status.value === 'connected' ? 'connected' : bridge.status.value === 'connecting' ? 'connecting' : 'offline'))
@@ -301,11 +347,30 @@ const groups=computed(()=>{
 const windowThreads=computed(()=>allThreads.value.filter(item=>item.connected && item.windowId===activeThread.value?.windowId))
 const selectedTerminalAvailable=computed(()=>Boolean(activeThread.value && windowThreads.value.some(item=>item.key===activeThread.value?.key)))
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
+const lastOutput = computed(()=>[...activeMessages.value].reverse().find(item=>item.kind==='output') ?? null)
+const lastOutputId = computed(()=>lastOutput.value?.id ?? '')
+const significantActivityItems = computed(()=>activeActivity.value?.items.filter(item=>item.kind!=='output') ?? [])
+// Ordinary VS Code terminals only expose observed output events, not a live PTY mirror.
+const terminalReceivedText = computed(()=>activeMessages.value
+  .filter(item=>item.kind==='output')
+  .slice(-8)
+  .map(item=>item.raw ?? item.text)
+  .join('\n')
+  .slice(-20000))
+const resumeDescription = computed(()=>{
+  const state=resumeState.value
+  if(!state)return ''
+  const chunks:string[]=[]
+  if(state.outputCount)chunks.push(state.outputCount+(lang.value==='fr'?' nouvelle(s) sortie(s)':' new output(s)'))
+  if(state.verifiedCount)chunks.push(state.verifiedCount+(lang.value==='fr'?' commande(s) confirmée(s)':' verified command(s)'))
+  if(state.attentionCount)chunks.push(state.attentionCount+(lang.value==='fr'?' point(s) à vérifier':' to check'))
+  if(!chunks.length)chunks.push(lang.value==='fr'?'Activité technique actualisée':'Technical activity updated')
+  return chunks.join(' · ')
+})
 // Only process text already received by this browser. No new relay event,
 // remote model or persistent copy of sensitive terminal passages.
 const observedNotes=computed(()=>{
-  const output=[...activeMessages.value].reverse().find(item=>item.kind==='output')
-  return extractObservedTerminalNotes(output?.raw ?? output?.text ?? '')
+  return extractObservedTerminalNotes(lastOutput.value?.raw ?? lastOutput.value?.text ?? '')
 })
 const sendBlockReason=computed(()=>{
  if(!activeThread.value)return 'Aucun terminal sélectionné.'
@@ -341,7 +406,39 @@ function saveLog(key:string){
   try{localStorage.setItem('vb:mobile-thread:'+key,JSON.stringify(entries))}catch{}
 }
 function loadLog(key:string){if(!import.meta.client || threadsHistory.value[key])return;try{const parsed=JSON.parse(localStorage.getItem('vb:mobile-thread:'+key)||'[]') as Entry[];if(Array.isArray(parsed))threadsHistory.value={...threadsHistory.value,[key]:parsed.slice(-70)}}catch{}}
-function openThread(item:Thread){if(item.connected)bridge.selectWindow(item.windowId);activeThread.value=item;loadLog(item.key);draft.value=localStorage.getItem('vb:mobile-draft:'+item.key)||'';nearBottom.value=true;nextTick(scrollBottom)}
+function viewedKey(key:string){return 'vb:mobile-last-viewed:'+key}
+function markThreadViewed(key:string){
+ if(!import.meta.client || !key)return
+ try{localStorage.setItem(viewedKey(key),String(Date.now()))}catch{}
+}
+function refreshResume(){
+ if(!import.meta.client || !activeThread.value){resumeState.value=null;return}
+ const seen=Number(localStorage.getItem(viewedKey(activeThread.value.key)) || '0')
+ resumeState.value=computeReentrySummary(seen,activeMessages.value,activeActivity.value)
+}
+function dismissResume(){resumeState.value=null;markThreadViewed(activeThread.value?.key ?? '')}
+function jumpToLastMessage(){dismissResume();nextTick(scrollBottom)}
+function switchMobileView(view:'conversation'|'terminal'){
+ mobileView.value=view
+ if(view==='conversation')nextTick(scrollBottom)
+}
+function goBackToConversations(){
+ markThreadViewed(activeThread.value?.key ?? '')
+ activeThread.value=null
+ resumeState.value=null
+ mobileView.value='conversation'
+}
+function openThread(item:Thread){
+ if(activeThread.value?.key!==item.key)markThreadViewed(activeThread.value?.key ?? '')
+ if(item.connected)bridge.selectWindow(item.windowId)
+ activeThread.value=item
+ loadLog(item.key)
+ draft.value=localStorage.getItem('vb:mobile-draft:'+item.key)||''
+ mobileView.value='conversation'
+ refreshResume()
+ nearBottom.value=true
+ nextTick(scrollBottom)
+}
 function onTargetChange(e:Event){const key=(e.target as HTMLSelectElement).value; const next=allThreads.value.find(item=>item.key===key);if(next){saveDraft();openThread(next)}}
 function saveDraft(){if(import.meta.client && activeThread.value)localStorage.setItem('vb:mobile-draft:'+activeThread.value.key,draft.value)}
 
@@ -409,6 +506,7 @@ function scrollBottom(){if(scroller.value)scroller.value.scrollTop=scroller.valu
 function timeLabel(ts:number){return new Date(ts).toLocaleTimeString(lang.value==='fr'?'fr-FR':'en-GB',{hour:'2-digit',minute:'2-digit'})}
 function displayOutput(entry:Entry){return compactTerminalOutput(entry.raw??entry.text).display || entry.text || t('unreadableOutput')}
 function toggleRaw(id:string){expandedRaw.value={...expandedRaw.value,[id]:!expandedRaw.value[id]}}
+function toggleOutputText(id:string){expandedOutput.value={...expandedOutput.value,[id]:!expandedOutput.value[id]}}
 function sendInstruction(){
  const text=draft.value.trim(),item=activeThread.value
  if(!item || !text || !canSend.value)return
@@ -433,7 +531,7 @@ function requestNewMonitoredTerminal(){
  if(liveWindows.value.length===1){createMonitoredTerminal(liveWindows.value[0]!.id);return}
  newTerminalWindowId.value=liveWindows.value.find(window=>window.id===bridge.activeWindowId.value)?.id ?? liveWindows.value[0]!.id
  showNewTerminalPicker.value=true
- if(activeThread.value)activeThread.value=null
+ if(activeThread.value)goBackToConversations()
 }
 function reopenMirroredTerminal(){
  const item=activeThread.value
@@ -496,7 +594,7 @@ function chooseWindow(windowId:string){const next=allThreads.value.find(item=>it
 function openProject(path:string){closeSheets();bridge.requestOpenProject(path,true)}
 function openAdvancedSettings(){closeSheets();void navigateTo('/settings')}
 function signOut(){closeSheets();bridge.clearStoredSession();void navigateTo('/setup')}
-function requestWindowClose(){if(!activeThread.value?.connected || !bridge.agentStatus.value?.control?.allowWindowClose)return;confirmClose.value=false;if(bridge.send({type:'close_window'})){activeThread.value=null}}
+function requestWindowClose(){if(!activeThread.value?.connected || !bridge.agentStatus.value?.control?.allowWindowClose)return;confirmClose.value=false;if(bridge.send({type:'close_window'})){goBackToConversations()}}
 async function revokeAccess(){revoking.value=true;revokeError.value=false;const success=await bridge.revokeRelaySession();revoking.value=false;if(success){confirmRevoke.value=false;void navigateTo('/setup')}else revokeError.value=true}
 const off=bridge.onMessage((msg:WsMessage)=>{
  if(msg.type==='preview_capture_result' && previewOpen.value && previewBusy.value
@@ -568,7 +666,12 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
  }
 })
 
+function handleMobileVisibility(){
+ if(document.visibilityState==='hidden')markThreadViewed(activeThread.value?.key ?? '')
+ else if(document.visibilityState==='visible')refreshResume()
+}
 onMounted(()=>{
+  document.addEventListener('visibilitychange',handleMobileVisibility)
   const stored = localStorage.getItem('vb:mobile-language')
   if(stored==='fr'||stored==='en')lang.value=stored
   else lang.value=navigator.language.toLowerCase().startsWith('fr')?'fr':'en'
@@ -596,10 +699,15 @@ watch(allThreads,(threads)=>{
   const focusTerminal=String(route.query.focusTerminal??'')
   if(focusWindow && focusTerminal){
     const target=threads.find(thread=>thread.windowId===focusWindow && thread.terminalId===focusTerminal)
-    if(target)openThread(target)
+    if(target && activeThread.value?.key!==target.key)openThread(target)
   }
 },{immediate:true})
-onUnmounted(()=>{off();offTerminal();if(previewTimeout)clearTimeout(previewTimeout)})
+onUnmounted(()=>{
+ markThreadViewed(activeThread.value?.key ?? '')
+ if(import.meta.client)document.removeEventListener('visibilitychange',handleMobileVisibility)
+ off();offTerminal()
+ if(previewTimeout)clearTimeout(previewTimeout)
+})
 useHead({title:'DevBridge | Conversations'})
 </script>
 
@@ -1112,6 +1220,33 @@ useHead({title:'DevBridge | Conversations'})
   font-size:10px;
   box-shadow:var(--shadow);
 }
+
+/* V6: conversation-first reading, contextual reentry and a dedicated terminal surface */
+.mb-view-switch{display:grid;grid-template-columns:1fr 1fr;flex:0 0 auto;min-height:46px;padding:0 14px;border-bottom:var(--mb-border);background:var(--bg)}
+.mb-view-switch button{display:flex;justify-content:center;align-items:center;gap:8px;min-height:46px;padding:10px;color:var(--muted);font-size:11px;border-bottom:2px solid transparent}
+.mb-view-switch button.selected{border-bottom-color:var(--accent);color:var(--text);font-weight:500}
+.mb-view-switch button span{color:var(--accent);font-size:14px}
+.mb-resume{display:flex;flex:0 0 auto;align-items:stretch;min-height:70px;margin:10px 14px 0;background:var(--surface);border:1px solid var(--border-bright);border-left:2px solid var(--accent)}
+.mb-resume-primary{display:flex;flex:1;min-width:0;align-items:center;gap:11px;text-align:left;padding:10px}
+.mb-resume-mark{width:27px;height:27px;flex:0 0 27px;display:grid;place-items:center;background:var(--surface2);color:var(--accent);font-size:20px}
+.mb-resume-copy{display:grid;gap:5px;min-width:0}
+.mb-resume-copy strong{font-size:11px;color:var(--text);font-weight:500}
+.mb-resume-copy small{font-size:10px;line-height:1.45;color:var(--text-mid)}
+.mb-resume-arrow{font-size:17px;color:var(--accent)}
+.mb-resume-close{flex:0 0 38px;align-self:stretch;display:grid;place-items:center;font-size:19px;color:var(--muted);border-left:var(--mb-border)}
+.mb-output-text.mb-output-preview{max-height:105px;overflow:hidden;mask-image:linear-gradient(#000 55%,transparent)}
+.mb-text-toggle{display:flex;align-items:center;gap:9px;margin-top:8px;padding:7px 0;font-size:10px;color:var(--accent);text-align:left}
+.mb-terminal-workspace{display:flex;flex-direction:column;flex:1;min-height:0;margin:12px 14px;overflow:hidden;border:1px solid var(--border-bright);background:var(--surface)}
+.mb-terminal-head{display:flex;flex:0 0 auto;align-items:flex-start;justify-content:space-between;gap:9px;padding:12px;border-bottom:var(--mb-border)}
+.mb-terminal-head>div{display:grid;gap:4px;min-width:0}
+.mb-terminal-head strong{font-size:11px;font-weight:500;color:var(--text)}
+.mb-terminal-head small{font-size:10px;line-height:1.6;color:var(--text-mid)}
+.mb-terminal-reception{display:flex;align-items:center;gap:6px;flex-shrink:0;font-size:9px;color:var(--muted);text-transform:uppercase}
+.mb-terminal-reception.connected{color:var(--text-mid)}
+.mb-terminal-pre{flex:1;min-height:0;overflow:auto;margin:0;padding:14px 12px;font:11px/1.55 'DM Mono',monospace;color:var(--text);white-space:pre;tab-size:4;overscroll-behavior:contain}
+.mb-terminal-placeholder{flex:1;margin:auto;padding:25px 16px;text-align:center;color:var(--muted);font-size:11px;line-height:1.7}
+.mb-terminal-foot{flex:0 0 auto;padding:11px 12px;border-top:var(--mb-border);font-size:9px;line-height:1.6;color:var(--text-mid)}
+@media(max-height:620px){.mb-view-switch,.mb-view-switch button{min-height:40px}.mb-resume{min-height:56px}}
 
 /* Target picker and input stay fixed at the bottom */
 .mb-composer{
