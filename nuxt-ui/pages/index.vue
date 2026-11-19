@@ -1301,7 +1301,9 @@ async function doPair() {
   if (!ok) {
     pairError.value = 'Échec — adresse invalide ou code expiré. Rafraîchissez le QR.'
     await loadPairingCode()
-  } else {
+  } else if (mobilePairingState.value !== 'connecting') {
+    // The phone should navigate immediately after a successful token exchange.
+    // Desktop-only status/preview requests must not block the QR workflow.
     await loadFileTree()
     await bridge.fetchAgentStatus()
     await loadPreviewUrl()
