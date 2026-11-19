@@ -1304,13 +1304,13 @@ async function refreshPairing() {
       const token = bridge.token.value
       if (!relayBaseUrl || !token) throw new Error('relay not connected')
       // Explicit user action only. The relay never publishes this code in snapshots.
-      const response = await fetch(`${relayBaseUrl.replace(/\\/$/, '')}/api/relay/pairing-code`, {
+      const response = await fetch(`${relayBaseUrl.replace(/\/$/, '')}/api/relay/pairing-code`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) throw new Error('pairing code unavailable')
       const payload = await response.json() as { qrUrl?: string; pairingCode?: string }
-      if (!payload.qrUrl || !/^\\d{6}$/.test(payload.pairingCode || '')) {
+      if (!payload.qrUrl || !/^\d{6}$/.test(payload.pairingCode || '')) {
         throw new Error('invalid pairing response')
       }
       freshRelayPairingUrl.value = payload.qrUrl
