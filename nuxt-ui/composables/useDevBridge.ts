@@ -93,7 +93,7 @@ export interface AgentStatus {
     activeLanguage?: string | null
     activeTerminal?: string | null
     activeTerminalId?: string | null
-    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null }>
+    terminals?: Array<{ id?: string; name: string; shellIntegration?: boolean; cwd?: string | null; processId?: number }>
     updatedAt?: number
   } | null
   previewUrl?: string | null
