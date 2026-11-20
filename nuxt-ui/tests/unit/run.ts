@@ -13,6 +13,7 @@ import { computeReentrySummary } from '../../utils/mobileReentry'
 import { inferCliContext, availableActions, discoverSlashCommands,
   safeWorkspaceRelativePath, quotePosix } from '../../utils/terminalActionCatalog'
 import { extractObservedTerminalNotes } from '../../utils/observedTerminalNotes'
+import { selectReadingSource } from '../../utils/terminalReadingSource'
 
 let failures = 0
 
@@ -380,6 +381,23 @@ test('file actions reject traversal and quote paths without injecting shell synt
   assert.equal(quotePosix("/home/me/project's files"),"'\/home\/me\/project'\\''s files'")
 })
 
+
+test('local AI reading is available from a monitored tmux screen without chat output',()=>{
+ const screen={key:'screen:thread-one',ts:200,text:'The deployment is pending review and manual verification of database migrations.'}
+ assert.deepEqual(selectReadingSource(null,screen),{...screen,kind:'screen'})
+})
+
+test('local AI reading selects the latest real evidence across a screen and terminal output',()=>{
+ const output={key:'output-1',ts:400,text:'Tests were executed; database migration must still be checked before the preview.'}
+ const olderScreen={key:'screen:thread-one',ts:300,text:'The old tmux screen does not reflect the latest completion state anymore.'}
+ assert.equal(selectReadingSource(output,olderScreen)?.kind,'output')
+ assert.equal(selectReadingSource(output,{...olderScreen,ts:500})?.kind,'screen')
+})
+
+test('local AI reading does not offer a misleading analysis for an empty or short output',()=>{
+ assert.equal(selectReadingSource({key:'empty',ts:10,text:'\u001b[31m>\u001b[0m'},null),null)
+ assert.equal(selectReadingSource(null,{key:'screen',ts:200,text:'Waiting...'}),null)
+})
 if (failures > 0) {
   process.exitCode = 1
 } else {
