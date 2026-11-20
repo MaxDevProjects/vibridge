@@ -166,7 +166,7 @@ export class ChatParticipant {
       // Reject multiline text rather than risk treating embedded newlines
       // as separate commands. These need an explicit bracketed-paste path.
       await this.mirror.sendInput(terminal, text, sendEnter);
-      return 'input_sent';
+      return sendEnter ? 'input_sent' : 'dispatched';
     }
     if (!sendEnter) {
       terminal.sendText(text, false);
