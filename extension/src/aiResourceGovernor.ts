@@ -54,6 +54,27 @@ export function modelFitsBudget(modelBytes: number, memoryMb: number): boolean {
   // Leave room for the KV cache, compute buffers, executable and libraries.
   return modelBytes > 0 && modelBytes < (memoryMb - 180) * MB;
 }
+/**
+ * Sum resident memory over the timeout wrapper and its descendants.
+ * The timeout wrapper independently terminates llama.cpp even if VS Code
+ * itself exits and our JavaScript watchdog is no longer running.
+ */
+async function processTreeRssMb(pid: number, visited = new Set<number>(), depth = 0): Promise<number> {
+  if (!Number.isInteger(pid) || pid <= 0 || depth > 5 || visited.has(pid)) return 0;
+  visited.add(pid);
+  const root = '/proc/' + pid;
+  const status = await fs.readFile(root + '/status', 'utf8').catch(() => '');
+  const own = parseLinuxRssMb(status) ?? 0;
+  const children = await fs.readFile(root + '/task/' + pid + '/children', 'utf8').catch(() => '');
+  const ids = children.trim().split(/\s+/).filter(Boolean).slice(0,16);
+  let total = own;
+  for (const id of ids) {
+    const child = Number(id);
+    if (Number.isInteger(child)) total += await processTreeRssMb(child,visited,depth+1);
+  }
+  return total;
+}
+
 export async function checkHostBudget(modelBytes: number, limits: AiResourceLimits): Promise<void> {
   if (process.platform !== 'linux') throw new Error('linux_host_required');
   if (!modelFitsBudget(modelBytes, limits.memoryMb)) throw new Error('model_exceeds_memory_budget');
@@ -85,11 +106,13 @@ export async function runHostAiProcess(
   const lockFile = path.join(lockDir, 'inference.lock');
   const start = Date.now();
   return new Promise((resolve, reject) => {
-    // -F: flock execs nice, which execs llama-cli, retaining the SAME PID.
-    // RSS monitoring therefore observes the actual model process.
-    const child = spawn('flock', [
-      '-n', '-E', '75', '-F', lockFile,
-      'nice', '-n', '15', binary, ...args,
+    // 'timeout' is an independent Linux watchdog. It remains alive if the
+    // extension host crashes, preventing indefinitely orphaned model loads.
+    // flock -F does not fork: only the timeout wrapper and llama-cli remain.
+    const child = spawn('timeout', [
+      '-s','TERM','-k','2s',Math.ceil(limits.timeoutMs / 1000) + 's',
+      'flock','-n','-E','75','-F',lockFile,
+      'nice','-n','15',binary,...args,
     ], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
     let finished = false;
     let failure: string | null = null;
@@ -108,8 +131,7 @@ export async function runHostAiProcess(
     const sample = setInterval(async () => {
       if (!child.pid || finished) return;
       try {
-        const status = await fs.readFile('/proc/' + child.pid + '/status', 'utf8');
-        const rss = parseLinuxRssMb(status);
+        const rss = await processTreeRssMb(child.pid);
         if (rss !== null) peakMb = Math.max(peakMb, rss);
         if (rss !== null && rss > limits.memoryMb) {
           failure = 'ai_memory_budget_exceeded';
@@ -142,6 +164,7 @@ export async function runHostAiProcess(
       cleanup();
       if (failure) { reject(new Error(failure)); return; }
       if (code === 75) { reject(new Error('interpreter_busy_other_agent')); return; }
+      if (code === 124 || code === 137) { reject(new Error('interpreter_timeout')); return; }
       if (code !== 0) { reject(new Error('local_inference_failed')); return; }
       resolve({ stdout: output, peakMb, durationMs: Date.now() - start });
     });
