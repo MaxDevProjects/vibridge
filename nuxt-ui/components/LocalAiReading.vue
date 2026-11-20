@@ -28,7 +28,7 @@
           {{ item.text }}
           <small>Source : « {{ item.evidence }} »</small>
         </li>
-        <li v-if="!result.items.length" class="local-ai-hint">Aucune information suffisamment étayée dans la sortie transmise.</li>
+        <li v-if="!result.items.length" class="local-ai-hint">Le modèle n'a pas fourni de point appuyé par une citation exacte de la sortie.</li>
       </ul>
       <small>Lecture facultative non vérifiée. Seules les commandes réellement confirmées constituent des preuves techniques.</small>
       <small v-if="result.metrics && result.metrics.peakMemoryMb > 0">
