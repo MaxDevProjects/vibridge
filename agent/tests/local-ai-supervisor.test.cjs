@@ -26,7 +26,8 @@ test('supervisor serializes across windows, queues bounded work, matches request
   assert.equal(dispatched.length,2)
   assert.equal(dispatched[1].request_id,'request-02')
   assert.equal(supervisor.complete('window-02',{request_id:'request-02',terminalId:'term-01',ok:false,error:'host_memory_busy'}),true)
-  assert.equal(events.filter(e=>e.type==='terminal_interpret_result').length,2)
+  assert.equal(events.filter(e=>e.type==='terminal_interpret_result').length,3)
+  assert.equal(events.find(e=>e.request_id==='request-03'&&e.error==='ai_queue_full')?.ok,false)
   supervisor.shutdown()
 })
 
