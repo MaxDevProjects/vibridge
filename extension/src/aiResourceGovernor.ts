@@ -75,6 +75,25 @@ async function processTreeRssMb(pid: number, visited = new Set<number>(), depth 
   return total;
 }
 
+/**
+ * Map common llama.cpp/OS failures into safe machine-readable codes.
+ * Never send stderr or the generated prompt to the mobile or the relay.
+ */
+export function categorizeLocalAiProcessFailure(code: number | null, stderr: string): string {
+  const diagnostic = stderr.toLowerCase().slice(-2000)
+  if (code === 126 || code === 127) return 'ai_binary_unavailable'
+  if (/unknown (?:argument|option)|unrecognized (?:argument|option)|invalid (?:argument|option)|unknown flag/.test(diagnostic)) {
+    return 'ai_cli_option_unsupported'
+  }
+  if (/failed to (?:open|load) model|error loading model|invalid model|failed to read model/.test(diagnostic)) {
+    return 'ai_model_load_failed'
+  }
+  if (/out of memory|cannot allocate memory|bad_alloc|allocation failed/.test(diagnostic)) {
+    return 'ai_model_memory_error'
+  }
+  return 'local_inference_failed'
+}
+
 export async function checkHostBudget(modelBytes: number, limits: AiResourceLimits): Promise<void> {
   if (process.platform !== 'linux') throw new Error('linux_host_required');
   if (!modelFitsBudget(modelBytes, limits.memoryMb)) throw new Error('model_exceeds_memory_budget');
@@ -165,7 +184,7 @@ export async function runHostAiProcess(
       if (failure) { reject(new Error(failure)); return; }
       if (code === 75) { reject(new Error('interpreter_busy_other_agent')); return; }
       if (code === 124 || code === 137) { reject(new Error('interpreter_timeout')); return; }
-      if (code !== 0) { reject(new Error('local_inference_failed')); return; }
+      if (code !== 0) { reject(new Error(categorizeLocalAiProcessFailure(code, errorOutput))); return; }
       resolve({ stdout: output, peakMb, durationMs: Date.now() - start });
     });
   });
