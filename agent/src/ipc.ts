@@ -12,6 +12,7 @@ import type { PushService } from './push';
 import type { AuthService } from './auth';
 import type { CliRegistry } from './cliRegistry';
 import { ActivityEngine, type ActivitySnapshot } from './activity/engine';
+import { LocalAiSupervisor, localAiSettings } from './localAiSupervisor';
 
 // Matches http://localhost:PORT or http://127.0.0.1:PORT with optional path, ignoring ANSI.
 const DEV_SERVER_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?(?:\/[^\s\x1b]*)*/;
@@ -39,6 +40,20 @@ export class IpcServer {
   private projectsParentDir = '';
   broadcast?: (data: unknown) => void;
   forward?: (type: string, payload?: Record<string, unknown>) => void;
+  // One admission controller per agent, shared across all connected VS Code windows.
+  // A second agent also needs the host-side flock for cross-agent isolation.
+  private readonly ai = new LocalAiSupervisor(
+    frame => this.sendToExtension(frame),
+    report => {
+      this.broadcast?.(report);
+      this.forward?.(String(report.type), report);
+    },
+    localAiSettings(),
+  );
+  enqueueLocalAi(job: { requestId:string; windowId:string; terminalId:string; excerpt:string }): boolean {
+    return this.ai.enqueue(job);
+  }
+
   private readonly activity = new ActivityEngine(update => {
     this.broadcast?.({ type:'activity_update', ...update });
     this.forward?.('activity_update', { ...update });
@@ -122,6 +137,7 @@ export class IpcServer {
   }
 
   close(): void {
+    this.ai.shutdown();
     for (const timer of this.windowCleanupTimers.values()) clearTimeout(timer);
     this.windowCleanupTimers.clear();
     this.clients.forEach((c) => c.destroy());
@@ -224,6 +240,7 @@ export class IpcServer {
       }
       // Publish after choosing the new focused window. Otherwise a disconnected
       // focus ID can be retained in the relay and restored on mobile reload.
+      if (wasRegistered && windowId) this.ai.disconnectWindow(windowId);
       if (wasRegistered) this.publishWindows();
       this.clients.delete(socket);
       off();
@@ -491,12 +508,10 @@ export class IpcServer {
         break;
       }
       case 'terminal_interpret_result': {
-        const payload={windowId,request_id:msg.request_id,
-          terminalId:typeof msg.terminalId==='string'?msg.terminalId.slice(0,80):'',
-          ok:msg.ok===true,readout:msg.readout,
-          error:typeof msg.error==='string'?msg.error.slice(0,100):undefined};
-        this.broadcast?.({type:'terminal_interpret_result',...payload});
-        this.forward?.('terminal_interpret_result',payload);
+        // Accept a result ONLY for the current job and the authenticated
+        // extension socket that owns the requested window. Ignore stale or
+        // unsolicited responses; they must never reach another mobile session.
+        this.ai.complete(windowId, msg);
         break;
       }
       case 'cli_sessions_result': {
