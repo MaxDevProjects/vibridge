@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { boundedResources, runHostAiProcess, type AiResourceLimits } from './aiResourceGovernor';
+import { LOCAL_READOUT_GRAMMAR, observedExcerpts } from './localReadoutContract';
 
 export interface InterpretedItem {
   text:string;
@@ -16,7 +17,8 @@ export interface InterpretedItem {
   category:'announced'|'remaining'|'uncertain';
 }
 export interface LocalReadout {
-  title:string;items:InterpretedItem[];engine:'local-model';
+  title:string;items:InterpretedItem[];engine:'local-model'|'observed-excerpts';
+  fallbackReason?:'invalid_model_output'|'no_cited_items';
   metrics?: { peakMemoryMb:number; durationMs:number };
 }
 
@@ -107,18 +109,34 @@ Réponse JSON :`;
   // is deleted as soon as the one-shot CPU process exits.
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'vibridge-interpret-'));
   const file=path.join(dir,'prompt.txt');
+  const grammarFile=path.join(dir,'readout.gbnf');
   try{
     await fs.chmod(dir,0o700);
     await fs.writeFile(file,prompt,{encoding:'utf8',mode:0o600});
+    await fs.writeFile(grammarFile,LOCAL_READOUT_GRAMMAR,{encoding:'utf8',mode:0o600});
     const result=await runHostAiProcess(binary,[
       '-m',model,'-ngl','0','-t',String(limits.threads),
       '-c','1152','-n','220','--temp','0.1',
-      '--simple-io','--no-display-prompt','-f',file,
+      '--simple-io','--no-display-prompt',
+      '--grammar-file',grammarFile,'-f',file,
     ],info.size,limits);
-    return {
-      ...interpretModelOutput(result.stdout,source),
-      metrics:{peakMemoryMb:result.peakMb,durationMs:result.durationMs},
-    };
+    const metrics={peakMemoryMb:result.peakMb,durationMs:result.durationMs};
+    try {
+      const readout=interpretModelOutput(result.stdout,source);
+      if(readout.items.length) return {...readout,metrics};
+    } catch(error) {
+      // If llama.cpp generated malformed text, don't invent JSON and don't
+      // spend another 25 seconds relaunching the model.
+      if(!(error instanceof Error) || error.message!=='invalid_model_output')throw error;
+      const items=observedExcerpts(source);
+      if(!items.length)throw error;
+      return {title:'Extraits du terminal observés',items,
+        engine:'observed-excerpts',fallbackReason:'invalid_model_output',metrics};
+    }
+    const items=observedExcerpts(source);
+    return {title:'Extraits du terminal observés',items,
+      engine:'observed-excerpts',fallbackReason:'no_cited_items',metrics};
+
   }finally{
     await fs.rm(dir,{force:true,recursive:true}).catch(()=>undefined);
   }

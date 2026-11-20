@@ -2,6 +2,7 @@ const test=require('node:test')
 const assert=require('node:assert/strict')
 const {workspaceOwnsSession,isValidCliSessionId}=require('../dist/cliSessionIndex')
 const {filterPrivateTerminalText,interpretModelOutput}=require('../dist/localInterpreter')
+const {LOCAL_READOUT_GRAMMAR,observedExcerpts}=require('../dist/localReadoutContract')
 
 test('CLI sessions are scoped to the currently selected workspace',()=>{
   assert.equal(workspaceOwnsSession('/home/test/work','/home/test/work'),true)
@@ -59,4 +60,39 @@ test('local model retains strict grounded extracts with real title',()=>{
  assert.equal(result.title,'Contrôles CSS annoncés')
  assert.equal(result.items.length,1)
  assert.equal(result.items[0].evidence,'git diff --check OK')
+})
+
+test('llama.cpp grammar enforces the expected JSON object keys and limits items',()=>{
+ assert.match(LOCAL_READOUT_GRAMMAR,/^root ::= /)
+ assert.match(LOCAL_READOUT_GRAMMAR,/\\\"title\\\"/)
+ assert.match(LOCAL_READOUT_GRAMMAR,/\\\"evidence\\\"/)
+ assert.match(LOCAL_READOUT_GRAMMAR,/\\\"uncertain\\\"/)
+ assert.ok(!LOCAL_READOUT_GRAMMAR.includes('thème en français'))
+})
+test('fallback returns exact, honest terminal excerpts when model cannot produce JSON',()=>{
+ const source=[
+  '> ok sur desktop il faut sortir le widget totalement',
+  '• Je vérifie que le breakpoint mobile continue bien à fonctionner.',
+  '• Widget en position: fixed; sur desktop uniquement.',
+  'Worked for 23s • Jul 26 at 11:51',
+ ].join('\n')
+ const items=observedExcerpts(source)
+ assert.equal(items.length,2)
+ assert.equal(items[0].category,'uncertain')
+ for(const item of items){
+  assert.ok(source.includes(item.evidence))
+  assert.equal(item.text,item.evidence)
+ }
+ assert.ok(!items.some(item=>item.text.includes('Worked for')))
+})
+test('fallback refuses to reflect redacted credentials as apparently useful evidence',()=>{
+ const source=[
+  '• password=ABCD1234567890',
+  '• [SECRET_REDACTED] ',
+  '• Une action reste à vérifier manuellement.',
+ ].join('\n')
+ const items=observedExcerpts(source)
+ assert.equal(items.length,1)
+ assert.match(items[0].text,/Une action reste/)
+ assert.ok(!items[0].text.includes('SECRET'))
 })

@@ -377,6 +377,7 @@ const sessionsError=ref('')
 type LocalReadingItem={text:string;evidence:string;category:'announced'|'remaining'|'uncertain'}
 type LocalReading={
  title:string;items:LocalReadingItem[];
+ engine?:'local-model'|'observed-excerpts';
  metrics?:{peakMemoryMb:number;durationMs:number};
 }
 const localReading=ref<LocalReading|null>(null)
@@ -958,6 +959,7 @@ const off=bridge.onMessage((msg:WsMessage)=>{
      const value=msg.readout as Record<string,unknown>
      const items=Array.isArray(value.items)?value.items:[]
      localReading.value={title:typeof value.title==='string'?value.title.slice(0,100):'Lecture locale',
+       engine:value.engine==='observed-excerpts'?'observed-excerpts':'local-model',
        metrics:(()=>{
          const m=value.metrics as Record<string,unknown>|undefined
          return m && typeof m.peakMemoryMb==='number' && typeof m.durationMs==='number'
