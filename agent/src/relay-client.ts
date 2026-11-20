@@ -738,8 +738,10 @@ export class RelayClient {
         const excerpt=typeof msg.excerpt==='string'?msg.excerpt:'';
         const terminalId=typeof msg.terminalId==='string'?msg.terminalId:'';
         if(!windowId||!terminalId||excerpt.length<40||excerpt.length>6000)return false;
-        return ipc.sendToExtension({type:'terminal_interpret',windowId,terminalId,
-          excerpt,request_id:msg.request_id});
+        return ipc.enqueueLocalAi({
+          requestId: typeof msg.request_id === 'string' ? msg.request_id : '',
+          windowId, terminalId, excerpt,
+        });
       }
       case 'cli_sessions_request':
         return Boolean(windowId) && ipc.sendToExtension({
