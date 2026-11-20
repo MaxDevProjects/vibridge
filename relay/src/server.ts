@@ -835,7 +835,12 @@ export function createRelayServer(options: RelayServerOptions) {
         const readout=msg.ok===true?{
           title:typeof (msg.readout as Record<string,unknown>)?.title==='string'
             ?String((msg.readout as Record<string,unknown>).title).slice(0,100):'Lecture locale',
-          engine:'local-model',items,
+          engine:(msg.readout as Record<string,unknown>)?.engine==='observed-excerpts'
+            ?'observed-excerpts':'local-model',
+          fallbackReason:['invalid_model_output','no_cited_items'].includes(
+            String((msg.readout as Record<string,unknown>)?.fallbackReason))
+            ?String((msg.readout as Record<string,unknown>).fallbackReason):undefined,
+          items,
           metrics:(()=>{
             const source=(msg.readout as Record<string,unknown>).metrics
             if(!source||typeof source!=='object')return undefined
