@@ -14,6 +14,7 @@ import { inferCliContext, availableActions, discoverSlashCommands,
   safeWorkspaceRelativePath, quotePosix } from '../../utils/terminalActionCatalog'
 import { extractObservedTerminalNotes } from '../../utils/observedTerminalNotes'
 import { selectReadingSource } from '../../utils/terminalReadingSource'
+import { nextDeliveryStage, deliveryStatusText } from '../../utils/terminalDelivery'
 
 let failures = 0
 
@@ -397,6 +398,17 @@ test('local AI reading selects the latest real evidence across a screen and term
 test('local AI reading does not offer a misleading analysis for an empty or short output',()=>{
  assert.equal(selectReadingSource({key:'empty',ts:10,text:'\u001b[31m>\u001b[0m'},null),null)
  assert.equal(selectReadingSource(null,{key:'screen',ts:200,text:'Waiting...'}),null)
+})
+test('terminal delivery differentiates relay, tmux input and observed screen without false completion',()=>{
+ assert.equal(nextDeliveryStage('sent','agent_received'),'agent_received')
+ assert.equal(nextDeliveryStage('agent_received','keys_sent'),'keys_sent')
+ assert.equal(nextDeliveryStage('keys_sent','agent_received'),'keys_sent')
+ assert.equal(nextDeliveryStage('keys_sent','screen_observed'),'screen_observed')
+ assert.equal(nextDeliveryStage('screen_observed','agent_received'),'screen_observed')
+ assert.equal(nextDeliveryStage('sent','rejected'),'rejected')
+ assert.match(deliveryStatusText('keys_sent'),/non confirmée/)
+ assert.match(deliveryStatusText('unconfirmed'),/doublons/)
+ assert.match(deliveryStatusText('rejected','terminal_input_unconfirmed'),/champ Codex/)
 })
 if (failures > 0) {
   process.exitCode = 1
