@@ -21,16 +21,21 @@
     <p v-else-if="unavailableReason && !error" class="local-ai-hint">{{ unavailableReason }}</p>
     <p v-if="error" class="local-ai-error" role="status">{{ error }}</p>
     <div v-if="result" class="local-ai-result">
+      <p v-if="result.engine==='observed-excerpts'" class="local-ai-state" role="status">
+        Le mini-modèle n’a pas produit une analyse exploitable. Voici uniquement des extraits exacts observés dans le terminal, sans interprétation IA.
+      </p>
       <strong>{{ result.title }}</strong>
       <ul>
         <li v-for="(item,i) in result.items" :key="i">
-          <span>{{ item.category === 'remaining' ? 'À faire' : item.category === 'uncertain' ? 'À vérifier' : 'Annoncé' }}</span>
+          <span>{{ result.engine==='observed-excerpts' ? 'Extrait observé' :
+            item.category === 'remaining' ? 'À faire' : item.category === 'uncertain' ? 'À vérifier' : 'Annoncé' }}</span>
           {{ item.text }}
-          <small>Source : « {{ item.evidence }} »</small>
+          <small v-if="result.engine!=='observed-excerpts'">Source : « {{ item.evidence }} »</small>
         </li>
         <li v-if="!result.items.length" class="local-ai-hint">Le modèle n'a pas fourni de point appuyé par une citation exacte de la sortie.</li>
       </ul>
-      <small>Lecture facultative non vérifiée. Seules les commandes réellement confirmées constituent des preuves techniques.</small>
+      <small v-if="result.engine!=='observed-excerpts'">Lecture facultative non vérifiée. Seules les commandes réellement confirmées constituent des preuves techniques.</small>
+      <small v-else>Les extraits ne prouvent pas que Codex a réellement exécuté ou terminé une instruction.</small>
       <small v-if="result.metrics && result.metrics.peakMemoryMb > 0">
         Pic RAM observé : {{ result.metrics.peakMemoryMb }} Mo · {{ (result.metrics.durationMs / 1000).toFixed(1) }} s
       </small>
@@ -45,6 +50,7 @@ interface LocalReadingItem {
   category: 'announced' | 'remaining' | 'uncertain'
 }
 interface LocalReading {
+  engine?: 'local-model' | 'observed-excerpts'
   title: string
   items: LocalReadingItem[]
   metrics?: { peakMemoryMb: number; durationMs: number }
