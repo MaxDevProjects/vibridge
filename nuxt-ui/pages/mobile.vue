@@ -179,7 +179,7 @@
         </template>
         <ActivityTimeline v-if="significantActivityItems.length" :key="activeThread.key + ':activity'"
           :items="significantActivityItems" :lang="lang" compact />
-        <LocalAiReading v-if="analysisSource?.kind==='screen' || !lastOutput"
+        <LocalAiReading v-if="analysisSource?.kind==='screen' || !analysisSource || !lastOutput"
           :source-label="analysisSourceLabel"
           :enabled="canAnalyzeSource"
           :busy="readingBusy"
@@ -944,7 +944,19 @@ const off=bridge.onMessage((msg:WsMessage)=>{
        :error==='interpreter_not_enabled'
        ?'Modèle local désactivé. Active devbridge.interpreterEnabled dans les paramètres Utilisateur VS Code WSL.'
        :error==='model_path_missing'||error==='model_unavailable'
-       ?'Configure devbridge.interpreterModelPath avec un GGUF local valide.'
+       ?'Le fichier GGUF est introuvable ou illisible. Vérifie son chemin dans les paramètres Utilisateur VS Code WSL.'
+       :error==='ai_binary_unavailable'||error==='ai_host_tools_missing'
+       ?'Un outil local est introuvable (llama-cli, timeout, flock ou nice). Dans VS Code WSL, lance DevBridge: Diagnose Local AI.'
+       :error==='ai_cli_option_unsupported'
+       ?'La version de llama.cpp ne reconnaît pas une option. Mets à jour llama.cpp puis vérifie avec DevBridge: Diagnose Local AI.'
+       :error==='ai_model_load_failed'
+       ?'llama.cpp ne peut pas charger le fichier GGUF. Vérifie son intégrité et le budget RAM.'
+       :error==='ai_model_memory_error'
+       ?'llama.cpp a échoué à allouer la mémoire nécessaire. Essaie un modèle plus léger.'
+       :error==='invalid_model_output'
+       ?'Le modèle a répondu dans un format inutilisable. Aucune information n’a été inventée.'
+       :error==='local_inference_failed'
+       ?'Le processus local a échoué. Lance DevBridge: Diagnose Local AI dans VS Code WSL, puis vérifie les options de llama-cli.'
        :'Lecture locale indisponible ('+error.slice(0,50)+').'
    }
    return
