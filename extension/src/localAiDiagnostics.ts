@@ -7,7 +7,7 @@ import fs from 'node:fs/promises'
 import { constants } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { modelFitsBudget, parseLinuxMemoryAvailable } from './aiResourceGovernor'
+import { modelFitsBudget, parseLinuxMemoryAvailable, sampleLinuxCpuUtilization } from './aiResourceGovernor'
 
 export interface LocalAiDiagnosticConfig {
   enabled: boolean
@@ -65,7 +65,11 @@ export async function diagnoseLocalAi(config: LocalAiDiagnosticConfig): Promise<
   result.push('Budget IA : '+config.memoryMb+' Mio, réserve : '+config.reserveMb+' Mio, CPU : '+config.threads+' thread(s)')
   if(memory!==null)result.push('Précondition RAM disponible : '
     +(memory >= config.memoryMb+config.reserveMb?'satisfaite':'insuffisante'))
-  result.push('Charge Linux (1 min) : '+os.loadavg()[0].toFixed(2))
+  const cpu=process.platform==='linux'?await sampleLinuxCpuUtilization(250):null
+  result.push('Utilisation CPU réelle (échantillon 250 ms) : '
+    +(cpu===null?'indisponible':Math.round(cpu*100)+' %'))
+  result.push('Protection CPU : deux échantillons consécutifs >= 92 % bloquent le démarrage')
+  result.push('Charge Linux moyenne (1 min, informative seulement) : '+os.loadavg()[0].toFixed(2))
   result.push('Ces contrôles ne prouvent pas qu’une génération fonctionne. Ils ne chargent pas le modèle.')
   return result
 }
