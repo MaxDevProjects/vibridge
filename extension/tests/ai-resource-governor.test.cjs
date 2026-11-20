@@ -1,6 +1,6 @@
 const test=require('node:test')
 const assert=require('node:assert/strict')
-const {boundedResources,parseLinuxMemoryAvailable,parseLinuxRssMb,modelFitsBudget}
+const {boundedResources,parseLinuxMemoryAvailable,parseLinuxRssMb,modelFitsBudget,categorizeLocalAiProcessFailure}
   =require('../dist/aiResourceGovernor')
 
 test('resource budgets are conservative and capped',()=>{
@@ -22,4 +22,12 @@ test('oversized models are not accepted under a small memory budget',()=>{
   assert.equal(modelFitsBudget(600*1024*1024,1024),true)
   assert.equal(modelFitsBudget(980*1024*1024,1024),false)
   assert.equal(modelFitsBudget(400*1024*1024,384),false)
+})
+
+test('local inference failures are classified without disclosing terminal stderr',()=>{
+ assert.equal(categorizeLocalAiProcessFailure(127,''),'ai_binary_unavailable')
+ assert.equal(categorizeLocalAiProcessFailure(1,'error: unknown option --no-display-prompt'),'ai_cli_option_unsupported')
+ assert.equal(categorizeLocalAiProcessFailure(1,'failed to load model from file'),'ai_model_load_failed')
+ assert.equal(categorizeLocalAiProcessFailure(1,'cannot allocate memory'),'ai_model_memory_error')
+ assert.equal(categorizeLocalAiProcessFailure(1,'private source context must never appear here'),'local_inference_failed')
 })
