@@ -94,6 +94,38 @@ export function categorizeLocalAiProcessFailure(code: number | null, stderr: str
   return 'local_inference_failed'
 }
 
+/**
+ * Linux load average includes runnable tasks AND uninterruptible I/O waits.
+ * It can stay high while CPUs are available, especially in WSL. Use actual
+ * /proc/stat CPU time deltas instead of comparing load average with core count.
+ */
+export interface LinuxCpuTimes { total: number; idle: number }
+export function parseLinuxCpuTimes(text: string): LinuxCpuTimes | null {
+  const aggregate = text.split('\n').find(line => /^cpu\s/.test(line));
+  if (!aggregate) return null;
+  const columns = aggregate.trim().split(/\s+/).slice(1, 9).map(Number);
+  if (columns.length !== 8 || columns.some(value => !Number.isFinite(value) || value < 0)) return null;
+  // iowait is not CPU execution, so count it as idle for this admission guard.
+  // Ignore the guest fields (included already in user/nice on Linux).
+  return { total: columns.reduce((sum, value) => sum + value, 0), idle: columns[3]! + columns[4]! };
+}
+export function cpuUtilization(before: LinuxCpuTimes, after: LinuxCpuTimes): number | null {
+  const elapsed = after.total - before.total;
+  const idle = after.idle - before.idle;
+  if (elapsed <= 0 || idle < 0 || idle > elapsed) return null;
+  return (elapsed - idle) / elapsed;
+}
+async function readLinuxCpuTimes(): Promise<LinuxCpuTimes | null> {
+  return parseLinuxCpuTimes(await fs.readFile('/proc/stat', 'utf8').catch(() => ''));
+}
+export async function sampleLinuxCpuUtilization(intervalMs = 250): Promise<number | null> {
+  const before = await readLinuxCpuTimes();
+  if (!before) return null;
+  await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+  const after = await readLinuxCpuTimes();
+  return after ? cpuUtilization(before, after) : null;
+}
+
 export async function checkHostBudget(modelBytes: number, limits: AiResourceLimits): Promise<void> {
   if (process.platform !== 'linux') throw new Error('linux_host_required');
   if (!modelFitsBudget(modelBytes, limits.memoryMb)) throw new Error('model_exceeds_memory_budget');
@@ -101,10 +133,14 @@ export async function checkHostBudget(modelBytes: number, limits: AiResourceLimi
   const available = parseLinuxMemoryAvailable(contents);
   if (available === null) throw new Error('host_memory_unknown');
   if (available < limits.memoryMb + limits.reserveMb) throw new Error('host_memory_busy');
-  // Avoid competing with a busy Codex/compile workload. Linux load average
-  // is only an admission signal, never a claim of exact CPU utilization.
-  const cores = os.availableParallelism?.() ?? os.cpus().length;
-  if (cores > 0 && os.loadavg()[0] >= cores * 0.9) throw new Error('host_cpu_busy');
+  // Reject only sustained *measured CPU execution*, not elevated load
+  // average from blocked I/O or tasks that ran earlier. Two short samples
+  // avoid refusing an analysis because of a single brief build spike.
+  // Priority nice +15 and the small thread budget still protect VS Code.
+  const first = await sampleLinuxCpuUtilization(220);
+  const second = await sampleLinuxCpuUtilization(220);
+  if (first === null || second === null) throw new Error('host_cpu_unknown');
+  if (first >= 0.92 && second >= 0.92) throw new Error('host_cpu_busy');
 }
 
 /**

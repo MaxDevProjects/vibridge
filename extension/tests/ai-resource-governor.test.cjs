@@ -1,6 +1,6 @@
 const test=require('node:test')
 const assert=require('node:assert/strict')
-const {boundedResources,parseLinuxMemoryAvailable,parseLinuxRssMb,modelFitsBudget,categorizeLocalAiProcessFailure}
+const {boundedResources,parseLinuxMemoryAvailable,parseLinuxRssMb,modelFitsBudget,categorizeLocalAiProcessFailure,parseLinuxCpuTimes,cpuUtilization}
   =require('../dist/aiResourceGovernor')
 
 test('resource budgets are conservative and capped',()=>{
@@ -30,4 +30,25 @@ test('local inference failures are classified without disclosing terminal stderr
  assert.equal(categorizeLocalAiProcessFailure(1,'failed to load model from file'),'ai_model_load_failed')
  assert.equal(categorizeLocalAiProcessFailure(1,'cannot allocate memory'),'ai_model_memory_error')
  assert.equal(categorizeLocalAiProcessFailure(1,'private source context must never appear here'),'local_inference_failed')
+})
+
+test('CPU admission reads real processor utilization, not Linux load average',()=>{
+  // Simulate high load average (>6 on 4 cores), with only 25% actual CPU.
+  // This used to be refused by comparing load average directly with cores.
+  const start=parseLinuxCpuTimes('cpu 1000 0 500 3000 200 100 0 0 0 0\n')
+  const end=parseLinuxCpuTimes('cpu 1150 0 600 3600 250 100 0 0 0 0\n')
+  assert.ok(start&&end)
+  const utilization=cpuUtilization(start,end)
+  assert.ok(utilization!==null && utilization<0.92)
+  assert.ok(utilization!==null && utilization>0.20)
+})
+
+test('CPU admission guards sustained fully busy processors and ignores iowait',()=>{
+  const idle={total:1000,idle:800}
+  assert.equal(cpuUtilization(idle,{total:2000,idle:800}),1)
+  assert.equal(cpuUtilization(idle,{total:2000,idle:1800}),0)
+  assert.equal(cpuUtilization(idle,{total:800,idle:800}),null)
+  const parsed=parseLinuxCpuTimes('cpu 10 20 30 40 50 60 70 80 90 100\n')
+  assert.deepEqual(parsed,{total:360,idle:90})
+  assert.equal(parseLinuxCpuTimes('not cpu stats'),null)
 })
