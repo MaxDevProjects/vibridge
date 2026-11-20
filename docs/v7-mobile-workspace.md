@@ -59,6 +59,19 @@ La V7 fonctionne **sans IA**. Si tu veux tester la lecture plus contextuelle :
 
 **Ressources :** modèle chargé à la demande (mémoire de plusieurs centaines de Mo selon le GGUF et le contexte), deux threads CPU pendant l'inférence, zéro consommation GPU explicitement demandée. Pas de benchmark de latence ni de RAM tant que les vrais machines et modèles ne sont pas testés. Le texte est filtré pour quelques motifs de secrets, mais ce filtrage ne garantit pas la confidentialité ; évite d'envoyer des sorties contenant des secrets, même à un modèle local. Le prompt est écrit temporairement avec permissions 0600 et supprimé après exécution.
 
+## Dépanner l'analyse locale
+
+Si le bouton « Éclaircir » manque dans une conversation, regarde d'abord l'onglet **Terminal** : la version corrigée propose la lecture du dernier écran transmis par `tmux` même lorsque le fil de conversation ne possède aucune sortie texte enregistrée. Le panneau affiche la source analysée et explique les cas où aucune sortie assez lisible n'est disponible.
+
+Si une analyse échoue, dans **VS Code WSL** :
+
+1. Ouvre `Ctrl + Shift + P` puis **DevBridge: Diagnose Local AI**.
+2. Consulte le panneau **Sortie / Output**, canal **ViBridge: IA locale**.
+3. Vérifie que le modèle est activé dans les paramètres Utilisateur, que `llama-cli`, `timeout`, `flock` et `nice` sont trouvés, que le GGUF est lisible et que le budget RAM est cohérent.
+4. Si tous les contrôles sont verts mais que l'analyse échoue encore, note le **code d'erreur exact affiché sur le téléphone**. La commande ne lance pas d'inférence et ne vérifie donc pas les options effectives de ta version de llama.cpp.
+
+Ne partage pas tes jetons, fichiers de configuration contenant des secrets ni les sorties brutes de Codex pour cette vérification.
+
 ## Recette critique
 
 - Basculer entre deux fenêtres VS Code et deux terminaux qui portent le même nom ; **aucune** commande ne doit partir dans la mauvaise fenêtre.

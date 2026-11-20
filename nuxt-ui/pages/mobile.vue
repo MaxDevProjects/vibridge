@@ -113,6 +113,17 @@
         <p v-else-if="activeThread.mirrorSession" class="mb-terminal-placeholder">{{ t('liveScreenPending') }}</p>
         <pre v-else-if="terminalReceivedText" class="mb-terminal-pre">{{ terminalReceivedText }}</pre>
         <p v-else class="mb-terminal-placeholder">{{ t('noOutputYet') }}</p>
+        <LocalAiReading
+          :source-label="analysisSourceLabel"
+          :enabled="canAnalyzeSource"
+          :busy="readingBusy"
+          :state="readingState"
+          :queue-position="readingQueuePosition"
+          :unavailable-reason="analysisUnavailableReason"
+          :error="readingError"
+          :result="visibleLocalReading"
+          @analyze="requestLocalReading"
+        />
         <footer class="mb-terminal-foot">
           {{ activeThread.mirrorSession ? t('screenEvidence') : t('partialEvidence') }}
         </footer>
@@ -150,31 +161,17 @@
             <div v-else class="mb-muted">{{ t('unreadableOutput') }}</div>
             <ObservedTerminalNotes v-if="entry.id===lastOutputId && observedNotes.length"
               :key="activeThread.key + ':' + entry.id" :notes="observedNotes" :lang="lang" inline />
-            <div v-if="entry.id===lastOutputId && entry.text" class="mb-local-reading">
-              <button type="button" :disabled="readingBusy || bridge.status.value!=='connected'"
-                @click="requestLocalReading" class="mb-local-reading-trigger">
-                <span aria-hidden="true">✧</span>
-                {{ readingBusy
-  ? readingState==='queued'
-    ? 'En attente du moteur local'+(readingQueuePosition?' ('+readingQueuePosition+')':'')+'…'
-    : 'Analyse locale en cours…'
-  : 'Éclaircir avec le mini-modèle local' }}
-              </button>
-              <p v-if="readingError" class="mb-local-reading-error" role="status">{{readingError}}</p>
-              <section v-if="localReading && readingOutputId===entry.id" class="mb-local-reading-card" aria-label="Interprétation locale non vérifiée">
-                <strong>{{localReading.title}}</strong>
-                <ul><li v-for="(item,i) in localReading.items" :key="i">
-                  <span>{{item.category==='remaining'?'À faire':item.category==='uncertain'?'À vérifier':'Annoncé'}}</span>
-                  {{item.text}}
-                  <small>Source : « {{item.evidence}} »</small>
-                </li></ul>
-                <small>Lecture par modèle local. Aucun point n'est une validation technique.</small>
-                <small v-if="localReading.metrics && localReading.metrics.peakMemoryMb>0" class="mb-local-ai-metrics">
-                  Pic observé : {{ localReading.metrics.peakMemoryMb }} Mo ·
-                  {{ (localReading.metrics.durationMs/1000).toFixed(1) }} s
-                </small>
-              </section>
-            </div>
+            <LocalAiReading v-if="entry.id===lastOutputId && analysisSource?.kind==='output'"
+              :source-label="analysisSourceLabel"
+              :enabled="canAnalyzeSource"
+              :busy="readingBusy"
+              :state="readingState"
+              :queue-position="readingQueuePosition"
+              :unavailable-reason="analysisUnavailableReason"
+              :error="readingError"
+              :result="visibleLocalReading"
+              @analyze="requestLocalReading"
+            />
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
             <pre v-if="expandedRaw[entry.id]" class="mb-raw">{{ entry.raw }}</pre>
             <div class="mb-output-footer"><span>{{ t('observedNotVerified') }}</span><button @click="openPreview">{{ t('preview') }} ↗</button></div>
@@ -182,6 +179,17 @@
         </template>
         <ActivityTimeline v-if="significantActivityItems.length" :key="activeThread.key + ':activity'"
           :items="significantActivityItems" :lang="lang" compact />
+        <LocalAiReading v-if="analysisSource?.kind==='screen' || !analysisSource || !lastOutput"
+          :source-label="analysisSourceLabel"
+          :enabled="canAnalyzeSource"
+          :busy="readingBusy"
+          :state="readingState"
+          :queue-position="readingQueuePosition"
+          :unavailable-reason="analysisUnavailableReason"
+          :error="readingError"
+          :result="visibleLocalReading"
+          @analyze="requestLocalReading"
+        />
       </div>
       <button v-if="mobileView==='conversation' && !nearBottom" class="mb-new-messages" @click="scrollBottom">{{ t('latest') }} ↓</button>
       <div class="mb-composer">
@@ -335,6 +343,7 @@ import { compactTerminalOutput, terminalConversationKey } from '~/composables/co
 import { extractObservedTerminalNotes } from '~/utils/observedTerminalNotes'
 import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
+import { selectReadingSource } from '~/utils/terminalReadingSource'
 import { inferCliContext, availableActions, discoverSlashCommands, safeWorkspaceRelativePath,
   quotePosix, type CliContext, type PaletteAction } from '~/utils/terminalActionCatalog'
 import { computeReentrySummary, type ReentrySummary } from '~/utils/mobileReentry'
@@ -380,21 +389,20 @@ function finishReading(){
 const readingOutputId=ref('')
 function requestLocalReading(){
  const item=activeThread.value
- const output=lastOutput.value
- if(!item||!output||bridge.status.value!=='connected'
-   ||bridge.selectedWindow.value?.id!==item.windowId)return
- const raw=(output.raw??output.text).slice(-6000)
+ const source=analysisSource.value
+ if(!item || !source || !canAnalyzeSource.value)return
+ const raw=source.text.slice(-6000)
  if(raw.trim().length<40){readingError.value='Sortie insuffisante pour la lecture locale.';return}
  readingBusy.value=true;readingState.value='queued';readingQueuePosition.value=0
- readingError.value='';localReading.value=null;readingOutputId.value=output.id
+ readingError.value='';localReading.value=null;readingOutputId.value=source.key
  if(readingTimeout)clearTimeout(readingTimeout)
  readingTimeout=setTimeout(()=>{
   if(!readingBusy.value)return
   finishReading()
   readingError.value='Aucune réponse du moteur local. Vérifie sa disponibilité avant de relancer.'
  },85000)
- // Sensitive CLI content is ALREADY visible on this phone. Minimize further
- // exposure by redacting obvious tokens before relaying it back to the host.
+ // Text leaves the phone via the authenticated relay and returns to WSL.
+ // Redact common secrets before sending it; this is best effort, not a guarantee.
  const excerpt=raw.replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s]+/gi,'[SECRET]')
    .replace(/\bsk-[a-z0-9_-]{12,}\b/gi,'[SECRET]').slice(-5000)
  if(!bridge.send({type:'terminal_interpret',terminalId:item.terminalId,excerpt})){
@@ -514,6 +522,35 @@ const selectedTerminalAvailable=computed(()=>Boolean(activeThread.value && windo
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
 const lastOutput = computed(()=>[...activeMessages.value].reverse().find(item=>item.kind==='output') ?? null)
 const lastOutputId = computed(()=>lastOutput.value?.id ?? '')
+const analysisSource=computed(()=>selectReadingSource(
+  lastOutput.value
+    ?{key:lastOutput.value.id,ts:lastOutput.value.ts,text:lastOutput.value.raw || lastOutput.value.text}
+    :null,
+  activeThread.value?.mirrorSession && activeMirrorScreen.value
+    ?{key:'screen:'+activeThread.value.key,ts:activeMirrorScreen.value.ts,
+      text:activeMirrorScreen.value.text}
+    :null,
+))
+const analysisSourceLabel=computed(()=>analysisSource.value?.kind==='screen'
+  ?'Dernier écran du terminal suivi (capture)'
+  :analysisSource.value?.kind==='output'
+    ?'Dernière sortie texte reçue'
+    :'Aucune sortie lisible reçue pour ce terminal')
+const canAnalyzeSource=computed(()=>Boolean(
+  analysisSource.value && activeThread.value?.connected &&
+  bridge.status.value==='connected' &&
+  bridge.selectedWindow.value?.id===activeThread.value?.windowId,
+))
+const analysisUnavailableReason=computed(()=>{
+ if(!analysisSource.value)return 'Aucune sortie analysable reçue. Un écran suivi tmux ou une sortie texte est nécessaire.'
+ if(bridge.status.value!=='connected')return 'Reconnexion au poste nécessaire pour analyser.'
+ if(bridge.selectedWindow.value?.id!==activeThread.value?.windowId)return 'Sélectionne d’abord cette fenêtre VS Code.'
+ if(!activeThread.value?.connected)return 'Ce terminal n’est plus connecté.'
+ return ''
+})
+const visibleLocalReading=computed(()=>
+  readingOutputId.value===analysisSource.value?.key ? localReading.value : null)
+
 const cliContext=computed<CliContext>(()=>{
   if(contextOverride.value!=='auto')return contextOverride.value
   return inferCliContext(activeThread.value?.label ?? '',
@@ -907,7 +944,19 @@ const off=bridge.onMessage((msg:WsMessage)=>{
        :error==='interpreter_not_enabled'
        ?'Modèle local désactivé. Active devbridge.interpreterEnabled dans les paramètres Utilisateur VS Code WSL.'
        :error==='model_path_missing'||error==='model_unavailable'
-       ?'Configure devbridge.interpreterModelPath avec un GGUF local valide.'
+       ?'Le fichier GGUF est introuvable ou illisible. Vérifie son chemin dans les paramètres Utilisateur VS Code WSL.'
+       :error==='ai_binary_unavailable'||error==='ai_host_tools_missing'
+       ?'Un outil local est introuvable (llama-cli, timeout, flock ou nice). Dans VS Code WSL, lance DevBridge: Diagnose Local AI.'
+       :error==='ai_cli_option_unsupported'
+       ?'La version de llama.cpp ne reconnaît pas une option. Mets à jour llama.cpp puis vérifie avec DevBridge: Diagnose Local AI.'
+       :error==='ai_model_load_failed'
+       ?'llama.cpp ne peut pas charger le fichier GGUF. Vérifie son intégrité et le budget RAM.'
+       :error==='ai_model_memory_error'
+       ?'llama.cpp a échoué à allouer la mémoire nécessaire. Essaie un modèle plus léger.'
+       :error==='invalid_model_output'
+       ?'Le modèle a répondu dans un format inutilisable. Aucune information n’a été inventée.'
+       :error==='local_inference_failed'
+       ?'Le processus local a échoué. Lance DevBridge: Diagnose Local AI dans VS Code WSL, puis vérifie les options de llama-cli.'
        :'Lecture locale indisponible ('+error.slice(0,50)+').'
    }
    return

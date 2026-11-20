@@ -24,6 +24,10 @@
         "title": "DevBridge: Show QR"
       },
       {
+        "command": "devbridge.diagnoseLocalAi",
+        "title": "DevBridge: Diagnose Local AI"
+      },
+      {
         "command": "devbridge.toggleBridge",
         "title": "DevBridge: Toggle Bridge"
       },

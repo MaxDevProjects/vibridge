@@ -17,6 +17,7 @@ import { TerminalScreenMirror } from './terminalScreenMirror';
 import { findCliSessions, isValidCliSessionId } from './cliSessionIndex';
 import { runLocalInterpreter } from './localInterpreter';
 import { boundedResources } from './aiResourceGovernor';
+import { diagnoseLocalAi } from './localAiDiagnostics';
 import { MirrorView } from './mirrorView';
 import { buildPairingDisplayUrl } from './pairingDisplay';
 
@@ -108,6 +109,35 @@ export function activate(context: vscode.ExtensionContext): void {
 
   ipc = new IpcClient(target, windowId);
   ipc.connect();
+  // Local-only preflight: verifies the configured binary, GGUF, budget and
+  // WSL dependencies without starting inference or exposing a terminal log.
+  const aiDiagnosticsChannel = vscode.window.createOutputChannel('ViBridge: IA locale');
+  context.subscriptions.push(aiDiagnosticsChannel);
+  context.subscriptions.push(vscode.commands.registerCommand('devbridge.diagnoseLocalAi', async () => {
+    const settings = vscode.workspace.getConfiguration('devbridge');
+    const inspected = <T>(name:string, fallback:T):T =>
+      settings.inspect<T>(name)?.globalValue ?? fallback;
+    const limits = boundedResources({
+      memoryMb: inspected('interpreterMemoryMb', 1024),
+      threads: inspected('interpreterThreads', 2),
+      reserveMb: inspected('interpreterReserveMb', 512),
+    });
+    aiDiagnosticsChannel.clear();
+    try {
+      const lines = await diagnoseLocalAi({
+        enabled: inspected('interpreterEnabled', false),
+        binary: inspected('interpreterBinary', 'llama-cli'),
+        modelPath: inspected('interpreterModelPath', ''),
+        memoryMb: limits.memoryMb,
+        reserveMb: limits.reserveMb,
+        threads: limits.threads,
+      });
+      for (const line of lines) aiDiagnosticsChannel.appendLine(line);
+    } catch {
+      aiDiagnosticsChannel.appendLine('Diagnostic indisponible : impossible de lire les paramètres du poste.');
+    }
+    aiDiagnosticsChannel.show(true);
+  }));
   const terminalMirror = new TerminalScreenMirror(ipc, context);
   context.subscriptions.push(terminalMirror);
   const reportCommand = (msg: Record<string, unknown>, action: string,
