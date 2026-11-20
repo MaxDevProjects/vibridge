@@ -154,7 +154,11 @@
               <button type="button" :disabled="readingBusy || bridge.status.value!=='connected'"
                 @click="requestLocalReading" class="mb-local-reading-trigger">
                 <span aria-hidden="true">✧</span>
-                {{ readingBusy?'Lecture locale en cours…':'Éclaircir avec le mini-modèle local' }}
+                {{ readingBusy
+  ? readingState==='queued'
+    ? 'En attente du moteur local'+(readingQueuePosition?' ('+readingQueuePosition+')':'')+'…'
+    : 'Analyse locale en cours…'
+  : 'Éclaircir avec le mini-modèle local' }}
               </button>
               <p v-if="readingError" class="mb-local-reading-error" role="status">{{readingError}}</p>
               <section v-if="localReading && readingOutputId===entry.id" class="mb-local-reading-card" aria-label="Interprétation locale non vérifiée">
@@ -165,6 +169,10 @@
                   <small>Source : « {{item.evidence}} »</small>
                 </li></ul>
                 <small>Lecture par modèle local. Aucun point n'est une validation technique.</small>
+                <small v-if="localReading.metrics && localReading.metrics.peakMemoryMb>0" class="mb-local-ai-metrics">
+                  Pic observé : {{ localReading.metrics.peakMemoryMb }} Mo ·
+                  {{ (localReading.metrics.durationMs/1000).toFixed(1) }} s
+                </small>
               </section>
             </div>
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
@@ -354,10 +362,21 @@ const sessionsOpen=ref(false)
 const sessionsLoading=ref(false)
 const sessionsError=ref('')
 type LocalReadingItem={text:string;evidence:string;category:'announced'|'remaining'|'uncertain'}
-type LocalReading={title:string;items:LocalReadingItem[]}
+type LocalReading={
+ title:string;items:LocalReadingItem[];
+ metrics?:{peakMemoryMb:number;durationMs:number};
+}
 const localReading=ref<LocalReading|null>(null)
 const readingBusy=ref(false)
 const readingError=ref('')
+const readingState=ref<'queued'|'running'>('running')
+const readingQueuePosition=ref(0)
+let readingTimeout:ReturnType<typeof setTimeout>|null=null
+function finishReading(){
+ readingBusy.value=false
+ readingQueuePosition.value=0
+ if(readingTimeout){clearTimeout(readingTimeout);readingTimeout=null}
+}
 const readingOutputId=ref('')
 function requestLocalReading(){
  const item=activeThread.value
@@ -366,13 +385,20 @@ function requestLocalReading(){
    ||bridge.selectedWindow.value?.id!==item.windowId)return
  const raw=(output.raw??output.text).slice(-6000)
  if(raw.trim().length<40){readingError.value='Sortie insuffisante pour la lecture locale.';return}
- readingBusy.value=true;readingError.value='';localReading.value=null;readingOutputId.value=output.id
+ readingBusy.value=true;readingState.value='queued';readingQueuePosition.value=0
+ readingError.value='';localReading.value=null;readingOutputId.value=output.id
+ if(readingTimeout)clearTimeout(readingTimeout)
+ readingTimeout=setTimeout(()=>{
+  if(!readingBusy.value)return
+  finishReading()
+  readingError.value='Aucune réponse du moteur local. Vérifie sa disponibilité avant de relancer.'
+ },85000)
  // Sensitive CLI content is ALREADY visible on this phone. Minimize further
  // exposure by redacting obvious tokens before relaying it back to the host.
  const excerpt=raw.replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s]+/gi,'[SECRET]')
    .replace(/\bsk-[a-z0-9_-]{12,}\b/gi,'[SECRET]').slice(-5000)
  if(!bridge.send({type:'terminal_interpret',terminalId:item.terminalId,excerpt})){
-  readingBusy.value=false;readingError.value='Demande non transmise au poste.'
+  finishReading();readingError.value='Demande non transmise au poste.'
  }
 }
 const savedCliSessions=ref<SavedCliSession[]>([])
@@ -637,7 +663,7 @@ function openThread(item:Thread){
  paletteOpen.value=false
  filesOpen.value=false
  sessionsOpen.value=false
- localReading.value=null;readingError.value='';readingBusy.value=false;readingOutputId.value=''
+ localReading.value=null;readingError.value='';finishReading();readingOutputId.value=''
  actionFilter.value=''
  if(import.meta.client) {
   const stored=localStorage.getItem('vb:terminal-context:'+item.key)
@@ -836,13 +862,25 @@ const off=bridge.onMessage((msg:WsMessage)=>{
     }
     return
  }
+ if(msg.type==='terminal_interpret_progress' && readingBusy.value && activeThread.value
+   && msg.windowId===activeThread.value.windowId && msg.terminalId===activeThread.value.terminalId){
+   readingState.value=msg.state==='queued'?'queued':'running'
+   readingQueuePosition.value=msg.state==='queued' && typeof msg.position==='number'?msg.position:0
+   return
+ }
  if(msg.type==='terminal_interpret_result' && readingBusy.value && activeThread.value
    && msg.windowId===activeThread.value.windowId && msg.terminalId===activeThread.value.terminalId){
-   readingBusy.value=false
+   finishReading()
    if(msg.ok===true && msg.readout && typeof msg.readout==='object'){
      const value=msg.readout as Record<string,unknown>
      const items=Array.isArray(value.items)?value.items:[]
      localReading.value={title:typeof value.title==='string'?value.title.slice(0,100):'Lecture locale',
+       metrics:(()=>{
+         const m=value.metrics as Record<string,unknown>|undefined
+         return m && typeof m.peakMemoryMb==='number' && typeof m.durationMs==='number'
+           ?{peakMemoryMb:Math.round(m.peakMemoryMb),durationMs:Math.round(m.durationMs)}
+           :undefined
+       })(),
        items:items.slice(0,6).flatMap(x=>{
          if(!x||typeof x!=='object')return []
          const v=x as Record<string,unknown>
@@ -852,7 +890,21 @@ const off=bridge.onMessage((msg:WsMessage)=>{
        })}
    }else{
      const error=String(msg.error??'unknown')
-     readingError.value=error==='interpreter_not_enabled'
+     readingError.value=error==='host_memory_busy'
+       ?'RAM disponible insuffisante : analyse annulée pour préserver VS Code.'
+       :error==='host_cpu_busy'
+       ?'Machine occupée : analyse non lancée pour préserver le développement.'
+       :error==='model_exceeds_memory_budget'
+       ?'Ce modèle dépasse le budget RAM configuré.'
+       :error==='ai_memory_budget_exceeded'
+       ?'Analyse arrêtée : consommation RAM trop élevée.'
+       :error==='interpreter_busy_other_agent'
+       ?'Un autre agent utilise déjà le modèle sur ce PC.'
+       :error==='ai_queue_expired'||error==='ai_worker_timeout'||error==='interpreter_timeout'
+       ?'Délai dépassé : aucune nouvelle analyse lancée automatiquement.'
+       :error==='ai_queue_full'
+       ?'Le moteur local a déjà trop d’analyses en attente.'
+       :error==='interpreter_not_enabled'
        ?'Modèle local désactivé. Active devbridge.interpreterEnabled dans les paramètres Utilisateur VS Code WSL.'
        :error==='model_path_missing'||error==='model_unavailable'
        ?'Configure devbridge.interpreterModelPath avec un GGUF local valide.'
@@ -980,6 +1032,7 @@ onUnmounted(()=>{
  off();offTerminal()
  if(previewTimeout)clearTimeout(previewTimeout)
  if(sessionListTimeout)clearTimeout(sessionListTimeout)
+ if(readingTimeout)clearTimeout(readingTimeout)
 })
 useHead({title:'DevBridge | Conversations'})
 </script>
