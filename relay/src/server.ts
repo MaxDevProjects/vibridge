@@ -34,12 +34,12 @@ interface SessionPeers {
 const MOBILE_COMMANDS = new Set([
   'message', 'chat', 'adapter_toggle', 'action', 'notif_response',
   'open_project', 'list_projects', 'get_preview_url', 'get_pairing_code',
-  'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture',
+  'focus_terminal', 'create_terminal', 'reopen_terminal', 'start_cli', 'kill_cli', 'close_window', 'preview_capture', 'cli_sessions_request', 'cli_resume', 'terminal_interpret',
 ])
 
 const COMMAND_FIELDS = [
   'id', 'active', 'action', 'args', 'path', 'projectPath', 'newWindow',
-  'terminalName', 'terminalId', 'cliId', 'sendEnter', 'windowId', 'port', 'device', 'mirror', 'session',
+  'terminalName', 'terminalId', 'cliId', 'sessionId', 'excerpt', 'sendEnter', 'windowId', 'port', 'device', 'mirror', 'session',
 ] as const
 
 const AGENT_RESPONSE_TYPES = new Set(['relay_file_response', 'relay_clis_response', 'relay_push_response', 'relay_command_ack'])
@@ -666,7 +666,7 @@ export function createRelayServer(options: RelayServerOptions) {
     }
     const agent = resolveTargetAgent(sessionId, typeof requested === 'string' ? requested.trim() : undefined)
     if (!agent) return reply('rejected', 'workspace_unavailable')
-    const readOnly = type === 'list_projects' || type === 'get_preview_url' || type === 'get_pairing_code'
+    const readOnly = type === 'list_projects' || type === 'get_preview_url' || type === 'get_pairing_code' || type === 'cli_sessions_request'
     if (!readOnly) {
       if (!id) return reply('rejected', 'request_id_required')
       // SQLite reservation is atomic and persists across relay restarts.
@@ -799,6 +799,55 @@ export function createRelayServer(options: RelayServerOptions) {
         clearTimeout(pending.timer)
         pendingAgentRequests.delete(msg.request_id)
         pending.resolve(msg)
+        return
+      }
+
+      // Never persist raw requests or local generated output. The originating
+      // host must return small evidence-tagged objects for its own terminal.
+      if(msg.type==='terminal_interpret_result'){
+        const items=msg.readout && typeof msg.readout==='object'
+          && Array.isArray((msg.readout as Record<string,unknown>).items)
+          ? (msg.readout as {items:unknown[]}).items.slice(0,6).flatMap(value=>{
+            if(!value||typeof value!=='object')return []
+            const item=value as Record<string,unknown>
+            if(typeof item.text!=='string'||typeof item.evidence!=='string'
+              ||!['announced','remaining','uncertain'].includes(String(item.category)))return []
+            return [{text:item.text.slice(0,190),evidence:item.evidence.slice(0,160),
+              category:item.category}]
+          }):[]
+        const readout=msg.ok===true?{
+          title:typeof (msg.readout as Record<string,unknown>)?.title==='string'
+            ?String((msg.readout as Record<string,unknown>).title).slice(0,100):'Lecture locale',
+          engine:'local-model',items,
+        }:undefined
+        sendWorkspaceEvent(sessionId,{type:'terminal_interpret_result',workspaceId:ws.workspaceId,
+          windowId:typeof msg.windowId==='string'?msg.windowId.slice(0,80):'',
+          terminalId:typeof msg.terminalId==='string'?msg.terminalId.slice(0,80):'',
+          request_id:typeof msg.request_id==='string'?msg.request_id.slice(0,128):'',
+          ok:msg.ok===true,readout,
+          error:msg.ok===true?undefined:String(msg.error??'interpreter_failed').slice(0,100)})
+        return
+      }
+
+      // CLI session titles/IDs come only from the local host scanner and are
+      // scoped to the active window. Never persist them as chat history.
+      if (msg.type === 'cli_sessions_result') {
+        const sessionIdPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        const sessions=Array.isArray(msg.sessions)?msg.sessions.slice(0,30).flatMap(value=>{
+          if(!value||typeof value!=='object')return []
+          const item=value as Record<string,unknown>
+          if(typeof item.id!=='string'||!sessionIdPattern.test(item.id)
+            ||!['codex','claude-code'].includes(String(item.cliId)))return []
+          return [{id:item.id,cliId:item.cliId,
+            title:typeof item.title==='string'?item.title.slice(0,85):'Session',
+            updatedAt:typeof item.updatedAt==='number'&&Number.isFinite(item.updatedAt)?item.updatedAt:0}]
+        }):[]
+        sendWorkspaceEvent(sessionId,{
+          type:'cli_sessions_result',workspaceId:ws.workspaceId,
+          windowId:typeof msg.windowId==='string'?msg.windowId.slice(0,80):'',
+          request_id:typeof msg.request_id==='string'?msg.request_id.slice(0,128):'',
+          sessions,error:typeof msg.error==='string'?msg.error.slice(0,80):undefined,
+        })
         return
       }
 

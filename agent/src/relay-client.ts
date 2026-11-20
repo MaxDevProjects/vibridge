@@ -655,7 +655,7 @@ export class RelayClient {
     const windows = ipc.getWindows().filter(window => window.connected);
     // A mobile must always choose its target when multiple VS Code windows exist.
     const scopedActions = ['chat', 'message', 'open_project', 'focus_terminal',
-      'kill_cli', 'create_terminal', 'reopen_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response'];
+      'kill_cli', 'create_terminal', 'reopen_terminal', 'start_cli', 'close_window', 'preview_capture', 'action', 'notif_response', 'cli_sessions_request', 'cli_resume', 'terminal_interpret'];
     if (scopedActions.includes(String(msg.type))
       && (!windows.length || (windowId
         ? !windows.some(window => window.id === windowId)
@@ -734,6 +734,25 @@ export class RelayClient {
         return typeof msg.session === 'string' && ipc.sendToExtension({
           type: 'reopen_terminal', session: msg.session, request_id: msg.request_id, windowId,
         });
+      case 'terminal_interpret': {
+        const excerpt=typeof msg.excerpt==='string'?msg.excerpt:'';
+        const terminalId=typeof msg.terminalId==='string'?msg.terminalId:'';
+        if(!windowId||!terminalId||excerpt.length<40||excerpt.length>6000)return false;
+        return ipc.sendToExtension({type:'terminal_interpret',windowId,terminalId,
+          excerpt,request_id:msg.request_id});
+      }
+      case 'cli_sessions_request':
+        return Boolean(windowId) && ipc.sendToExtension({
+          type:'cli_sessions_request',request_id:msg.request_id,windowId,
+        });
+      case 'cli_resume': {
+        const sessionId=typeof msg.sessionId==='string'?msg.sessionId:'';
+        const cliId=typeof msg.cliId==='string'?msg.cliId:'';
+        if(!windowId || !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(sessionId)
+          || !['codex','claude-code'].includes(cliId))return false;
+        return ipc.sendToExtension({type:'cli_resume',sessionId,cliId,
+          request_id:msg.request_id,windowId});
+      }
       case 'start_cli': {
         const cli = typeof msg.cliId === 'string' ? cliRegistry?.getById(msg.cliId) : undefined;
         return !!cli && ipc.sendToExtension({

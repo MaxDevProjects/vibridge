@@ -94,6 +94,24 @@
           "default": "split",
           "markdownDescription": "How DevBridge sends text to VS Code terminals. `paste` uses a single `sendText(text, true)`. `split` sends the text first, then a separate Enter keypress. `split` is more reliable for TUIs like Codex."
         },
+        "devbridge.interpreterEnabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Active le mini interpréteur local facultatif, lancé uniquement sur demande explicite depuis le téléphone. Les paramètres du projet ne sont pas acceptés."
+        },
+        "devbridge.interpreterBinary": {
+          "type": "string",
+          "default": "llama-cli",
+          "scope": "machine",
+          "description": "Chemin du binaire llama.cpp sur la machine WSL. Le modèle est exécuté sur CPU, sans GPU."
+        },
+        "devbridge.interpreterModelPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Chemin absolu vers un fichier modèle GGUF local autorisé par l'utilisateur (Qwen3-0.6B quantifié conseillé). Aucun modèle n'est téléchargé automatiquement."
+        },
         "devbridge.previewPorts": {
           "type": "array",
           "default": [],

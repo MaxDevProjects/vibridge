@@ -10,6 +10,8 @@ import { compactTerminalOutput, terminalConversationKey } from '../../composable
 import { findRestorableThread } from '../../utils/mobileThreadRecovery'
 import { routeTerminalEvent } from '../../utils/routeTerminalEvent'
 import { computeReentrySummary } from '../../utils/mobileReentry'
+import { inferCliContext, availableActions, discoverSlashCommands,
+  safeWorkspaceRelativePath, quotePosix } from '../../utils/terminalActionCatalog'
 import { extractObservedTerminalNotes } from '../../utils/observedTerminalNotes'
 
 let failures = 0
@@ -341,6 +343,41 @@ test('reentry never invents success from a CLI claim or a merely observed output
   })
   assert.equal(summary?.verifiedCount,0)
   assert.equal(summary?.attentionCount,0)
+})
+
+
+test('quick actions are scoped to the actual CLI, never leak shell commands into Codex', () => {
+  assert.equal(inferCliContext('Codex CLI'),'codex')
+  assert.equal(inferCliContext('Claude Code'),'claude')
+  assert.equal(inferCliContext('bash'),'shell')
+  assert.equal(inferCliContext('ViBridge suivi 1'),'unknown')
+  assert.equal(availableActions('codex').some(a=>a.command==='ls -la'),false)
+  assert.equal(availableActions('shell').some(a=>a.command==='ls -la'),true)
+  assert.equal(availableActions('unknown').length,0)
+})
+
+test('observed slash commands do not treat URLs, arbitrary text or slash filesystem paths as commands',()=>{
+  const input=[
+    'https://example.com/status',
+    '/help  Afficher les commandes',
+    '  /status    Statut du projet',
+    '/tmp/a.txt',
+    'some/thing',
+    '/compact : Compression',
+    '/help  Dupliqué',
+  ].join('\n')
+  assert.deepEqual(discoverSlashCommands(input),['/help','/status','/compact'])
+  assert.equal(availableActions('codex',['/help','/new-feature']).filter(a=>a.command==='/help').length,1)
+  assert.ok(availableActions('codex',['/new-feature']).some(a=>a.command==='/new-feature'))
+})
+
+test('file actions reject traversal and quote paths without injecting shell syntax',()=>{
+  assert.equal(safeWorkspaceRelativePath('src/pages'),true)
+  assert.equal(safeWorkspaceRelativePath('../secrets'),false)
+  assert.equal(safeWorkspaceRelativePath('/etc'),false)
+  assert.equal(safeWorkspaceRelativePath('src/../secrets'),false)
+  assert.equal(safeWorkspaceRelativePath('src\\other'),false)
+  assert.equal(quotePosix("/home/me/project's files"),"'\/home\/me\/project'\\''s files'")
 })
 
 if (failures > 0) {

@@ -14,6 +14,8 @@ import { ChatParticipant } from './chatParticipant';
 import { FileWatcher } from './fileWatcher';
 import { IdeReporter } from './ideReporter';
 import { TerminalScreenMirror } from './terminalScreenMirror';
+import { findCliSessions, isValidCliSessionId } from './cliSessionIndex';
+import { runLocalInterpreter } from './localInterpreter';
 import { MirrorView } from './mirrorView';
 import { buildPairingDisplayUrl } from './pairingDisplay';
 
@@ -199,6 +201,76 @@ export function activate(context: vscode.ExtensionContext): void {
       () => reportCommand(msg, 'open_project', 'dispatched'),
       () => reportCommand(msg, 'open_project', 'rejected', 'open_project_failed'),
     );
+  });
+
+  // A session browser reads only local CLI metadata for THIS workspace.
+  // No file-system paths or transcript contents are sent to the phone.
+  ipc.on('cli_sessions_request', (msg: Record<string, unknown>) => {
+    if(msg.windowId!==windowId)return;
+    const requestId=typeof msg.request_id==='string'?msg.request_id:'';
+    if(!requestId)return;
+    const cwd=resolveWorkspaceCwd();
+    void (cwd ? findCliSessions(cwd) : Promise.resolve([])).then(
+      sessions=>ipc?.send({type:'cli_sessions_result',request_id:requestId,sessions}),
+      ()=>ipc?.send({type:'cli_sessions_result',request_id:requestId,sessions:[],error:'local_session_scan_failed'}),
+    );
+  });
+
+  // Resumption is a HOST-validated operation, not arbitrary remote shell text.
+  // The allowed session ID must appear in the host-side project index.
+  // Always start a new tracked terminal so we never send shell syntax into
+  // an already running interactive Codex/Claude conversation.
+  ipc.on('cli_resume', (msg: Record<string, unknown>) => {
+    if(msg.windowId!==windowId)return;
+    const sessionId=msg.sessionId;
+    const cliId=msg.cliId;
+    if(!isValidCliSessionId(sessionId) || (cliId!=='codex' && cliId!=='claude-code')){
+      reportCommand(msg,'cli_resume','rejected','invalid_session');
+      return;
+    }
+    const cwd=resolveWorkspaceCwd();
+    if(!cwd){reportCommand(msg,'cli_resume','rejected','workspace_missing');return;}
+    void findCliSessions(cwd).then(async sessions=>{
+      const owned=sessions.some(item=>item.id===sessionId&&item.cliId===cliId);
+      if(!owned){reportCommand(msg,'cli_resume','rejected','session_not_owned_by_workspace');return;}
+      const command=cliId==='codex' ? 'codex resume '+sessionId : 'claude --resume '+sessionId;
+      const terminal=await terminalMirror.create(cliId==='codex'?'Codex · Reprise':'Claude · Reprise',cwd);
+      terminal.sendText(command,true);
+      ipc?.send({type:'terminal_created',terminalName:terminal.name,terminalId:getTerminalId(terminal),
+        mirrorSession:terminalMirror.sessionFor(terminal)});
+      reportCommand(msg,'cli_resume','dispatched',undefined,terminal);
+      ideReporter.refresh();
+    }).catch(()=>reportCommand(msg,'cli_resume','rejected','session_resume_failed'));
+  });
+
+  // Explicit, opt-in CPU model pass over an already observed terminal excerpt.
+  // The input and generated data are ephemeral and never stored on the host.
+  // Read ONLY machine user settings; workspace files cannot enable a model.
+  let interpreterBusy=false;
+  ipc.on('terminal_interpret',(msg:Record<string,unknown>)=>{
+    if(msg.windowId!==windowId)return;
+    const requestId=typeof msg.request_id==='string'?msg.request_id:'';
+    const terminalId=typeof msg.terminalId==='string'?msg.terminalId:'';
+    const excerpt=typeof msg.excerpt==='string'?msg.excerpt:'';
+    if(!requestId||!terminalId)return;
+    const respond=(result:Record<string,unknown>)=>ipc?.send({
+      type:'terminal_interpret_result',request_id:requestId,terminalId,...result,
+    });
+    const found=findTerminal(terminalId);
+    if(found.ambiguous||!found.terminal||excerpt.length<40||excerpt.length>6000){
+      respond({ok:false,error:'terminal_or_excerpt_invalid'});return;
+    }
+    const settings=vscode.workspace.getConfiguration('devbridge');
+    const enabled=settings.inspect<boolean>('interpreterEnabled')?.globalValue===true;
+    const binary=settings.inspect<string>('interpreterBinary')?.globalValue||'llama-cli';
+    const modelPath=settings.inspect<string>('interpreterModelPath')?.globalValue||'';
+    if(!enabled){respond({ok:false,error:'interpreter_not_enabled'});return;}
+    if(interpreterBusy){respond({ok:false,error:'interpreter_busy'});return;}
+    interpreterBusy=true;
+    void runLocalInterpreter(excerpt,{enabled,binary,modelPath})
+      .then(result=>respond({ok:true,readout:result}))
+      .catch(error=>respond({ok:false,error:error instanceof Error?error.message.slice(0,90):'interpretation_failed'}))
+      .finally(()=>{interpreterBusy=false});
   });
 
   // Handle start_cli from agent: open (or focus) the terminal and run the command

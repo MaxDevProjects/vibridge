@@ -33,7 +33,7 @@ export class IpcServer {
   private clients = new Set<net.Socket>();
   private ideState: Record<string, unknown> | null = null;
   private previewUrl: string | null = null;
-  private terminalQuestionState = new Map<string, { text: string; notifiedAt: number }>();
+  private terminalQuestionState = new Map<string, { text: string; notifiedAt: number; candidateSince: number; hits: number }>();
   private relayQrUrl: string | null = null;
   private projects: Array<{ name: string; path: string; isActive: boolean }> = [];
   private projectsParentDir = '';
@@ -277,7 +277,8 @@ export class IpcServer {
       }
 
       case 'chat_message': {
-        // AI → phone: relay to WS clients and trigger push
+        // AI → phone: always relay. A question mark alone is NOT proof
+        // that a CLI is blocked and must not produce an immediate push.
         const text = msg.text as string;
         const isQuestion = this.detectQuestion(text);
         const payload = {
@@ -291,7 +292,7 @@ export class IpcServer {
         };
         this.broadcast?.(payload);
         this.forward?.('ai_message', payload);
-        if (isQuestion) {
+        if (isQuestion && msg.requiresUserInput === true) {
           void this.push.send({
             title: 'DevBridge — Copilot asks',
             body: text.slice(0, 120),
@@ -421,17 +422,32 @@ export class IpcServer {
         // Purely heuristic: notify that intervention *may* be required.
         // Never automatically answer a trust/approval prompt.
         const key = `${windowId ?? 'unknown'}:${terminalId || terminalName || tool}`;
-        const previous = this.terminalQuestionState.get(key) ?? { text: '', notifiedAt: 0 };
+        const previous = this.terminalQuestionState.get(key) ?? {
+          text: '', notifiedAt: 0, candidateSince: 0, hits: 0,
+        };
         const plain = (previous.text + text)
           .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
           .slice(-1000);
         const now = Date.now();
         const tail = plain.split(/\r?\n/).slice(-3).join('\n').trim();
-        const requiresAttention = this.detectQuestion(tail) && now - previous.notifiedAt > 60_000;
+        const question = this.detectQuestion(tail);
+        // A terminal might *print* a question in its logs without waiting for
+        // any reply. Require at least two observations and 15 s of persistence.
+        // Also rate-limit per terminal for five minutes; this is NOT a structured
+        // permission/approval event.
+        const candidateSince = question ? (previous.candidateSince || now) : 0;
+        const hits = question ? Math.min(8, previous.hits + 1) : 0;
+        const requiresAttention = question && hits >= 2
+          && now - candidateSince >= 15_000 && now - previous.notifiedAt >= 300_000;
         this.terminalQuestionState.set(key, {
-          text: plain,
+          text: plain, candidateSince: requiresAttention ? 0 : candidateSince,
+          hits: requiresAttention ? 0 : hits,
           notifiedAt: requiresAttention ? now : previous.notifiedAt,
         });
+        if (this.terminalQuestionState.size > 200) {
+          const oldest = this.terminalQuestionState.keys().next().value;
+          if (oldest) this.terminalQuestionState.delete(oldest);
+        }
         if (requiresAttention) {
           if (windowId) {
             const record = this.windowStates.get(windowId);
@@ -472,6 +488,24 @@ export class IpcServer {
         this.cliRegistry?.applyExtensionReport(detectedIds);
         const clis = this.cliRegistry?.getAll() ?? [];
         this.broadcast?.({ type: 'clis_update', clis });
+        break;
+      }
+      case 'terminal_interpret_result': {
+        const payload={windowId,request_id:msg.request_id,
+          terminalId:typeof msg.terminalId==='string'?msg.terminalId.slice(0,80):'',
+          ok:msg.ok===true,readout:msg.readout,
+          error:typeof msg.error==='string'?msg.error.slice(0,100):undefined};
+        this.broadcast?.({type:'terminal_interpret_result',...payload});
+        this.forward?.('terminal_interpret_result',payload);
+        break;
+      }
+      case 'cli_sessions_result': {
+        // Only the authenticated extension that owns windowId may respond.
+        const sessions=Array.isArray(msg.sessions) ? msg.sessions.slice(0,30) : [];
+        const payload={windowId,request_id:msg.request_id,sessions,
+          error:typeof msg.error==='string'?msg.error.slice(0,80):undefined};
+        this.broadcast?.({type:'cli_sessions_result',...payload});
+        this.forward?.('cli_sessions_result',payload);
         break;
       }
       case 'cli_started': {

@@ -69,10 +69,13 @@
         <button class="mb-iconbtn" :aria-label="t('actions')" @click="actionsOpen = true">⋮</button>
       </header>
       <div class="mb-context"><span><span class="mb-context-brand">VIBRIDGE</span> / {{ activeThread.project }}</span><span>{{ t('window') }} {{ activeThread.windowShort }}</span></div>
-      <div v-if="bridge.status.value !== 'connected'" class="mb-alert">{{ t('offlineWarning') }}</div>
-      <div v-else-if="bridge.agentStatus.value?.control?.mode === 'observe'" class="mb-alert">{{ t('observeWarning') }}</div>
-      <div v-if="activeThread.connected && !activeThread.mirrorSession && activeThread.shellIntegration === false && !activeMessages.some(entry=>entry.kind==='output')" class="mb-alert">
-        {{ t('shellIntegrationMissing') }}
+      <div v-if="activeWarning" class="mb-slim-warning">
+        <button type="button" :aria-expanded="warningExpanded" @click="warningExpanded=!warningExpanded">
+          <span aria-hidden="true">!</span>
+          <span>{{ activeWarning.title }}</span>
+          <span aria-hidden="true">{{ warningExpanded?'⌃':'⌄' }}</span>
+        </button>
+        <p v-if="warningExpanded">{{ activeWarning.detail }}</p>
       </div>
       <div class="mb-view-switch" role="tablist" :aria-label="t('readingMode')">
         <button type="button" role="tab" :aria-selected="mobileView==='conversation'"
@@ -147,6 +150,23 @@
             <div v-else class="mb-muted">{{ t('unreadableOutput') }}</div>
             <ObservedTerminalNotes v-if="entry.id===lastOutputId && observedNotes.length"
               :key="activeThread.key + ':' + entry.id" :notes="observedNotes" :lang="lang" inline />
+            <div v-if="entry.id===lastOutputId && entry.text" class="mb-local-reading">
+              <button type="button" :disabled="readingBusy || bridge.status.value!=='connected'"
+                @click="requestLocalReading" class="mb-local-reading-trigger">
+                <span aria-hidden="true">✧</span>
+                {{ readingBusy?'Lecture locale en cours…':'Éclaircir avec le mini-modèle local' }}
+              </button>
+              <p v-if="readingError" class="mb-local-reading-error" role="status">{{readingError}}</p>
+              <section v-if="localReading && readingOutputId===entry.id" class="mb-local-reading-card" aria-label="Interprétation locale non vérifiée">
+                <strong>{{localReading.title}}</strong>
+                <ul><li v-for="(item,i) in localReading.items" :key="i">
+                  <span>{{item.category==='remaining'?'À faire':item.category==='uncertain'?'À vérifier':'Annoncé'}}</span>
+                  {{item.text}}
+                  <small>Source : « {{item.evidence}} »</small>
+                </li></ul>
+                <small>Lecture par modèle local. Aucun point n'est une validation technique.</small>
+              </section>
+            </div>
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
             <pre v-if="expandedRaw[entry.id]" class="mb-raw">{{ entry.raw }}</pre>
             <div class="mb-output-footer"><span>{{ t('observedNotVerified') }}</span><button @click="openPreview">{{ t('preview') }} ↗</button></div>
@@ -157,6 +177,32 @@
       </div>
       <button v-if="mobileView==='conversation' && !nearBottom" class="mb-new-messages" @click="scrollBottom">{{ t('latest') }} ↓</button>
       <div class="mb-composer">
+        <section v-if="paletteOpen" class="mb-action-palette" aria-label="Commandes contextuelles">
+          <header>
+            <strong>Actions rapides</strong>
+            <select v-model="contextOverride" aria-label="Type de terminal" @change="saveContextOverride">
+              <option value="auto">Détection automatique</option>
+              <option value="shell">Shell Bash / Zsh</option>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+            </select>
+            <button type="button" aria-label="Fermer les actions" @click="paletteOpen=false">×</button>
+          </header>
+          <p v-if="cliContext==='unknown'" class="mb-action-info">CLI non identifiée. Choisis le type dans la liste pour éviter des commandes incompatibles.</p>
+          <input v-model="actionFilter" type="search" placeholder="Rechercher une action…" aria-label="Rechercher les actions" />
+          <div class="mb-action-results">
+            <button v-for="action in filteredActions" :key="action.id" type="button"
+              :disabled="!canSend" @click="chooseQuickAction(action)">
+              <span class="mb-action-command">{{ action.command }}</span>
+              <span><strong>{{ action.label }}</strong><small>{{ action.description }}</small></span>
+            </button>
+            <p v-if="!filteredActions.length" class="mb-action-info">Aucune action pour ce contexte.</p>
+          </div>
+          <button v-if="(cliContext==='codex'||cliContext==='claude') && discoveredFromLastOutput.length"
+            class="mb-action-discover" type="button" @click="saveDiscoveredCommands">
+            + Mémoriser {{ discoveredFromLastOutput.length }} commande(s) / repérée(s) dans la sortie
+          </button>
+        </section>
         <div class="mb-target">
           <span>⌘ {{ t('target') }}</span>
           <select :value="activeThread.key" :aria-label="t('target')" :disabled="!windowThreads.length" @change="onTargetChange">
@@ -166,6 +212,12 @@
           <button :disabled="!canCreateMonitored" :title="t('newMonitoredTerminal')" @click="requestNewMonitoredTerminal">+</button>
         </div>
         <div class="mb-type-row">
+          <button class="mb-quick-trigger" type="button" :aria-expanded="sessionsOpen"
+            aria-label="Reprendre une session Codex ou Claude" @click="showCliSessions">↶</button>
+          <button class="mb-quick-trigger" type="button" :aria-expanded="paletteOpen"
+            aria-label="Afficher les actions rapides" @click="paletteOpen=!paletteOpen;filesOpen=false">⚡</button>
+          <button class="mb-quick-trigger" type="button" :aria-expanded="filesOpen"
+            aria-label="Parcourir les fichiers" @click="filesOpen=true;paletteOpen=false">▤</button>
           <textarea v-model="draft" :placeholder="t('message')" rows="1" :aria-label="t('message')" @keydown.enter.exact.prevent="sendInstruction" />
           <button class="mb-send" :disabled="!canSend || !draft.trim()" :aria-label="t('send')" @click="sendInstruction">↑</button>
         </div>
@@ -184,6 +236,16 @@
       </div>
     </section>
 
+    <div v-if="sessionsOpen" class="mb-files-overlay" @click.self="sessionsOpen=false">
+      <CliSessionsPicker :sessions="savedCliSessions" :loading="sessionsLoading"
+        :error="sessionsError" :can-resume="canResumeSession"
+        @close="sessionsOpen=false" @refresh="refreshCliSessions" @resume="resumeSavedSession" />
+    </div>
+    <div v-if="filesOpen" class="mb-files-overlay" @click.self="filesOpen=false">
+      <WorkspaceFilePicker v-if="activeThread"
+        :window-id="activeThread.windowId" :context="cliContext" :can-control="canSend"
+        @close="filesOpen=false" @insert="insertFilePath" @navigate="navigateToFolder" />
+    </div>
     <div v-if="menuOpen || actionsOpen || projectsOpen" class="mb-overlay" @click.self="closeSheets">
       <section class="mb-sheet" role="dialog" aria-modal="true" :aria-label="t('actions')">
         <div class="mb-sheet-handle"></div>
@@ -265,6 +327,8 @@ import { compactTerminalOutput, terminalConversationKey } from '~/composables/co
 import { extractObservedTerminalNotes } from '~/utils/observedTerminalNotes'
 import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
+import { inferCliContext, availableActions, discoverSlashCommands, safeWorkspaceRelativePath,
+  quotePosix, type CliContext, type PaletteAction } from '~/utils/terminalActionCatalog'
 import { computeReentrySummary, type ReentrySummary } from '~/utils/mobileReentry'
 
 type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
@@ -283,6 +347,81 @@ const archivedThreads = ref<Thread[]>([])
 const showArchived = ref(false)
 const draft = ref('')
 const expandedRaw = ref<Record<string,boolean>>({})
+const paletteOpen=ref(false)
+const filesOpen=ref(false)
+type SavedCliSession={id:string;cliId:'codex'|'claude-code';title:string;updatedAt:number}
+const sessionsOpen=ref(false)
+const sessionsLoading=ref(false)
+const sessionsError=ref('')
+type LocalReadingItem={text:string;evidence:string;category:'announced'|'remaining'|'uncertain'}
+type LocalReading={title:string;items:LocalReadingItem[]}
+const localReading=ref<LocalReading|null>(null)
+const readingBusy=ref(false)
+const readingError=ref('')
+const readingOutputId=ref('')
+function requestLocalReading(){
+ const item=activeThread.value
+ const output=lastOutput.value
+ if(!item||!output||bridge.status.value!=='connected'
+   ||bridge.selectedWindow.value?.id!==item.windowId)return
+ const raw=(output.raw??output.text).slice(-6000)
+ if(raw.trim().length<40){readingError.value='Sortie insuffisante pour la lecture locale.';return}
+ readingBusy.value=true;readingError.value='';localReading.value=null;readingOutputId.value=output.id
+ // Sensitive CLI content is ALREADY visible on this phone. Minimize further
+ // exposure by redacting obvious tokens before relaying it back to the host.
+ const excerpt=raw.replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s]+/gi,'[SECRET]')
+   .replace(/\bsk-[a-z0-9_-]{12,}\b/gi,'[SECRET]').slice(-5000)
+ if(!bridge.send({type:'terminal_interpret',terminalId:item.terminalId,excerpt})){
+  readingBusy.value=false;readingError.value='Demande non transmise au poste.'
+ }
+}
+const savedCliSessions=ref<SavedCliSession[]>([])
+let sessionListTimeout:ReturnType<typeof setTimeout>|null=null
+const canResumeSession=computed(()=>bridge.status.value==='connected'
+  && Boolean(bridge.agentStatus.value?.control?.canControl)
+  && Boolean(activeThread.value?.connected&&bridge.activeWindowId.value===activeThread.value.windowId
+    && bridge.selectedWindow.value?.connected&&!bridge.projectTransition.value))
+function sessionCacheKey(){
+  return 'vb:sessions:'+JSON.stringify([bridge.relaySessionId.value,
+    bridge.activeWorkspaceId.value,activeThread.value?.windowId])
+}
+function showCliSessions(){
+ if(!activeThread.value)return
+ sessionsOpen.value=true;filesOpen.value=false;paletteOpen.value=false
+ savedCliSessions.value=[]
+ if(import.meta.client){
+  try{
+    const cached=JSON.parse(localStorage.getItem(sessionCacheKey())||'[]')
+    if(Array.isArray(cached))savedCliSessions.value=cached.slice(0,30)
+  }catch{}
+ }
+ refreshCliSessions()
+}
+function refreshCliSessions(){
+ if(!activeThread.value||bridge.status.value!=='connected'){
+  sessionsLoading.value=false;sessionsError.value='Poste indisponible, affichage du cache local.';return
+ }
+ if(sessionListTimeout)clearTimeout(sessionListTimeout)
+ sessionsLoading.value=true;sessionsError.value=''
+ if(!bridge.send({type:'cli_sessions_request'})){
+  sessionsLoading.value=false;sessionsError.value='Demande de lecture non transmise.';return
+ }
+ sessionListTimeout=setTimeout(()=>{
+  if(sessionsLoading.value){sessionsLoading.value=false;sessionsError.value='Le poste n’a pas confirmé la liste des sessions. Réessaie.'}
+ },18000)
+}
+function resumeSavedSession(session:SavedCliSession){
+ if(!canResumeSession.value || !savedCliSessions.value.some(s=>s.id===session.id&&s.cliId===session.cliId))return
+ if(!bridge.send({type:'cli_resume',cliId:session.cliId,sessionId:session.id})){
+  sessionsError.value='Demande de reprise non transmise.';return
+ }
+ sessionsOpen.value=false
+ // Wait for a new terminal_created from VS Code; an ACK is not proof of a successful resume.
+}
+const contextOverride=ref<'auto'|CliContext>('auto')
+const terminalCliIds=ref<Record<string,string>>({})
+const actionFilter=ref('')
+const observedSlash=ref<Record<string,string[]>>({})
 const expandedOutput = ref<Record<string,boolean>>({})
 const mobileView = ref<'conversation'|'terminal'>('conversation')
 const resumeState = ref<ReentrySummary|null>(null)
@@ -349,7 +488,67 @@ const selectedTerminalAvailable=computed(()=>Boolean(activeThread.value && windo
 const activeMessages=computed(()=>activeThread.value ? threadsHistory.value[activeThread.value.key] ?? [] : [])
 const lastOutput = computed(()=>[...activeMessages.value].reverse().find(item=>item.kind==='output') ?? null)
 const lastOutputId = computed(()=>lastOutput.value?.id ?? '')
+const cliContext=computed<CliContext>(()=>{
+  if(contextOverride.value!=='auto')return contextOverride.value
+  return inferCliContext(activeThread.value?.label ?? '',
+    activeThread.value ? terminalCliIds.value[activeThread.value.key] : undefined)
+})
+const savedSlashCommands=computed(()=>observedSlash.value[cliContext.value] ?? [])
+const contextActions=computed(()=>availableActions(cliContext.value,savedSlashCommands.value))
+const filteredActions=computed(()=>contextActions.value.filter(action=>
+  !actionFilter.value || (action.label+' '+action.command+' '+action.description).toLowerCase().includes(actionFilter.value.toLowerCase())
+))
+const discoveredFromLastOutput=computed(()=>discoverSlashCommands(lastOutput.value?.raw ?? lastOutput.value?.text ?? '')
+  .filter(cmd=>!savedSlashCommands.value.includes(cmd)))
+function saveContextOverride(){
+ if(!import.meta.client || !activeThread.value)return
+ try{localStorage.setItem('vb:terminal-context:'+activeThread.value.key,contextOverride.value)}catch{}
+}
+function saveDiscoveredCommands(){
+ if(cliContext.value!=='claude'&&cliContext.value!=='codex')return
+ const cli=cliContext.value
+ const updated=[...new Set([...savedSlashCommands.value,...discoveredFromLastOutput.value])].slice(0,40)
+ observedSlash.value={...observedSlash.value,[cli]:updated}
+ if(import.meta.client)try{localStorage.setItem('vb:slash-catalog:'+cli,JSON.stringify(updated))}catch{}
+}
+function chooseQuickAction(action:PaletteAction){
+ if(!activeThread.value || !canSend.value)return
+ // Only explicit, known read-only commands are single-tap executed.
+ const direct=action.kind==='read' || ['help','status','context'].some(x=>action.command==='/'+x)
+ paletteOpen.value=false
+ if(direct){
+  if(sendTextToCurrentTerminal(action.command) && draft.value.startsWith('/'))draft.value=''
+ }else{
+  draft.value=action.command
+ }
+}
+function insertFilePath(relative:string){
+ if(relative!=='.' && !safeWorkspaceRelativePath(relative))return
+ draft.value=[draft.value,relative].filter(Boolean).join(' ')
+ filesOpen.value=false
+}
+function navigateToFolder(relative:string){
+ if(!activeThread.value || cliContext.value!=='shell' || !canSend.value)return
+ if(relative && !safeWorkspaceRelativePath(relative))return
+ const root=bridge.selectedWindow.value?.workspaceFolders?.[0]
+ if(!root || bridge.selectedWindow.value?.id!==activeThread.value.windowId)return
+ const full=root.replace(/\\/g,'/').replace(/\/$/,'')+(relative?'/'+relative:'')
+ filesOpen.value=false
+ sendTextToCurrentTerminal('cd -- '+quotePosix(full))
+}
 const significantActivityItems = computed(()=>activeActivity.value?.items.filter(item=>item.kind!=='output') ?? [])
+const warningExpanded=ref(false)
+const activeWarning=computed(()=>{
+ if(bridge.status.value!=='connected')return {title:lang.value==='fr'?'Connexion interrompue':'Disconnected',detail:t('offlineWarning')}
+ if(bridge.agentStatus.value?.control?.mode==='observe')return {
+   title:lang.value==='fr'?'Mode observation':'Observe mode',detail:t('observeWarning')}
+ if(activeThread.value?.connected&&!activeThread.value?.mirrorSession
+   &&activeThread.value?.shellIntegration===false && !activeMessages.value.some(entry=>entry.kind==='output'))
+   return {title:lang.value==='fr'?'Sorties possiblement incomplètes':'Output may be incomplete',
+     detail:t('shellIntegrationMissing')}
+ return null
+})
+
 // Ordinary VS Code terminals only expose observed output events, not a live PTY mirror.
 const terminalReceivedText = computed(()=>activeMessages.value
   .filter(item=>item.kind==='output')
@@ -435,6 +634,15 @@ function openThread(item:Thread){
  loadLog(item.key)
  draft.value=localStorage.getItem('vb:mobile-draft:'+item.key)||''
  mobileView.value='conversation'
+ paletteOpen.value=false
+ filesOpen.value=false
+ sessionsOpen.value=false
+ localReading.value=null;readingError.value='';readingBusy.value=false;readingOutputId.value=''
+ actionFilter.value=''
+ if(import.meta.client) {
+  const stored=localStorage.getItem('vb:terminal-context:'+item.key)
+  contextOverride.value=stored==='shell'||stored==='codex'||stored==='claude'?stored:'auto'
+ }
  refreshResume()
  nearBottom.value=true
  nextTick(scrollBottom)
@@ -501,19 +709,30 @@ function syncThreadArchive(threads:Thread[]): void {
 }
 
 watch(draft,saveDraft)
+watch(draft,(text,previous)=>{
+ // Typing '/' offers the contextual catalog without running or injecting anything.
+ if(text.startsWith('/') && !previous.startsWith('/')){
+  paletteOpen.value=true;filesOpen.value=false;actionFilter.value=''
+ }
+ if(text.startsWith('/')&&paletteOpen.value)actionFilter.value=text.slice(1).trim()
+})
 function onScroll(){const el=scroller.value;if(el)nearBottom.value=el.scrollHeight-el.scrollTop-el.clientHeight<90}
 function scrollBottom(){if(scroller.value)scroller.value.scrollTop=scroller.value.scrollHeight}
 function timeLabel(ts:number){return new Date(ts).toLocaleTimeString(lang.value==='fr'?'fr-FR':'en-GB',{hour:'2-digit',minute:'2-digit'})}
 function displayOutput(entry:Entry){return compactTerminalOutput(entry.raw??entry.text).display || entry.text || t('unreadableOutput')}
 function toggleRaw(id:string){expandedRaw.value={...expandedRaw.value,[id]:!expandedRaw.value[id]}}
 function toggleOutputText(id:string){expandedOutput.value={...expandedOutput.value,[id]:!expandedOutput.value[id]}}
-function sendInstruction(){
- const text=draft.value.trim(),item=activeThread.value
- if(!item || !text || !canSend.value)return
- if(!bridge.send({type:'message',text,target:'terminal:'+item.terminalId,sendEnter:true}))return
+function sendTextToCurrentTerminal(text:string):boolean{
+ const item=activeThread.value
+ if(!item || !canSend.value || !text.trim())return false
+ if(!bridge.send({type:'message',text,target:'terminal:'+item.terminalId,sendEnter:true}))return false
  addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'user',text})
  addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('instructionSent')})
- draft.value=''
+ return true
+}
+function sendInstruction(){
+ const text=draft.value.trim()
+ if(sendTextToCurrentTerminal(text)){draft.value='';paletteOpen.value=false}
 }
 function createMonitoredTerminal(windowId:string){
  if(!canCreateMonitored.value)return
@@ -617,6 +836,49 @@ const off=bridge.onMessage((msg:WsMessage)=>{
     }
     return
  }
+ if(msg.type==='terminal_interpret_result' && readingBusy.value && activeThread.value
+   && msg.windowId===activeThread.value.windowId && msg.terminalId===activeThread.value.terminalId){
+   readingBusy.value=false
+   if(msg.ok===true && msg.readout && typeof msg.readout==='object'){
+     const value=msg.readout as Record<string,unknown>
+     const items=Array.isArray(value.items)?value.items:[]
+     localReading.value={title:typeof value.title==='string'?value.title.slice(0,100):'Lecture locale',
+       items:items.slice(0,6).flatMap(x=>{
+         if(!x||typeof x!=='object')return []
+         const v=x as Record<string,unknown>
+         if(typeof v.text!=='string'||typeof v.evidence!=='string')return []
+         return [{text:v.text.slice(0,190),evidence:v.evidence.slice(0,160),
+           category:v.category==='remaining'?'remaining':v.category==='uncertain'?'uncertain':'announced'}]
+       })}
+   }else{
+     const error=String(msg.error??'unknown')
+     readingError.value=error==='interpreter_not_enabled'
+       ?'Modèle local désactivé. Active devbridge.interpreterEnabled dans les paramètres Utilisateur VS Code WSL.'
+       :error==='model_path_missing'||error==='model_unavailable'
+       ?'Configure devbridge.interpreterModelPath avec un GGUF local valide.'
+       :'Lecture locale indisponible ('+error.slice(0,50)+').'
+   }
+   return
+ }
+ if(msg.type==='cli_sessions_result' && sessionsOpen.value && activeThread.value
+   && msg.windowId===activeThread.value.windowId){
+   if(sessionListTimeout)clearTimeout(sessionListTimeout)
+   sessionListTimeout=null;sessionsLoading.value=false
+   const valid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+   const list=Array.isArray(msg.sessions)?msg.sessions:[]
+   savedCliSessions.value=list.slice(0,30).flatMap(value=>{
+     if(!value||typeof value!=='object')return []
+     const session=value as Record<string,unknown>
+     if(typeof session.id!=='string'||!valid.test(session.id)
+       ||(session.cliId!=='codex'&&session.cliId!=='claude-code'))return []
+     return [{id:session.id,cliId:session.cliId as 'codex'|'claude-code',
+       title:typeof session.title==='string'?session.title.slice(0,85):'Session',
+       updatedAt:typeof session.updatedAt==='number'?session.updatedAt:0}]
+   })
+   if(import.meta.client)try{localStorage.setItem(sessionCacheKey(),JSON.stringify(savedCliSessions.value))}catch{}
+   sessionsError.value=typeof msg.error==='string'?msg.error:''
+   return
+ }
  if(msg.type==='projects_list'){
   const payload=msg.payload && typeof msg.payload==='object'?msg.payload as {projects?:Project[]}: {}
   const projects=Array.isArray(msg.projects)?msg.projects as Project[]:payload.projects
@@ -625,6 +887,10 @@ const off=bridge.onMessage((msg:WsMessage)=>{
  }
  if((msg.type==='terminal_created' || msg.type==='cli_started') && msg.terminalId){
   pendingTerminalId.value=String(msg.terminalId)
+  if(msg.type==='cli_started' && typeof msg.cliId==='string'){
+    const target=allThreads.value.find(item=>item.terminalId===msg.terminalId && item.windowId===msg.windowId)
+    if(target)terminalCliIds.value={...terminalCliIds.value,[target.key]:String(msg.cliId)}
+  }
  }
 })
 
@@ -676,6 +942,12 @@ onMounted(()=>{
   if(stored==='fr'||stored==='en')lang.value=stored
   else lang.value=navigator.language.toLowerCase().startsWith('fr')?'fr':'en'
   syncThreadArchive(allThreads.value)
+  for(const cli of ['codex','claude']){
+    try{
+      const value=JSON.parse(localStorage.getItem('vb:slash-catalog:'+cli)||'[]')
+      if(Array.isArray(value))observedSlash.value[cli]=value.filter((x:unknown)=>typeof x==='string')
+    }catch{}
+  }
   for(const thread of allThreads.value)loadLog(thread.key)
 })
 watch(lang,value=>{if(import.meta.client)localStorage.setItem('vb:mobile-language',value)})
@@ -707,6 +979,7 @@ onUnmounted(()=>{
  if(import.meta.client)document.removeEventListener('visibilitychange',handleMobileVisibility)
  off();offTerminal()
  if(previewTimeout)clearTimeout(previewTimeout)
+ if(sessionListTimeout)clearTimeout(sessionListTimeout)
 })
 useHead({title:'DevBridge | Conversations'})
 </script>
@@ -1220,6 +1493,43 @@ useHead({title:'DevBridge | Conversations'})
   font-size:10px;
   box-shadow:var(--shadow);
 }
+
+.mb-local-reading{margin:10px 0 0;padding:12px 0;border-top:1px solid var(--border)}
+.mb-local-reading-trigger{display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid var(--border-bright);font-size:10px;color:var(--accent);text-align:left}
+.mb-local-reading-trigger:disabled{opacity:.45}
+.mb-local-reading-trigger span{font-size:16px}
+.mb-local-reading-error{padding:10px 0;font-size:10px;color:var(--dot-amber);line-height:1.5}
+.mb-local-reading-card{padding:12px;margin-top:10px;border:1px solid var(--border-bright);background:var(--surface2);display:grid;gap:10px}
+.mb-local-reading-card strong{font-size:12px;font-weight:500}
+.mb-local-reading-card ul{list-style:none;margin:0;padding:0;display:grid;gap:11px}
+.mb-local-reading-card li{display:grid;gap:4px;font-size:11px;line-height:1.5}
+.mb-local-reading-card li span{color:var(--accent);font-size:9px;text-transform:uppercase}
+.mb-local-reading-card li small,.mb-local-reading-card>small{color:var(--text-mid);font-size:9px;overflow-wrap:anywhere}
+
+.mb-slim-warning{flex:0 0 auto;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--dot-amber) 6%,var(--bg))}
+.mb-slim-warning>button{width:100%;display:flex;align-items:center;gap:9px;text-align:left;padding:6px 14px;color:var(--dot-amber);font-size:10px;min-height:30px}
+.mb-slim-warning>button span:nth-child(2){flex:1}
+.mb-slim-warning>p{padding:6px 14px 11px;margin:0;color:var(--text-mid);font-size:10px;line-height:1.6}
+/* ViBridge V7: contextual quick commands and project browsing */
+.mb-quick-trigger{display:grid;place-items:center;flex:0 0 34px;height:38px;font-size:17px;color:var(--accent);border:1px solid var(--border-bright);background:var(--surface)}
+.mb-action-palette{max-height:min(37dvh,320px);display:flex;flex-direction:column;gap:0;overflow:hidden;margin:0 0 10px;border:1px solid var(--border-bright);background:var(--surface)}
+.mb-action-palette header{display:flex;align-items:center;gap:9px;padding:9px 10px;border-bottom:1px solid var(--border)}
+.mb-action-palette header strong{font-size:10px;white-space:nowrap}
+.mb-action-palette header select{flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);padding:5px;font-size:10px}
+.mb-action-palette header button{font-size:17px;min-width:25px}
+.mb-action-palette input{padding:9px;background:var(--bg);border-bottom:1px solid var(--border);outline:0;font-size:11px}
+.mb-action-results{overflow:auto;flex:1;min-height:0}
+.mb-action-results button{display:flex;gap:12px;align-items:center;width:100%;padding:11px;text-align:left;border-bottom:1px solid var(--border)}
+.mb-action-results button:disabled{opacity:.5}
+.mb-action-command{font-size:11px;color:var(--accent);min-width:65px}
+.mb-action-results button>span:last-child{display:grid;gap:3px}
+.mb-action-results button strong{font-size:10px;font-weight:500}
+.mb-action-results button small,.mb-action-info{font-size:9px;color:var(--text-mid)}
+.mb-action-info{padding:10px}
+.mb-action-discover{padding:11px;color:var(--accent);border-top:1px solid var(--border);font-size:10px;text-align:left}
+.mb-files-overlay{position:absolute;inset:0;z-index:35;background:rgba(0,0,0,.6);display:flex;justify-content:center;align-items:flex-end;padding:12px}
+.mb-files-overlay>section{width:100%;max-width:600px}
+@media(max-height:580px){.mb-action-palette{max-height:25dvh}}
 
 /* V6: conversation-first reading, contextual reentry and a dedicated terminal surface */
 .mb-view-switch{display:grid;grid-template-columns:1fr 1fr;flex:0 0 auto;min-height:46px;padding:0 14px;border-bottom:var(--mb-border);background:var(--bg)}

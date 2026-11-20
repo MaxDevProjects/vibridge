@@ -38,7 +38,7 @@ export class ControlPolicy {
 
   authorize(type: string, fields: Record<string, unknown> = {}): AuthorizationResult {
     // Read-only operations remain usable when control is disabled.
-    if (['list_projects', 'get_preview_url'].includes(type)) return { allowed: true };
+    if (['list_projects', 'get_preview_url', 'cli_sessions_request', 'terminal_interpret'].includes(type)) return { allowed: true };
     if (this.mode !== 'control') return { allowed: false, reason: 'remote_control_disabled' };
 
     if (type === 'start_cli') {
@@ -46,6 +46,10 @@ export class ControlPolicy {
       return this.allowedClis.has(cliId)
         ? { allowed: true }
         : { allowed: false, reason: 'cli_not_allowlisted' };
+    }
+    if (type === 'cli_resume') {
+      return (typeof fields.cliId==='string' && this.allowedClis.has(fields.cliId))
+        ? { allowed:true } : { allowed:false, reason:'cli_not_allowlisted' };
     }
     if (type === 'kill_cli') {
       return this.allowTerminalClose
