@@ -16,6 +16,7 @@ import { IdeReporter } from './ideReporter';
 import { TerminalScreenMirror } from './terminalScreenMirror';
 import { findCliSessions, isValidCliSessionId } from './cliSessionIndex';
 import { runLocalInterpreter } from './localInterpreter';
+import { boundedResources } from './aiResourceGovernor';
 import { MirrorView } from './mirrorView';
 import { buildPairingDisplayUrl } from './pairingDisplay';
 
@@ -266,8 +267,27 @@ export function activate(context: vscode.ExtensionContext): void {
     const modelPath=settings.inspect<string>('interpreterModelPath')?.globalValue||'';
     if(!enabled){respond({ok:false,error:'interpreter_not_enabled'});return;}
     if(interpreterBusy){respond({ok:false,error:'interpreter_busy'});return;}
+    const requested = msg.resourceLimits && typeof msg.resourceLimits==='object'
+      ? msg.resourceLimits as Record<string,unknown> : {};
+    // The agent sets an upper budget. Machine-scoped user preferences can
+    // only tighten those limits, never relax agent admission controls.
+    const agentLimits=boundedResources({
+      memoryMb:Number(requested.memoryMb),
+      threads:Number(requested.threads),
+      reserveMb:Number(requested.reserveMb),
+      timeoutMs:Number(requested.timeoutMs),
+    });
+    const userMemory=settings.inspect<number>('interpreterMemoryMb')?.globalValue;
+    const userThreads=settings.inspect<number>('interpreterThreads')?.globalValue;
+    const userReserve=settings.inspect<number>('interpreterReserveMb')?.globalValue;
+    const limits=boundedResources({
+      memoryMb:Math.min(agentLimits.memoryMb,userMemory??1024),
+      threads:Math.min(agentLimits.threads,userThreads??2),
+      reserveMb:Math.max(agentLimits.reserveMb,userReserve??512),
+      timeoutMs:Math.min(agentLimits.timeoutMs,45000),
+    });
     interpreterBusy=true;
-    void runLocalInterpreter(excerpt,{enabled,binary,modelPath})
+    void runLocalInterpreter(excerpt,{enabled,binary,modelPath},limits)
       .then(result=>respond({ok:true,readout:result}))
       .catch(error=>respond({ok:false,error:error instanceof Error?error.message.slice(0,90):'interpretation_failed'}))
       .finally(()=>{interpreterBusy=false});

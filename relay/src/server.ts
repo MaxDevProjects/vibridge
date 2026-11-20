@@ -802,6 +802,23 @@ export function createRelayServer(options: RelayServerOptions) {
         return
       }
 
+      // Live progress and model results are strictly ephemeral. A queued job
+      // must never appear in the replayable conversation or SQLite history.
+      if(msg.type==='terminal_interpret_progress'){
+        const state=String(msg.state)
+        if(state!=='queued'&&state!=='running')return
+        sendWorkspaceEvent(sessionId,{
+          type:'terminal_interpret_progress',workspaceId:ws.workspaceId,
+          windowId:typeof msg.windowId==='string'?msg.windowId.slice(0,80):'',
+          terminalId:typeof msg.terminalId==='string'?msg.terminalId.slice(0,80):'',
+          request_id:typeof msg.request_id==='string'?msg.request_id.slice(0,128):'',
+          state,position:typeof msg.position==='number'
+            &&Number.isInteger(msg.position) && msg.position>=1 && msg.position<=5
+              ?msg.position:undefined,
+        })
+        return
+      }
+
       // Never persist raw requests or local generated output. The originating
       // host must return small evidence-tagged objects for its own terminal.
       if(msg.type==='terminal_interpret_result'){
@@ -819,6 +836,15 @@ export function createRelayServer(options: RelayServerOptions) {
           title:typeof (msg.readout as Record<string,unknown>)?.title==='string'
             ?String((msg.readout as Record<string,unknown>).title).slice(0,100):'Lecture locale',
           engine:'local-model',items,
+          metrics:(()=>{
+            const source=(msg.readout as Record<string,unknown>).metrics
+            if(!source||typeof source!=='object')return undefined
+            const m=source as Record<string,unknown>
+            const peak=Number(m.peakMemoryMb),duration=Number(m.durationMs)
+            if(!Number.isFinite(peak)||peak<0||peak>4096
+              ||!Number.isFinite(duration)||duration<0||duration>120000)return undefined
+            return {peakMemoryMb:Math.round(peak),durationMs:Math.round(duration)}
+          })(),
         }:undefined
         sendWorkspaceEvent(sessionId,{type:'terminal_interpret_result',workspaceId:ws.workspaceId,
           windowId:typeof msg.windowId==='string'?msg.windowId.slice(0,80):'',

@@ -106,6 +106,30 @@
           "scope": "machine",
           "description": "Chemin du binaire llama.cpp sur la machine WSL. Le modèle est exécuté sur CPU, sans GPU."
         },
+        "devbridge.interpreterMemoryMb": {
+          "type": "integer",
+          "default": 1024,
+          "minimum": 384,
+          "maximum": 2048,
+          "scope": "machine",
+          "description": "Budget maximum de RAM résidente, en Mo, pour l'inférence locale. Mesuré via /proc. Une limite stricte par cgroup exige une configuration système séparée."
+        },
+        "devbridge.interpreterReserveMb": {
+          "type": "integer",
+          "default": 512,
+          "minimum": 256,
+          "maximum": 4096,
+          "scope": "machine",
+          "description": "RAM Linux à préserver après déduction du budget IA. Si elle manque, l'analyse ne démarre pas."
+        },
+        "devbridge.interpreterThreads": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 3,
+          "scope": "machine",
+          "description": "Nombre maximal de threads CPU pendant l'inférence. Le processus tourne aussi avec une priorité nice basse."
+        },
         "devbridge.interpreterModelPath": {
           "type": "string",
           "default": "",
