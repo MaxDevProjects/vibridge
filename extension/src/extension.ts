@@ -449,7 +449,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // Chat participant — @devbridge
-  const participant = new ChatParticipant(ipc);
+  const participant = new ChatParticipant(ipc, terminalMirror);
   context.subscriptions.push(participant.register());
 
   // File watcher

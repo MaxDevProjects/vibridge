@@ -145,7 +145,7 @@
           <div v-else class="mb-output-card">
             <div class="mb-output-header">
               <div class="mb-output-badge">⌘</div>
-              <strong>{{ activeThread.label }}</strong>
+              <strong>{{ entry.kind==='screen' ? 'Écran observé · terminal suivi' : activeThread.label }}</strong>
               <span class="mb-output-time">{{ timeLabel(entry.ts) }}</span>
             </div>
             <div v-if="entry.working" class="mb-working"><span class="mb-pulse"></span>{{ t('outputInProgress') }}</div>
@@ -174,7 +174,10 @@
             />
             <button v-if="entry.raw" class="mb-inline" @click="toggleRaw(entry.id)">{{ expandedRaw[entry.id] ? t('hideRaw') : t('showRaw') }} <span>⌄</span></button>
             <pre v-if="expandedRaw[entry.id]" class="mb-raw">{{ entry.raw }}</pre>
-            <div class="mb-output-footer"><span>{{ t('observedNotVerified') }}</span><button @click="openPreview">{{ t('preview') }} ↗</button></div>
+            <div class="mb-output-footer">
+              <span>{{ entry.kind==='screen' ? 'Capture volatile, pas une réponse Codex confirmée' : t('observedNotVerified') }}</span>
+              <button @click="openPreview">{{ t('preview') }} ↗</button>
+            </div>
           </div>
         </template>
         <ActivityTimeline v-if="significantActivityItems.length" :key="activeThread.key + ':activity'"
@@ -344,11 +347,12 @@ import { extractObservedTerminalNotes } from '~/utils/observedTerminalNotes'
 import { routeTerminalEvent } from '~/utils/routeTerminalEvent'
 import { findRestorableThread } from '~/utils/mobileThreadRecovery'
 import { selectReadingSource } from '~/utils/terminalReadingSource'
+import { deliveryStatusText, nextDeliveryStage, type DeliveryStage } from '~/utils/terminalDelivery'
 import { inferCliContext, availableActions, discoverSlashCommands, safeWorkspaceRelativePath,
   quotePosix, type CliContext, type PaletteAction } from '~/utils/terminalActionCatalog'
 import { computeReentrySummary, type ReentrySummary } from '~/utils/mobileReentry'
 
-type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'; text: string; raw?: string; working?: boolean }
+type Entry = { id: string; ts: number; kind: 'user'|'status'|'output'|'screen'; text: string; raw?: string; working?: boolean }
 type Thread = { key: string; windowId: string; terminalId: string; label: string; project: string; projectPath: string; processId?: number; shellIntegration?: boolean; mirrorSession?: string; windowShort: string; connected: boolean; state: string }
 type Project = { name: string; path: string }
 const bridge = useDevBridge()
@@ -664,7 +668,9 @@ function saveLog(key:string){
   if(!import.meta.client)return
   // Persist only the compact view. Raw terminal streams may contain secrets
   // and must not be copied into long-lived browser storage.
-  const entries=(threadsHistory.value[key]??[]).slice(-70).map(({raw, ...entry})=>entry)
+  const entries=(threadsHistory.value[key]??[])
+    .filter(entry=>entry.kind!=='screen').slice(-70)
+    .map(({raw, ...entry})=>entry)
   try{localStorage.setItem('vb:mobile-thread:'+key,JSON.stringify(entries))}catch{}
 }
 function loadLog(key:string){if(!import.meta.client || threadsHistory.value[key])return;try{const parsed=JSON.parse(localStorage.getItem('vb:mobile-thread:'+key)||'[]') as Entry[];if(Array.isArray(parsed))threadsHistory.value={...threadsHistory.value,[key]:parsed.slice(-70)}}catch{}}
@@ -785,12 +791,47 @@ function timeLabel(ts:number){return new Date(ts).toLocaleTimeString(lang.value=
 function displayOutput(entry:Entry){return compactTerminalOutput(entry.raw??entry.text).display || entry.text || t('unreadableOutput')}
 function toggleRaw(id:string){expandedRaw.value={...expandedRaw.value,[id]:!expandedRaw.value[id]}}
 function toggleOutputText(id:string){expandedOutput.value={...expandedOutput.value,[id]:!expandedOutput.value[id]}}
+type PendingDelivery={threadKey:string;stage:DeliveryStage;timer:ReturnType<typeof setTimeout>|null}
+const trackedDeliveries=new Map<string,PendingDelivery>()
+const lastScreenChatAt=new Map<string,number>()
+function updateDelivery(requestId:string,stage:DeliveryStage,reason=''){
+ const tracked=trackedDeliveries.get(requestId)
+ if(!tracked)return
+ const next=nextDeliveryStage(tracked.stage,stage)
+ tracked.stage=next
+ if(['screen_observed','unconfirmed','rejected'].includes(next) && tracked.timer){
+  clearTimeout(tracked.timer);tracked.timer=null
+ }
+ const key=tracked.threadKey
+ const previous=threadsHistory.value[key]??[]
+ const index=previous.findIndex(entry=>entry.id==='delivery:'+requestId)
+ if(index<0)return
+ const updated=[...previous]
+ updated[index]={...previous[index]!,text:deliveryStatusText(next,reason),ts:Date.now()}
+ threadsHistory.value={...threadsHistory.value,[key]:updated}
+ saveLog(key)
+ if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
+}
+function observePendingTerminalActivity(threadKey:string){
+ // Attribute terminal activity only to a still-pending instruction for the
+ // exact thread. A changed screen cannot prove Codex understood the prompt.
+ const pending=[...trackedDeliveries.entries()].filter(([,item])=>
+   item.threadKey===threadKey && !['screen_observed','unconfirmed','rejected'].includes(item.stage))
+ const latest=pending.at(-1)
+ if(latest)updateDelivery(latest[0],'screen_observed')
+}
 function sendTextToCurrentTerminal(text:string):boolean{
  const item=activeThread.value
  if(!item || !canSend.value || !text.trim())return false
- if(!bridge.send({type:'message',text,target:'terminal:'+item.terminalId,sendEnter:true}))return false
- addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'user',text})
- addEntry(item.key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('instructionSent')})
+ const requestId=crypto.randomUUID()
+ if(!bridge.send({type:'message',request_id:requestId,text,target:'terminal:'+item.terminalId,sendEnter:true}))return false
+ addEntry(item.key,{id:requestId,ts:Date.now(),kind:'user',text})
+ addEntry(item.key,{id:'delivery:'+requestId,ts:Date.now(),kind:'status',text:deliveryStatusText('sent')})
+ const tracked:PendingDelivery={threadKey:item.key,stage:'sent',timer:null}
+ tracked.timer=setTimeout(()=>{
+   updateDelivery(requestId,'unconfirmed')
+ },15_000)
+ trackedDeliveries.set(requestId,tracked)
  return true
 }
 function sendInstruction(){
@@ -879,6 +920,11 @@ function signOut(){closeSheets();bridge.clearStoredSession();void navigateTo('/s
 function requestWindowClose(){if(!activeThread.value?.connected || !bridge.agentStatus.value?.control?.allowWindowClose)return;confirmClose.value=false;if(bridge.send({type:'close_window'})){goBackToConversations()}}
 async function revokeAccess(){revoking.value=true;revokeError.value=false;const success=await bridge.revokeRelaySession();revoking.value=false;if(success){confirmRevoke.value=false;void navigateTo('/setup')}else revokeError.value=true}
 const off=bridge.onMessage((msg:WsMessage)=>{
+ if(msg.type==='message_ack' && typeof msg.request_id==='string'){
+   updateDelivery(msg.request_id,msg.status==='received'?'agent_received':
+     msg.status==='unconfirmed'?'unconfirmed':'rejected')
+   return
+ }
  if(msg.type==='preview_capture_result' && previewOpen.value && previewBusy.value
    && msg.windowId===previewWindowId.value){
     previewBusy.value=false
@@ -1002,13 +1048,31 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
  if(!thread)return
  const key=thread.key
  if(msg.type==='terminal_screen' && thread.mirrorSession && typeof msg.text==='string'){
-  liveScreens.value={...liveScreens.value,[key]:{text:msg.text,ts:Date.now()}}
+  const now=Date.now()
+  const previousScreen=liveScreens.value[key]?.text
+  liveScreens.value={...liveScreens.value,[key]:{text:msg.text,ts:now}}
+  if(previousScreen===msg.text)return
+  if(previousScreen!==undefined)observePendingTerminalActivity(key)
+  // Live tmux screens do not generate ordinary shell-integration output.
+  // Show one updating, ephemeral excerpt in the chat, not a flood of bubbles.
+  const summary=compactTerminalOutput(msg.text,1600).display
+  if(summary.length>=40 && now-(lastScreenChatAt.get(key)??0)>1600){
+    lastScreenChatAt.set(key,now)
+    loadLog(key)
+    const existing=(threadsHistory.value[key]??[]).filter(entry=>entry.kind!=='screen')
+    threadsHistory.value={...threadsHistory.value,[key]:[
+      ...existing,{id:'live-screen:'+key,ts:now,kind:'screen',text:summary},
+    ].slice(-70)}
+    // Captures are not persisted in localStorage or relay history.
+    if(activeThread.value?.key===key && nearBottom.value)nextTick(scrollBottom)
+  }
   return
  }
  loadLog(key)
  if(msg.type==='output' && typeof msg.text==='string'){
   const tool=String(msg.tool??'')
   if(tool && tool!=='terminal:'+thread.terminalId)return
+  observePendingTerminalActivity(key)
   const prior=threadsHistory.value[key]??[]
   const last=prior.at(-1)
   // A continuous CLI stream is *one* message, not a new bubble per PTY chunk.
@@ -1026,12 +1090,21 @@ const offTerminal=bridge.onWorkspaceTerminalMessage((msg:WsMessage)=>{
  }else if(msg.type==='notification' && (!msg.terminalId || String(msg.terminalId)===thread.terminalId)){
   addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',text:t('attentionPossible')})
  }else if(msg.type==='command_execution' && (!msg.terminalId || msg.terminalId===thread.terminalId)){
-   const action=String(msg.action??'action')
    const phase=String(msg.phase??'')
-   if(phase==='dispatched')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
-     text:lang.value==='fr' ? action+' transmis à VS Code. Résultat CLI non confirmé.' : action+' sent to VS Code. CLI outcome not confirmed.'})
-   if(phase==='rejected')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
-     text:(lang.value==='fr' ? 'Action refusée : ' : 'Action rejected: ')+String(msg.reason??'unknown')})
+   const id=typeof msg.request_id==='string'?msg.request_id:''
+   if(id && trackedDeliveries.has(id)){
+     if(phase==='input_sent')updateDelivery(id,'keys_sent')
+     else if(phase==='dispatched')updateDelivery(id,'terminal_dispatched')
+     else if(phase==='rejected')updateDelivery(id,'rejected',String(msg.reason??''))
+   }else{
+     const action=String(msg.action??'action')
+     if(phase==='dispatched' || phase==='input_sent')addEntry(key,{
+       id:crypto.randomUUID(),ts:Date.now(),kind:'status',
+       text:'Instruction transmise au terminal, résultat CLI non confirmé.',
+     })
+     if(phase==='rejected')addEntry(key,{id:crypto.randomUUID(),ts:Date.now(),kind:'status',
+       text:'Action refusée : '+String(msg.reason??'unknown')})
+   }
  }
 })
 
@@ -1084,6 +1157,8 @@ onUnmounted(()=>{
  if(previewTimeout)clearTimeout(previewTimeout)
  if(sessionListTimeout)clearTimeout(sessionListTimeout)
  if(readingTimeout)clearTimeout(readingTimeout)
+ for(const pending of trackedDeliveries.values())if(pending.timer)clearTimeout(pending.timer)
+ trackedDeliveries.clear()
 })
 useHead({title:'DevBridge | Conversations'})
 </script>

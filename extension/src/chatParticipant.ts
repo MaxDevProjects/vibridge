@@ -6,13 +6,14 @@
 import * as vscode from 'vscode';
 import type { IpcClient } from './ipcClient';
 import { QuestionDetector } from './questionDetector';
-import { findTerminal } from './terminalIdentity';
+import { findTerminal, getTerminalId } from './terminalIdentity';
+import type { TerminalScreenMirror } from './terminalScreenMirror';
 
 export class ChatParticipant {
   private detector = new QuestionDetector();
   private inbox = vscode.window.createOutputChannel('DevBridge Chat');
 
-  constructor(private ipc: IpcClient) {
+  constructor(private ipc: IpcClient, private mirror?: TerminalScreenMirror) {
     // Forward injected messages from phone → VS Code chat
     ipc.on('inject_message', (msg: Record<string, unknown>) => {
       const text = String(msg.text ?? '').trim();
@@ -22,10 +23,15 @@ export class ChatParticipant {
       const args = Array.isArray(msg.args) ? (msg.args as string[]) : [];
       if (!text) return;
       const requestId = typeof msg.request_id === 'string' ? msg.request_id : '';
-      const reportExecution = (phase: 'dispatched' | 'rejected', reason?: string) => {
+      const reportExecution = (
+        phase: 'dispatched' | 'input_sent' | 'rejected',
+        reason?: string,
+        terminal?: vscode.Terminal,
+      ) => {
         if (!requestId) return;
         this.ipc.send({ type: 'command_execution', request_id: requestId, phase, reason,
-          action: 'message', terminalName });
+          action: 'message', terminalName: terminal?.name ?? terminalName,
+          terminalId: terminal ? getTerminalId(terminal) : undefined });
       };
 
       const resolved = this.resolveTerminalTarget(target, terminalName);
@@ -40,16 +46,22 @@ export class ChatParticipant {
         const terminal = resolved.terminal ?? this.ensureTerminal(resolved.terminalName, fullCommand);
         terminal.show(true);
         const injectDelay = (resolved.needsBootDelay || (fullCommand && !resolved.existed)) ? 1200 : 0;
-        setTimeout(() => {
+        // Await BOTH text injection and the Enter key before reporting input
+        // dispatch. Previously the delayed Enter was not awaited at all.
+        void (async () => {
+          if (injectDelay) await new Promise<void>(resolve => setTimeout(resolve, injectDelay));
           try {
             terminal.show(true);
-            this.sendToTerminal(terminal, text, msg.sendEnter !== false);
-            // VS Code accepted the input API call. CLI execution is NOT proven.
-            reportExecution('dispatched');
-          } catch {
-            reportExecution('rejected', 'terminal_injection_failed');
+            const phase = await this.sendToTerminal(terminal, text, msg.sendEnter !== false);
+            // Even tmux acknowledging Enter does NOT prove a Codex turn began.
+            reportExecution(phase, undefined, terminal);
+          } catch (error) {
+            const reason = error instanceof Error && error.message === 'unsupported_tmux_input'
+              ? 'multiline_input_requires_review' : 'terminal_input_unconfirmed';
+            // No retry: text may already be present inside the terminal TUI.
+            reportExecution('rejected', reason, terminal);
           }
-        }, injectDelay);
+        })();
         this.ipc.send({
           type: 'ide_event',
           kind: resolved.existed ? 'mobile_message_routed_terminal' : 'mobile_message_routed_terminal_created',
@@ -147,22 +159,32 @@ export class ChatParticipant {
     this.inbox.show(true);
   }
 
-  private sendToTerminal(terminal: vscode.Terminal, text: string, sendEnter: boolean): void {
+  private async sendToTerminal(
+    terminal: vscode.Terminal, text: string, sendEnter: boolean,
+  ): Promise<'dispatched' | 'input_sent'> {
+    if (this.mirror?.sessionFor(terminal)) {
+      // Reject multiline text rather than risk treating embedded newlines
+      // as separate commands. These need an explicit bracketed-paste path.
+      await this.mirror.sendInput(terminal, text, sendEnter);
+      return sendEnter ? 'input_sent' : 'dispatched';
+    }
     if (!sendEnter) {
       terminal.sendText(text, false);
-      return;
+      return 'dispatched';
     }
     const config = vscode.workspace.getConfiguration('devbridge');
     const mode = String(config.get('terminalSendMode') ?? 'split');
     if (mode === 'paste') {
       terminal.sendText(text, true);
-      return;
+      return 'dispatched';
     }
 
-    // "split" is the reliable mode for TUIs like Codex: paste the content,
-    // then send a distinct Enter keypress.
+    // Non-owned VS Code terminals have no PTY-level acknowledgement. Only
+    // report 'dispatched' AFTER the second API call was made.
     terminal.sendText(text, false);
-    setTimeout(() => terminal.sendText('', true), 30);
+    await new Promise<void>(resolve => setTimeout(resolve, 150));
+    terminal.sendText('', true);
+    return 'dispatched';
   }
 
   private resolveTerminalTarget(

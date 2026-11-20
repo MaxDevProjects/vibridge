@@ -390,7 +390,7 @@ export class IpcServer {
           terminalName: msg.terminalName,
           windowId,
         };
-        if (!payload.request_id || !['dispatched', 'rejected'].includes(String(payload.phase))) break;
+        if (!payload.request_id || !['dispatched', 'input_sent', 'rejected'].includes(String(payload.phase))) break;
         this.broadcast?.({ type: 'command_execution', ...payload });
         this.forward?.('command_execution', payload);
         break;

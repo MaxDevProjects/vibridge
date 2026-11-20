@@ -478,14 +478,16 @@ function emit(msg: WsMessage) {
 
   if (normalized.type === 'command_execution' && typeof normalized.request_id === 'string') {
     const id = normalized.request_id;
-    if (normalized.phase === 'dispatched') {
+    if (normalized.phase === 'dispatched' || normalized.phase === 'input_sent') {
       dispatchedToVsCode.add(id);
       if (dispatchedToVsCode.size > 128) dispatchedToVsCode.delete(dispatchedToVsCode.values().next().value!);
     }
     if (id === latestDeliveryId) {
-      deliveryNotice.value = normalized.phase === 'dispatched'
-        ? { status: 'received', text: 'Action transmise à VS Code. Le résultat dans la CLI reste à vérifier.' }
-        : { status: 'error', text: 'Action refusée par VS Code : ' + String(normalized.reason ?? 'erreur inconnue') };
+      deliveryNotice.value = normalized.phase === 'input_sent'
+        ? { status: 'received', text: 'Texte et Entrée transmis au terminal tmux. Réaction de Codex non confirmée.' }
+        : normalized.phase === 'dispatched'
+        ? { status: 'received', text: 'Injection demandée via VS Code. Réaction de la CLI non confirmée.' }
+        : { status: 'error', text: 'Injection non confirmée : ' + String(normalized.reason ?? 'erreur inconnue') };
     }
   }
 
@@ -657,7 +659,10 @@ function handleWsMessage(ev: MessageEvent) {
     if (!timer) return
     clearTimeout(timer)
     pendingDelivery.delete(msg.request_id)
-    if (msg.request_id !== latestDeliveryId) return
+    if (msg.request_id !== latestDeliveryId) {
+      listeners.forEach(fn => fn(msg))
+      return
+    }
     if (msg.status !== 'received' && msg.request_id === projectTransition.value?.requestId) {
       clearProjectTransition()
     }
@@ -673,6 +678,9 @@ function handleWsMessage(ev: MessageEvent) {
         text: msg.reason === 'workspace_unavailable' ? 'Le workspace sélectionné est indisponible.' : 'La commande a été refusée par ViBridge.',
       }
     }
+    // A relay receipt is only proof that the agent accepted the request.
+    // Let the conversation update the specific message with its request ID.
+    listeners.forEach(fn => fn(msg))
     return
   }
 
@@ -860,7 +868,10 @@ function send(data: unknown): boolean {
       deliveryNotice.value = { status: 'error', text: 'Trop de commandes sont en attente de réception.' }
       return false
     }
-    const id = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
+    const id = typeof frame.request_id === 'string'
+      && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(frame.request_id)
+      ? frame.request_id
+      : crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
     latestDeliveryId = id
     frame.request_id = id
     deliveryNotice.value = { status: 'pending', text: 'En attente de réception par l’agent' }

@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { IpcClient } from './ipcClient';
 import { getTerminalId } from './terminalIdentity';
-import { boundedMirrorScreen, validMirrorSession } from './terminalScreenMirrorUtils';
+import { boundedMirrorScreen, validMirrorSession, ownedTmuxInputCommands } from './terminalScreenMirrorUtils';
 
 const TMUX_SOCKET = 'vibridge';
 const STORAGE_KEY = 'devbridge.ownedTmuxSessions';
@@ -39,6 +39,7 @@ function tmux(args: string[], timeout = 1200): Promise<string> {
 export class TerminalScreenMirror implements vscode.Disposable {
   private readonly sessions = new Map<vscode.Terminal, OwnedSession>();
   private readonly polls = new Map<vscode.Terminal, ReturnType<typeof setInterval>>();
+  private readonly pendingInputs = new Map<string, Promise<void>>();
   private readonly lastScreen = new Map<vscode.Terminal, { text: string; at: number }>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly onConnected = () => {
@@ -52,6 +53,29 @@ export class TerminalScreenMirror implements vscode.Disposable {
 
   sessionFor(terminal: vscode.Terminal): string | undefined {
     return this.sessions.get(terminal)?.session;
+  }
+
+  /**
+   * Stronger input dispatch for explicitly owned tmux sessions. The promise
+   * resolves only after tmux accepted BOTH literal text and Enter. It does
+   * not prove that Codex accepted the submitted prompt or completed a turn.
+   * Inputs to the same pane are serialized to prevent interleaving.
+   */
+  async sendInput(terminal: vscode.Terminal, text: string, enter: boolean): Promise<void> {
+    const session = this.sessionFor(terminal);
+    if (!session) throw new Error('not_owned_tmux_terminal');
+    const commands = ownedTmuxInputCommands(session, text, enter);
+    const previous = this.pendingInputs.get(session) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(async () => {
+      await tmux(['has-session', '-t', session]);
+      for (const args of commands) await tmux(args, 3000);
+    });
+    this.pendingInputs.set(session, current);
+    try {
+      await current;
+    } finally {
+      if (this.pendingInputs.get(session) === current) this.pendingInputs.delete(session);
+    }
   }
 
   async create(name: string, cwd?: string): Promise<vscode.Terminal> {
@@ -149,6 +173,7 @@ export class TerminalScreenMirror implements vscode.Disposable {
     this.polls.clear();
     this.sessions.clear();
     this.lastScreen.clear();
+    this.pendingInputs.clear();
     for (const item of this.disposables) item.dispose();
   }
 }
