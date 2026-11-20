@@ -88,7 +88,10 @@ export class LocalAiSupervisor {
       || !ENTITY_ID.test(job.windowId) || !ENTITY_ID.test(job.terminalId)
       || job.excerpt.length < 40 || job.excerpt.length > 6000) return false;
     if (this.active?.requestId === job.requestId || this.queued.some(item => item.requestId === job.requestId)) return false;
-    if (this.active && this.queued.length >= this.settings.maxQueued) return false;
+    if (this.active && this.queued.length >= this.settings.maxQueued) {
+      this.fail(job, 'ai_queue_full');
+      return false;
+    }
 
     const pending: PendingJob = { ...job, enqueuedAt: Date.now() };
     this.queued.push(pending);
